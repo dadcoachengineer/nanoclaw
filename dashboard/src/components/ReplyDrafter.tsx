@@ -21,8 +21,6 @@ export default function ReplyDrafter({
 }: ReplyDrafterProps) {
   const [draft, setDraft] = useState("");
   const [generating, setGenerating] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,27 +51,12 @@ export default function ReplyDrafter({
     }
   }
 
-  async function sendViaWebex() {
+  function openInWebex() {
     if (!roomId || !draft) return;
-    setSending(true);
-    try {
-      const resp = await fetch("/api/send-webex", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ roomId, text: draft }),
-      });
-      const data = await resp.json();
-      if (data.id) {
-        setSent(true);
-        setTimeout(onClose, 1500);
-      } else {
-        setError(data.error || "Failed to send");
-      }
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSending(false);
-    }
+    navigator.clipboard.writeText(draft);
+    setCopied(true);
+    // Open Webex native app to this conversation (copied to clipboard for paste)
+    window.open(`webexteams://im?space=${roomId}`, "_blank");
   }
 
   function copyToClipboard() {
@@ -144,13 +127,7 @@ export default function ReplyDrafter({
             </div>
           )}
 
-          {sent && (
-            <div className="flex items-center justify-center gap-2 py-6 text-[var(--green)]">
-              <span className="text-lg">&#10003;</span> Sent via Webex
-            </div>
-          )}
-
-          {draft && !sent && (
+          {draft && (
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -161,7 +138,7 @@ export default function ReplyDrafter({
         </div>
 
         {/* Actions */}
-        {draft && !sent && (
+        {draft && (
           <div className="px-5 py-3 border-t border-[var(--border)] flex items-center gap-3">
             <button
               onClick={generateDraft}
@@ -179,11 +156,10 @@ export default function ReplyDrafter({
             </button>
             {roomId && (
               <button
-                onClick={sendViaWebex}
-                disabled={sending}
-                className="px-4 py-1.5 bg-[var(--accent)] text-[var(--bg)] text-sm font-medium rounded-md hover:opacity-90 disabled:opacity-50"
+                onClick={openInWebex}
+                className="px-4 py-1.5 bg-[var(--accent)] text-[var(--bg)] text-sm font-medium rounded-md hover:opacity-90"
               >
-                {sending ? "Sending..." : "Send via Webex"}
+                {copied ? "Copied — opening Webex..." : "Copy & Open in Webex"}
               </button>
             )}
           </div>
