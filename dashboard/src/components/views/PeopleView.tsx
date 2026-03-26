@@ -8,6 +8,7 @@ interface PersonSummary {
   key: string;
   name: string;
   emails: string[];
+  avatar: string | null;
   meetings: number;
   transcripts: number;
   messages: number;
@@ -18,6 +19,7 @@ interface PersonSummary {
 interface PersonDetail {
   name: string;
   emails: string[];
+  avatar?: string;
   webexRoomIds: string[];
   meetings: { id: string; topic: string; date: string; role: string }[];
   transcriptMentions: {
@@ -29,6 +31,29 @@ interface PersonDetail {
   }[];
   notionTasks: { id: string; title: string; status: string }[];
   messageExcerpts: { text: string; date: string; roomTitle: string }[];
+}
+
+function Avatar({ name, avatar, size = "sm" }: { name: string; avatar?: string | null; size?: "sm" | "lg" }) {
+  const initials = name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase();
+  const cls = size === "lg"
+    ? "w-12 h-12 text-lg"
+    : "w-8 h-8 text-xs";
+
+  if (avatar) {
+    return (
+      <img
+        src={avatar}
+        alt={name}
+        className={`${cls} rounded-full object-cover shrink-0`}
+      />
+    );
+  }
+
+  return (
+    <div className={`${cls} rounded-full bg-[var(--surface2)] border border-[var(--border)] flex items-center justify-center font-medium text-[var(--accent)] shrink-0`}>
+      {initials}
+    </div>
+  );
 }
 
 export default function PeopleView() {
@@ -103,10 +128,7 @@ export default function PeopleView() {
                 }`}
                 onClick={() => selectPerson(p.name)}
               >
-                {/* Avatar circle */}
-                <div className="w-8 h-8 rounded-full bg-[var(--surface2)] border border-[var(--border)] flex items-center justify-center text-xs font-medium text-[var(--accent)] shrink-0">
-                  {p.name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()}
-                </div>
+                <Avatar name={p.name} avatar={p.avatar} />
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium text-[var(--text-bright)] truncate">
                     {p.name}
@@ -143,9 +165,7 @@ export default function PeopleView() {
               <Card>
                 <div className="p-4">
                   <div className="flex items-center gap-3 mb-3">
-                    <div className="w-12 h-12 rounded-full bg-[var(--surface2)] border border-[var(--border)] flex items-center justify-center text-lg font-medium text-[var(--accent)]">
-                      {selected.name.split(" ").map((n) => n[0]).join("").slice(0, 2).toUpperCase()}
-                    </div>
+                    <Avatar name={selected.name} avatar={selected.avatar} size="lg" />
                     <div>
                       <div className="text-base font-semibold text-[var(--text-bright)]">
                         {selected.name}

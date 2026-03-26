@@ -61,6 +61,7 @@ const WEBEX_TOKEN = webexConfig.access_token;
 interface PersonEntry {
   name: string;
   emails: string[];
+  avatar?: string;
   webexRoomIds: string[]; // direct rooms
   webexGroupRooms: string[]; // group rooms they're in
   meetings: { id: string; topic: string; date: string; role: string }[];
@@ -469,6 +470,38 @@ async function indexNotionTasks(index: PersonIndex, topicIndex: TopicIndex): Pro
   console.log(`  Sources: ${JSON.stringify(sourceCounts)}`);
 }
 
+async function fetchAvatars(index: PersonIndex): Promise<void> {
+  console.log("Fetching avatars from Webex...");
+  let fetched = 0;
+  let skipped = 0;
+
+  for (const [key, entry] of Object.entries(index)) {
+    // Skip if already have avatar or no email
+    if (entry.avatar || entry.emails.length === 0) {
+      skipped++;
+      continue;
+    }
+
+    try {
+      const data = (await webexGet(
+        `/people?email=${encodeURIComponent(entry.emails[0])}`
+      )) as { items?: { avatar?: string }[] };
+
+      const avatar = data.items?.[0]?.avatar;
+      if (avatar) {
+        entry.avatar = avatar;
+        fetched++;
+      }
+    } catch {
+      // Skip — person may not be in the Webex org
+    }
+
+    // Rate limit
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  console.log(`  ${fetched} avatars fetched, ${skipped} skipped (already have or no email)`);
+}
+
 // --- Merge duplicates ---
 
 function mergeIndex(index: PersonIndex): PersonIndex {
@@ -535,6 +568,7 @@ async function main() {
   await indexWebexDirectMessages(index);
   await indexWebexRecordings(index, topicIndex);
   await indexNotionTasks(index, topicIndex);
+  await fetchAvatars(index);
 
   // Merge duplicates
   const merged = mergeIndex(index);

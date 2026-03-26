@@ -55,6 +55,7 @@ export async function GET(req: NextRequest) {
     key,
     name: p.name,
     emails: p.emails || [],
+    avatar: p.avatar || null,
     meetings: (p.meetings || []).length,
     transcripts: (p.transcriptMentions || []).length,
     messages: (p.messageExcerpts || []).length,
