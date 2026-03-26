@@ -6,10 +6,22 @@ import { fmt12, timeAgo } from "@/lib/dates";
 import { WebexMeeting } from "@/lib/webex";
 
 interface ContextData {
+  match?: { name: string; emails: string[] } | null;
   directMessages?: { text: string; from: string; created: string }[];
-  recentMeetings?: { topic: string; date: string }[];
+  recentMeetings?: { topic: string; date: string; role: string }[];
+  transcriptSnippets?: {
+    topic: string;
+    date: string;
+    snippetCount: number;
+    snippets: string[];
+  }[];
   relatedTasks?: { id: string; title: string; status: string }[];
-  upcomingMeetings?: { title: string; start: string }[];
+  stats?: {
+    totalMeetings: number;
+    totalTranscripts: number;
+    totalMessages: number;
+    totalTasks: number;
+  };
 }
 
 export default function MeetingContext({
@@ -22,12 +34,10 @@ export default function MeetingContext({
   const [context, setContext] = useState<ContextData | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Extract the other person's name/email from meeting title or host
   const hostEmail = meeting.hostEmail || "";
   const hostName = meeting.hostDisplayName || "";
 
-  // For 1:1 meetings, the title often contains the person's name
-  // For group meetings, use the host
+  // Extract person name from meeting title
   const personName =
     meeting.title
       .replace(/&/g, "")
@@ -42,8 +52,7 @@ export default function MeetingContext({
       .split(",")[0]
       .trim() || hostName;
 
-  const personEmail =
-    hostEmail !== "jasheare@cisco.com" ? hostEmail : "";
+  const personEmail = hostEmail !== "jasheare@cisco.com" ? hostEmail : "";
 
   useEffect(() => {
     async function load() {
@@ -69,43 +78,72 @@ export default function MeetingContext({
     load();
   }, [personEmail, personName]);
 
+  const matched = context?.match;
+  const stats = context?.stats;
   const hasData =
     context &&
     ((context.directMessages?.length || 0) > 0 ||
       (context.recentMeetings?.length || 0) > 0 ||
+      (context.transcriptSnippets?.length || 0) > 0 ||
       (context.relatedTasks?.length || 0) > 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-end">
-      {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/50"
-        onClick={onClose}
-      />
+      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
 
-      {/* Panel */}
-      <div className="relative w-[480px] h-full bg-[var(--bg)] border-l border-[var(--border)] overflow-y-auto">
+      <div className="relative w-[520px] h-full bg-[var(--bg)] border-l border-[var(--border)] overflow-y-auto">
         {/* Header */}
-        <div className="sticky top-0 bg-[var(--bg)] border-b border-[var(--border)] px-5 py-4 flex items-start justify-between z-10">
-          <div>
-            <h2 className="text-base font-semibold text-[var(--text-bright)]">
-              {meeting.title}
-            </h2>
-            <div className="text-sm text-[var(--text-dim)] mt-1">
-              {fmt12(meeting.start)} - {fmt12(meeting.end)}
-              {personName && (
-                <span className="ml-2 text-[var(--accent)]">
-                  with {personName}
-                </span>
+        <div className="sticky top-0 bg-[var(--bg)] border-b border-[var(--border)] px-5 py-4 z-10">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h2 className="text-base font-semibold text-[var(--text-bright)]">
+                {meeting.title}
+              </h2>
+              <div className="text-sm text-[var(--text-dim)] mt-1">
+                {fmt12(meeting.start)} - {fmt12(meeting.end)}
+              </div>
+              {matched && (
+                <div className="mt-2">
+                  <span className="text-sm text-[var(--accent)] font-medium">
+                    {matched.name}
+                  </span>
+                  {matched.emails[0] && (
+                    <span className="text-xs text-[var(--text-dim)] ml-2">
+                      {matched.emails[0]}
+                    </span>
+                  )}
+                </div>
               )}
             </div>
+            <button
+              onClick={onClose}
+              className="text-[var(--text-dim)] hover:text-[var(--text)] text-lg px-2"
+            >
+              &times;
+            </button>
           </div>
-          <button
-            onClick={onClose}
-            className="text-[var(--text-dim)] hover:text-[var(--text)] text-lg px-2"
-          >
-            &times;
-          </button>
+
+          {/* Stats bar */}
+          {stats && (stats.totalMeetings + stats.totalTranscripts + stats.totalMessages + stats.totalTasks > 0) && (
+            <div className="flex gap-4 mt-3 pt-3 border-t border-[var(--border)]">
+              <div className="text-center">
+                <div className="text-lg font-bold text-[var(--accent)]">{stats.totalMeetings}</div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase">Meetings</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-[var(--purple)]">{stats.totalTranscripts}</div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase">Transcripts</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-[var(--green)]">{stats.totalMessages}</div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase">Messages</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-[var(--yellow)]">{stats.totalTasks}</div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase">Tasks</div>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="p-5 space-y-5">
@@ -117,14 +155,51 @@ export default function MeetingContext({
 
           {!loading && !hasData && (
             <div className="text-center text-[var(--text-dim)] py-8 italic">
-              No cross-platform context found for this meeting
+              No cross-platform context found
             </div>
           )}
 
-          {/* Recent 1:1 Messages */}
+          {/* Transcript Snippets — what they actually said */}
+          {context?.transcriptSnippets && context.transcriptSnippets.length > 0 && (
+            <Card>
+              <CardHeader title="What They Said (Transcripts)" />
+              <div>
+                {context.transcriptSnippets.map((t, i) => (
+                  <div key={i} className="px-4 py-3 border-b border-[var(--border)] last:border-0">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-medium text-[var(--purple)]">
+                        {t.topic.slice(0, 50)}
+                      </span>
+                      <span className="text-xs text-[var(--text-dim)]">
+                        {new Date(t.date).toLocaleDateString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                        })}
+                      </span>
+                    </div>
+                    {t.snippets.map((s, j) => (
+                      <div
+                        key={j}
+                        className="text-sm text-[var(--text)] bg-[var(--surface2)] rounded px-3 py-1.5 mb-1 italic"
+                      >
+                        &ldquo;{s}&rdquo;
+                      </div>
+                    ))}
+                    {t.snippetCount > t.snippets.length && (
+                      <div className="text-xs text-[var(--text-dim)] mt-1">
+                        +{t.snippetCount - t.snippets.length} more lines in this meeting
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {/* Recent Messages */}
           {context?.directMessages && context.directMessages.length > 0 && (
             <Card>
-              <CardHeader title={`Recent Messages with ${personName}`} />
+              <CardHeader title="Recent Messages" />
               <div>
                 {context.directMessages.map((m, i) => (
                   <div
@@ -133,33 +208,36 @@ export default function MeetingContext({
                   >
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-xs text-[var(--accent)]">
-                        {m.from === "jasheare@cisco.com" ? "You" : personName}
+                        {m.from === "jasheare@cisco.com" ? "You" : matched?.name || personName}
                       </span>
                       <span className="text-xs text-[var(--text-dim)]">
                         {timeAgo(m.created)}
                       </span>
                     </div>
-                    <div className="text-sm text-[var(--text)]">
-                      {m.text}
-                    </div>
+                    <div className="text-sm text-[var(--text)]">{m.text}</div>
                   </div>
                 ))}
               </div>
             </Card>
           )}
 
-          {/* Previous Meetings */}
+          {/* Meeting History */}
           {context?.recentMeetings && context.recentMeetings.length > 0 && (
             <Card>
-              <CardHeader title="Previous Meetings Together" />
+              <CardHeader title="Meeting History" />
               <div>
                 {context.recentMeetings.map((m, i) => (
                   <div
                     key={i}
                     className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0"
                   >
-                    <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-[var(--purple)]" />
-                    <span className="text-sm flex-1">{m.topic}</span>
+                    <div
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{
+                        background: m.role === "host" ? "var(--yellow)" : "var(--purple)",
+                      }}
+                    />
+                    <span className="text-sm flex-1">{m.topic.slice(0, 60)}</span>
                     <span className="text-xs text-[var(--text-dim)]">
                       {new Date(m.date).toLocaleDateString("en-US", {
                         month: "short",
@@ -172,7 +250,7 @@ export default function MeetingContext({
             </Card>
           )}
 
-          {/* Related Notion Tasks */}
+          {/* Related Tasks */}
           {context?.relatedTasks && context.relatedTasks.length > 0 && (
             <Card>
               <CardHeader title="Related Tasks" />
@@ -197,28 +275,6 @@ export default function MeetingContext({
               </div>
             </Card>
           )}
-
-          {/* Upcoming Meetings */}
-          {context?.upcomingMeetings &&
-            context.upcomingMeetings.length > 0 && (
-              <Card>
-                <CardHeader title="Upcoming Meetings Together" />
-                <div>
-                  {context.upcomingMeetings.map((m, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0"
-                    >
-                      <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-[var(--accent)]" />
-                      <span className="text-sm flex-1">{m.title}</span>
-                      <span className="text-xs text-[var(--text-dim)]">
-                        {fmt12(m.start)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </Card>
-            )}
         </div>
       </div>
     </div>
