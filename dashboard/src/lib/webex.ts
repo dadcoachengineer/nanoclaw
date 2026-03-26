@@ -11,6 +11,7 @@ export interface WebexMeeting {
   hostDisplayName?: string;
   hostEmail?: string;
   meetingType?: string;
+  webLink?: string;
 }
 
 export async function fetchMeetings(

@@ -1,10 +1,100 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { Card, CardHeader } from "@/components/Card";
 import { fmt12, timeAgo } from "@/lib/dates";
 import { WebexMeeting } from "@/lib/webex";
+import { NotionPage } from "@/lib/notion";
 import ReplyDrafter from "@/components/ReplyDrafter";
+import TaskDetail from "@/components/TaskDetail";
+
+/** Inline-editable task title. Click to edit, Enter/blur to save. Calls corrections API. */
+function EditableTitle({
+  taskId,
+  title,
+  onSaved,
+}: {
+  taskId: string;
+  title: string;
+  onSaved: (newTitle: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(title);
+  const [saving, setSaving] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  async function save() {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === title) {
+      setEditing(false);
+      setValue(title);
+      return;
+    }
+    setSaving(true);
+    try {
+      const resp = await fetch("/api/corrections", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId, oldTitle: title, newTitle: trimmed }),
+      });
+      if (resp.ok) {
+        onSaved(trimmed);
+        setFlash(true);
+        setTimeout(() => setFlash(false), 1200);
+      }
+    } finally {
+      setSaving(false);
+      setEditing(false);
+    }
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+          if (e.key === "Escape") { setEditing(false); setValue(title); }
+        }}
+        onBlur={save}
+        onClick={(e) => e.stopPropagation()}
+        disabled={saving}
+        className="text-sm flex-1 bg-[var(--bg)] border border-[var(--accent)] rounded px-2 py-0.5 text-[var(--text)] focus:outline-none"
+        autoFocus
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={(e) => { e.stopPropagation(); setEditing(true); }}
+      className={`text-sm flex-1 cursor-text hover:underline hover:decoration-dotted hover:decoration-[var(--text-dim)] ${
+        flash ? "text-[var(--green)]" : ""
+      } ${saving ? "opacity-50" : ""}`}
+      title="Click to edit"
+    >
+      {title}{flash && " ✓"}
+    </span>
+  );
+}
+
+/** Build a minimal NotionPage from prep task data so TaskDetail can render it. */
+function prepTaskToPage(t: { id: string; title: string; status?: string; priority?: string; delegated?: string }): NotionPage {
+  return {
+    id: t.id,
+    url: `https://notion.so/${t.id.replace(/-/g, "")}`,
+    last_edited_time: new Date().toISOString(),
+    properties: {
+      Task: { type: "title", title: [{ plain_text: t.title }] },
+      Status: { type: "status", status: { name: t.status || "Not started" } },
+      Priority: { type: "select", select: t.priority ? { name: t.priority } : null },
+      "Delegated To": { type: "select", select: t.delegated ? { name: t.delegated } : null },
+    },
+  } as unknown as NotionPage;
+}
 
 interface PrepData {
   meetingTitle: string;
@@ -18,6 +108,7 @@ interface PrepData {
   matchedTopics?: { name: string; taskCount: number; meetingCount: number; people: string[] }[];
   openTasks?: { id: string; title: string; status: string; priority: string; delegated: string }[];
   followUpsOwed?: { id: string; title: string; priority: string }[];
+  candidates?: { key: string; name: string; email?: string; avatar?: string; meetingCount: number; messageCount: number }[];
 }
 
 export default function MeetingPrep({
@@ -30,17 +121,33 @@ export default function MeetingPrep({
   const [prep, setPrep] = useState<PrepData | null>(null);
   const [loading, setLoading] = useState(true);
   const [replyTo, setReplyTo] = useState<{ text: string; personName: string; personEmail?: string } | null>(null);
+  const [selectedTask, setSelectedTask] = useState<NotionPage | null>(null);
+  const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
+
+  const disambigKey = `mc:disambig:${meeting.title}`;
+
+  const fetchPrep = async (personKey?: string) => {
+    const params = new URLSearchParams({
+      title: meeting.title,
+      host: meeting.hostDisplayName || "",
+      hostEmail: meeting.hostEmail || "",
+    });
+    if (personKey) params.set("selectedPerson", personKey);
+    try {
+      const resp = await fetch(`/api/meeting-prep?${params}`);
+      return (await resp.json()) as PrepData;
+    } catch {
+      return null;
+    }
+  };
 
   useEffect(() => {
     async function load() {
-      const params = new URLSearchParams({
-        title: meeting.title,
-        host: meeting.hostDisplayName || "",
-        hostEmail: meeting.hostEmail || "",
-      });
+      const cached = localStorage.getItem(disambigKey) || undefined;
+      if (cached) setSelectedCandidate(cached);
       try {
-        const resp = await fetch(`/api/meeting-prep?${params}`);
-        setPrep(await resp.json());
+        const data = await fetchPrep(cached);
+        setPrep(data);
       } catch {
         setPrep(null);
       } finally {
@@ -48,7 +155,22 @@ export default function MeetingPrep({
       }
     }
     load();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meeting]);
+
+  const handleCandidateSelect = async (key: string) => {
+    setSelectedCandidate(key);
+    localStorage.setItem(disambigKey, key);
+    setLoading(true);
+    try {
+      const data = await fetchPrep(key);
+      setPrep(data);
+    } catch {
+      // keep existing prep on error
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const hasContext = prep && (
     (prep.recentMessages?.length || 0) > 0 ||
@@ -83,6 +205,12 @@ export default function MeetingPrep({
                     <span className="ml-2 text-[var(--accent)]">with {prep.personName}</span>
                   )}
                 </div>
+                {meeting.webLink && (
+                  <a href={meeting.webLink} target="_blank" rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 mt-1 text-xs text-[var(--green)] hover:underline">
+                    Join Meeting ↗
+                  </a>
+                )}
               </div>
             </div>
             <button onClick={onClose} className="text-[var(--text-dim)] hover:text-[var(--text)] text-lg px-2">&times;</button>
@@ -101,6 +229,34 @@ export default function MeetingPrep({
                   <div className="text-lg font-bold" style={{ color: s.c }}>{s.v}</div>
                   <div className="text-[10px] text-[var(--text-dim)] uppercase">{s.l}</div>
                 </div>
+              ))}
+            </div>
+          )}
+
+          {/* Disambiguation bar */}
+          {prep?.candidates && prep.candidates.length > 1 && !selectedCandidate && (
+            <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-[var(--border)]">
+              <span className="text-xs text-[var(--text-dim)] self-center mr-1">Match:</span>
+              {prep.candidates.map((c) => (
+                <button
+                  key={c.key}
+                  onClick={() => handleCandidateSelect(c.key)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs border transition-colors ${
+                    c.key === prep.candidates![0].key
+                      ? "border-[var(--accent)] text-[var(--accent)]"
+                      : "border-[var(--border)] text-[var(--text)] hover:border-[var(--text-dim)]"
+                  }`}
+                >
+                  {c.avatar ? (
+                    <img src={c.avatar} alt="" className="w-4 h-4 rounded-full object-cover" />
+                  ) : (
+                    <span className="w-4 h-4 rounded-full bg-[var(--surface2)] flex items-center justify-center text-[8px] font-medium shrink-0">
+                      {c.name.split(" ").map(n => n[0]).join("").slice(0, 2).toUpperCase()}
+                    </span>
+                  )}
+                  <span>{c.name}</span>
+                  <span className="text-[var(--text-dim)]">({c.meetingCount})</span>
+                </button>
               ))}
             </div>
           )}
@@ -123,33 +279,35 @@ export default function MeetingPrep({
               <CardHeader title="⚠️ Follow-ups You Owe" />
               <div>
                 {prep.followUpsOwed.map((t) => (
-                  <div key={t.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-[var(--border)] last:border-0">
+                  <button key={t.id} onClick={() => setSelectedTask(prepTaskToPage(t))}
+                    className="flex items-center gap-3 px-4 py-2.5 border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface2)] transition-colors cursor-pointer w-full text-left">
                     <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${
                       t.priority?.includes("P0") ? "bg-[rgba(248,81,73,0.15)] text-[var(--red)]" :
                       t.priority?.includes("P1") ? "bg-[rgba(219,109,40,0.15)] text-[var(--orange)]" :
                       "bg-[rgba(210,153,34,0.15)] text-[var(--yellow)]"
                     }`}>{t.priority?.split(" ")[0] || "P2"}</span>
-                    <span className="text-sm flex-1">{t.title}</span>
-                  </div>
+                    <EditableTitle taskId={t.id} title={t.title} onSaved={(newTitle) => { t.title = newTitle; setPrep({ ...prep! }); }} />
+                  </button>
                 ))}
               </div>
             </Card>
           )}
 
-          {/* Open tasks related to this meeting */}
-          {prep?.openTasks && prep.openTasks.length > 0 && (
+          {/* Open tasks related to this meeting (exclude follow-ups already shown above) */}
+          {prep?.openTasks && prep.openTasks.filter((t) => !prep.followUpsOwed?.some((f) => f.id === t.id)).length > 0 && (
             <Card>
-              <CardHeader title="Open Action Items" right={<span className="text-xs text-[var(--text-dim)]">{prep.openTasks.length}</span>} />
+              <CardHeader title="Open Action Items" right={<span className="text-xs text-[var(--text-dim)]">{prep.openTasks.filter((t) => !prep.followUpsOwed?.some((f) => f.id === t.id)).length}</span>} />
               <div>
-                {prep.openTasks.map((t) => (
-                  <div key={t.id} className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0">
+                {prep.openTasks.filter((t) => !prep.followUpsOwed?.some((f) => f.id === t.id)).map((t) => (
+                  <button key={t.id} onClick={() => setSelectedTask(prepTaskToPage(t))}
+                    className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface2)] transition-colors cursor-pointer w-full text-left">
                     <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${
                       t.priority?.includes("P0") ? "bg-[rgba(248,81,73,0.15)] text-[var(--red)]" :
                       t.priority?.includes("P1") ? "bg-[rgba(219,109,40,0.15)] text-[var(--orange)]" :
                       "bg-[rgba(210,153,34,0.15)] text-[var(--yellow)]"
                     }`}>{t.priority?.split(" ")[0] || "P2"}</span>
-                    <span className="text-sm flex-1">{t.title}</span>
-                  </div>
+                    <EditableTitle taskId={t.id} title={t.title} onSaved={(newTitle) => { t.title = newTitle; setPrep({ ...prep! }); }} />
+                  </button>
                 ))}
               </div>
             </Card>
@@ -163,7 +321,11 @@ export default function MeetingPrep({
                 {prep.recentMessages.map((m, i) => (
                   <div key={i} className="px-4 py-2.5 border-b border-[var(--border)] last:border-0 group/msg">
                     <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-[var(--accent)]">{prep.personName}</span>
+                      {prep.personEmail ? (
+                        <a href={`mailto:${prep.personEmail}`} className="text-xs text-[var(--accent)] hover:underline">{prep.personName}</a>
+                      ) : (
+                        <span className="text-xs text-[var(--accent)]">{prep.personName}</span>
+                      )}
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => setReplyTo({
@@ -245,6 +407,22 @@ export default function MeetingPrep({
           )}
         </div>
       </div>
+
+      {/* Task detail modal */}
+      {selectedTask && (
+        <TaskDetail
+          page={selectedTask}
+          onClose={() => setSelectedTask(null)}
+          onComplete={(id) => {
+            // Remove completed task from prep lists
+            if (prep) {
+              prep.openTasks = prep.openTasks?.filter((t) => t.id !== id);
+              prep.followUpsOwed = prep.followUpsOwed?.filter((t) => t.id !== id);
+            }
+            setSelectedTask(null);
+          }}
+        />
+      )}
 
       {/* Reply drafter */}
       {replyTo && (

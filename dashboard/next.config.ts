@@ -12,6 +12,10 @@ const nextConfig: NextConfig = {
       },
     ];
   },
+  serverExternalPackages: ["child_process"],
+  turbopack: {
+    root: "/Users/nanoclaw/nanoclaw/dashboard",
+  },
 };
 
 export default nextConfig;

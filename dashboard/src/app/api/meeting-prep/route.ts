@@ -12,6 +12,15 @@ function loadJson(p: string) {
   try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return {}; }
 }
 
+interface PersonCandidate {
+  key: string;
+  name: string;
+  email?: string;
+  avatar?: string;
+  meetingCount: number;
+  messageCount: number;
+}
+
 function findPerson(index: Record<string, any>, name: string) {
   const lower = name.toLowerCase().replace(/[^a-z\s]/g, "").trim();
   if (index[lower]) return index[lower];
@@ -26,6 +35,50 @@ function findPerson(index: Record<string, any>, name: string) {
         parts[parts.length - 1].length > 3) return e;
   }
   return null;
+}
+
+function findPersonCandidates(index: Record<string, any>, name: string): PersonCandidate[] {
+  const lower = name.toLowerCase().replace(/[^a-z\s]/g, "").trim();
+  const seen = new Set<string>();
+  const candidates: PersonCandidate[] = [];
+
+  function addCandidate(key: string, e: any) {
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push({
+      key,
+      name: e.name || key,
+      email: e.emails?.[0],
+      avatar: e.avatar,
+      meetingCount: (e.meetings || []).length,
+      messageCount: (e.messageExcerpts || []).length,
+    });
+  }
+
+  // Exact key match
+  if (index[lower]) addCandidate(lower, index[lower]);
+
+  for (const [key, entry] of Object.entries(index)) {
+    const e = entry as any;
+    const eName = (e.name || "").toLowerCase();
+    // Name includes match (bidirectional)
+    if (eName.includes(lower) || lower.includes(eName)) {
+      addCandidate(key, e);
+      continue;
+    }
+    // Last name match
+    const parts = lower.split(" ");
+    const eParts = eName.split(" ");
+    if (parts.length > 0 && eParts.length > 0 &&
+        parts[parts.length - 1] === eParts[eParts.length - 1] &&
+        parts[parts.length - 1].length > 3) {
+      addCandidate(key, e);
+    }
+  }
+
+  // Sort by total interaction count descending
+  candidates.sort((a, b) => (b.meetingCount + b.messageCount) - (a.meetingCount + a.messageCount));
+  return candidates;
 }
 
 function extractPersonName(meetingTitle: string, hostName?: string, hostEmail?: string): string {
@@ -57,12 +110,26 @@ export async function GET(req: NextRequest) {
   const title = searchParams.get("title") || "";
   const host = searchParams.get("host") || "";
   const hostEmail = searchParams.get("hostEmail") || "";
+  const selectedPerson = searchParams.get("selectedPerson") || "";
 
   const personIndex = loadJson(INDEX_PATH);
   const topicIndex = loadJson(TOPIC_INDEX_PATH);
 
   const personName = extractPersonName(title, host, hostEmail);
-  const person = personName ? findPerson(personIndex, personName) : null;
+
+  let person: any = null;
+  let candidates: PersonCandidate[] | undefined;
+
+  if (selectedPerson && personIndex[selectedPerson]) {
+    // Explicit selection — skip fuzzy matching
+    person = personIndex[selectedPerson];
+  } else if (personName) {
+    const allCandidates = findPersonCandidates(personIndex, personName);
+    if (allCandidates.length > 1) {
+      candidates = allCandidates;
+    }
+    person = allCandidates.length > 0 ? personIndex[allCandidates[0].key] : null;
+  }
 
   // Match topics
   const titleLower = title.toLowerCase();
@@ -170,6 +237,7 @@ export async function GET(req: NextRequest) {
   prep.matchedTopics = matchedTopics;
   prep.openTasks = openTasks;
   prep.followUpsOwed = followUpsOwed;
+  if (candidates) prep.candidates = candidates;
 
   return NextResponse.json(prep);
 }

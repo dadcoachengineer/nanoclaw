@@ -9,6 +9,7 @@ import https from 'https';
 import path from 'path';
 import { URL } from 'url';
 import { fileURLToPath } from 'url';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 import { DASHBOARD_PORT, STORE_DIR, TIMEZONE } from './config.js';
 import {
@@ -79,30 +80,16 @@ function setCache(key: string, data: unknown): void {
 
 // --- External API proxy helpers ---
 
-function getWebexToken(): string | null {
-  try {
-    const config = JSON.parse(
-      fs.readFileSync(path.join(STORE_DIR, 'webex-oauth.json'), 'utf-8'),
-    );
-    return config.access_token;
-  } catch {
-    return null;
-  }
-}
-
-function getNotionToken(): string | null {
-  // Read from OneCLI secret store — but we don't have direct access.
-  // The Notion token is managed by OneCLI. For the dashboard proxy,
-  // we'll read it from a local cache file if available.
-  try {
-    const config = JSON.parse(
-      fs.readFileSync(path.join(STORE_DIR, 'notion-token.json'), 'utf-8'),
-    );
-    return config.token;
-  } catch {
-    return null;
-  }
-}
+// --- OneCLI proxy config ---
+// The OneCLI HTTPS proxy on port 10255 intercepts requests and injects
+// credentials based on host patterns (Notion, Webex, etc.).
+const ONECLI_AGENT_TOKEN =
+  process.env.ONECLI_AGENT_TOKEN ||
+  'aoc_181429a83379e2122e9e0b6cde6eefd6b897809b92c08cc4bc788816e26e399a';
+const ONECLI_PROXY_HOST = process.env.ONECLI_PROXY_HOST || 'localhost:10255';
+const proxyAgent = new HttpsProxyAgent(
+  `http://x:${ONECLI_AGENT_TOKEN}@${ONECLI_PROXY_HOST}`,
+);
 
 function proxyRequest(
   url: string,
@@ -120,6 +107,7 @@ function proxyRequest(
         ...headers,
         Accept: 'application/json',
       },
+      agent: proxyAgent,
     };
     const req = https.request(opts, (proxyRes) => {
       let data = '';
@@ -247,13 +235,10 @@ async function handleApi(
     const cached = getCached(cacheKey);
     if (cached) return json(res, cached);
 
-    const token = getWebexToken();
-    if (!token) return json(res, { error: 'Webex token not configured' }, 500);
-
     try {
       const data = await proxyRequest(
         `https://webexapis.com/v1/meetings?from=${from}&to=${to}&max=50&meetingType=scheduledMeeting`,
-        { Authorization: `Bearer ${token}` },
+        {},
       );
       setCache(cacheKey, data);
       return json(res, data);
@@ -265,17 +250,6 @@ async function handleApi(
   // === Notion proxy ===
 
   if (pathname === '/api/notion/query' && req.method === 'POST') {
-    const token = getNotionToken();
-    if (!token)
-      return json(
-        res,
-        {
-          error:
-            'Notion token not configured — create store/notion-token.json with {"token":"secret_xxx"}',
-        },
-        500,
-      );
-
     try {
       const body = await readBody(req);
       const parsed = JSON.parse(body);
@@ -287,7 +261,6 @@ async function handleApi(
       const data = await proxyRequest(
         `https://api.notion.com/v1/databases/${dbId}/query`,
         {
-          Authorization: `Bearer ${token}`,
           'Notion-Version': '2022-06-28',
           'Content-Type': 'application/json',
         },
