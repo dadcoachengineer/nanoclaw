@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Outlook Email Scanner → Notion
+  Install on the corp laptop:
+    cp outlook-scanner-launchd.plist ~/Library/LaunchAgents/com.missioncontrol.outlook-scanner.plist
+    launchctl load ~/Library/LaunchAgents/com.missioncontrol.outlook-scanner.plist
+
+  Set your Notion API key:
+    Replace YOUR_NOTION_API_KEY_HERE below
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.missioncontrol.outlook-scanner</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/osascript</string>
+        <string>-l</string>
+        <string>JavaScript</string>
+        <string>/Users/jasheare/outlook-scanner.js</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key>
+        <integer>15</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>NOTION_API_KEY</key>
+        <string>YOUR_NOTION_API_KEY_HERE</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/tmp/outlook-scanner.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/outlook-scanner.log</string>
+</dict>
+</plist>

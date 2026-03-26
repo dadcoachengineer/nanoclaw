@@ -127,11 +127,11 @@ async function completeTask(pageId: string, comment?: string) {
   return resp.ok;
 }
 
-async function addNoteComment(pageId: string, text: string): Promise<boolean> {
+async function addNoteToPage(pageId: string, text: string): Promise<boolean> {
   const resp = await fetch("/api/notion/update", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ page_id: pageId, comment: text }),
+    body: JSON.stringify({ page_id: pageId, appendNote: text }),
   });
   return resp.ok;
 }
@@ -167,7 +167,7 @@ export default function TaskDetail({
   const [addingNote, setAddingNote] = useState(false);
   const [noteText, setNoteText] = useState("");
   const [savingNote, setSavingNote] = useState(false);
-  const [localNotes, setLocalNotes] = useState<LocalNote[]>([]);
+  const [currentNotes, setCurrentNotes] = useState<string | null>(null);
   const noteTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Initiative assignment state
@@ -177,7 +177,12 @@ export default function TaskDetail({
   const [savingInitiative, setSavingInitiative] = useState(false);
   const initiativeRef = useRef<HTMLDivElement>(null);
 
-  const title = prop(page, "Task") || prop(page, "Name") || "Untitled";
+  const originalTitle = prop(page, "Task") || prop(page, "Name") || "Untitled";
+  const [title, setTitle] = useState(originalTitle);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(originalTitle);
+  const [savingTitle, setSavingTitle] = useState(false);
+  const titleInputRef = useRef<HTMLInputElement>(null);
   const isRich = isRichPage(title);
 
   // Fetch page blocks for briefing/prep pages
@@ -228,12 +233,27 @@ export default function TaskDetail({
   async function handleSaveNote() {
     if (!noteText.trim()) return;
     setSavingNote(true);
-    const ok = await addNoteComment(page.id, noteText.trim());
+    const ok = await addNoteToPage(page.id, noteText.trim());
     if (ok) {
-      setLocalNotes((prev) => [
-        ...prev,
-        { text: noteText.trim(), timestamp: new Date().toLocaleString() },
-      ]);
+      // Refetch the page to get the updated notes
+      try {
+        const resp = await fetch("/api/notion/query", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            database_id: "5b4e1d2d7259496ea237ef0525c3ce78",
+            filter: { property: "Task", title: { equals: title } },
+            page_size: 1,
+          }),
+        });
+        const data = await resp.json();
+        const updatedPage = data.results?.[0];
+        if (updatedPage) {
+          const updatedNotes = (updatedPage.properties?.Notes?.rich_text || [])
+            .map((t: { plain_text: string }) => t.plain_text).join("");
+          setCurrentNotes(updatedNotes);
+        }
+      } catch { /* fall back to optimistic update */ }
       setNoteText("");
       setAddingNote(false);
     }
@@ -274,7 +294,8 @@ export default function TaskDetail({
   const context = prop(page, "Context");
   const source = prop(page, "Source");
   const project = prop(page, "Project");
-  const notes = prop(page, "Notes");
+  const notesFromPage = prop(page, "Notes");
+  const notes = currentNotes ?? notesFromPage;
   const delegated = prop(page, "Delegated To");
   const energy = prop(page, "Energy");
   const dueDate = prop(page, "Due Date");
@@ -287,6 +308,27 @@ export default function TaskDetail({
     ?.replace(/\s*webex_room:\S+/g, "")
     .replace(/\s*webex_msg:\S+/g, "")
     .trim();
+
+  useEffect(() => {
+    if (editingTitle && titleInputRef.current) titleInputRef.current.focus();
+  }, [editingTitle]);
+
+  async function handleSaveTitle() {
+    const trimmed = titleDraft.trim();
+    if (!trimmed || trimmed === title) { setEditingTitle(false); setTitleDraft(title); return; }
+    setSavingTitle(true);
+    try {
+      const resp = await fetch("/api/corrections", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId: page.id, oldTitle: title, newTitle: trimmed }),
+      });
+      if (resp.ok) setTitle(trimmed);
+    } finally {
+      setSavingTitle(false);
+      setEditingTitle(false);
+    }
+  }
 
   async function handleComplete() {
     setCompleting(true);
@@ -314,8 +356,25 @@ export default function TaskDetail({
                 <h2 className="text-lg font-semibold text-[var(--green)] line-through">
                   {title}
                 </h2>
+              ) : editingTitle ? (
+                <input
+                  ref={titleInputRef}
+                  value={titleDraft}
+                  onChange={(e) => setTitleDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSaveTitle();
+                    if (e.key === "Escape") { setEditingTitle(false); setTitleDraft(title); }
+                  }}
+                  onBlur={handleSaveTitle}
+                  disabled={savingTitle}
+                  className="text-lg font-semibold text-[var(--text-bright)] bg-[var(--bg)] border border-[var(--accent)] rounded px-2 py-0.5 w-full focus:outline-none"
+                />
               ) : (
-                <h2 className="text-lg font-semibold text-[var(--text-bright)]">
+                <h2
+                  className="text-lg font-semibold text-[var(--text-bright)] cursor-text hover:underline hover:decoration-dotted hover:decoration-[var(--text-dim)]"
+                  onClick={() => { setEditingTitle(true); setTitleDraft(title); }}
+                  title="Click to edit"
+                >
                   {title}
                 </h2>
               )}
@@ -420,21 +479,12 @@ export default function TaskDetail({
           </div>
 
           {/* Notes */}
-          {(notes || localNotes.length > 0) && (
+          {notes && (
             <div>
               <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2">Notes</div>
-              {displayNotes && (
-                <div className="text-sm text-[var(--text)] bg-[var(--bg)] rounded-lg p-4 whitespace-pre-wrap leading-relaxed">
-                  {displayNotes}
-                </div>
-              )}
-              {/* Locally added notes */}
-              {localNotes.map((ln, i) => (
-                <div key={i} className="text-sm text-[var(--text)] bg-[var(--bg)] rounded-lg p-4 mt-2 whitespace-pre-wrap leading-relaxed">
-                  <div className="text-[10px] text-[var(--text-dim)] mb-1">{ln.timestamp}</div>
-                  {ln.text}
-                </div>
-              ))}
+              <div className="text-sm text-[var(--text)] bg-[var(--bg)] rounded-lg p-4 whitespace-pre-wrap leading-relaxed">
+                {displayNotes}
+              </div>
             </div>
           )}
 
