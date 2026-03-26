@@ -12,7 +12,38 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 
 const STORE_DIR = path.join(process.cwd(), "store");
 const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
+const TOPIC_INDEX_PATH = path.join(STORE_DIR, "topic-index.json");
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
+
+// Known topics with keyword patterns
+const TOPIC_PATTERNS: { name: string; keywords: string[] }[] = [
+  { name: "Real Estate Accelerator", keywords: ["real estate", "accelerator", "design office hours"] },
+  { name: "Cisco Spaces", keywords: ["spaces", "cisco spaces", "spatial intelligence"] },
+  { name: "CADENAS / CAD", keywords: ["cadenas", "cad ", "bim ", "revit", "autocad"] },
+  { name: "FPW (Future-Proofed Workplaces)", keywords: ["fpw", "future-proofed", "future proofed", "clamer"] },
+  { name: "Smart Building / IoT", keywords: ["smart building", "smart room", "bms", "iot ", "cybervision", "ise "] },
+  { name: "Coaching & Leadership", keywords: ["coaching", "smdd", "stldp", "leadership", "ipec", "momentumeq"] },
+  { name: "Splunk", keywords: ["splunk", "vista"] },
+  { name: "Energy / PoE", keywords: ["energy", "poe ", "power over ethernet"] },
+  { name: "Cross Architecture", keywords: ["cross architecture", "cross arch"] },
+  { name: "NTT / Gigaraku", keywords: ["ntt", "gigaraku"] },
+  { name: "Workday", keywords: ["workday"] },
+  { name: "Ordinary Epics", keywords: ["ordinary epics", "adventure"] },
+  { name: "DBS / Skyline", keywords: ["dbs", "skyline"] },
+  { name: "Partner Ecosystem", keywords: ["partner", "ecosystem", "wesco", "distributor"] },
+];
+
+interface TopicEntry {
+  name: string;
+  meetings: { id: string; topic: string; date: string }[];
+  transcriptSnippets: { topic: string; date: string; speakers: string[]; keyLines: string[] }[];
+  webexRooms: { id: string; title: string }[];
+  notionTasks: { id: string; title: string; status: string; source: string }[];
+  messageExcerpts: { text: string; date: string; roomTitle: string }[];
+  people: string[]; // names of people associated with this topic
+}
+
+type TopicIndex = Record<string, TopicEntry>;
 
 // OneCLI proxy for Notion
 const AGENT_TOKEN =
@@ -103,6 +134,29 @@ function addUnique<T>(arr: T[], item: T): void {
   if (!arr.includes(item)) arr.push(item);
 }
 
+function getOrCreateTopic(index: TopicIndex, name: string): TopicEntry {
+  const key = name.toLowerCase();
+  if (!index[key]) {
+    index[key] = {
+      name,
+      meetings: [],
+      transcriptSnippets: [],
+      webexRooms: [],
+      notionTasks: [],
+      messageExcerpts: [],
+      people: [],
+    };
+  }
+  return index[key];
+}
+
+function matchTopics(text: string): string[] {
+  const lower = text.toLowerCase();
+  return TOPIC_PATTERNS
+    .filter((p) => p.keywords.some((kw) => lower.includes(kw)))
+    .map((p) => p.name);
+}
+
 // --- Source indexers ---
 
 async function indexWebexPeople(index: PersonIndex): Promise<void> {
@@ -120,7 +174,7 @@ async function indexWebexPeople(index: PersonIndex): Promise<void> {
   console.log(`  ${(data.items || []).length} people found`);
 }
 
-async function indexWebexRooms(index: PersonIndex): Promise<void> {
+async function indexWebexRooms(index: PersonIndex, topicIndex: TopicIndex): Promise<void> {
   console.log("Indexing Webex rooms...");
   const data = (await webexGet(
     "/rooms?sortBy=lastactivity&max=50"
@@ -128,13 +182,20 @@ async function indexWebexRooms(index: PersonIndex): Promise<void> {
 
   for (const room of data.items || []) {
     if (room.type === "direct") {
-      // Direct room title = the other person's name
       const entry = getOrCreate(index, room.title);
       addUnique(entry.webexRoomIds, room.id);
     }
+    // Index group rooms by topic
+    const topicMatches = matchTopics(room.title);
+    for (const topicName of topicMatches) {
+      const topic = getOrCreateTopic(topicIndex, topicName);
+      if (!topic.webexRooms.find((r) => r.id === room.id)) {
+        topic.webexRooms.push({ id: room.id, title: room.title });
+      }
+    }
   }
   console.log(
-    `  ${(data.items || []).filter((r) => r.type === "direct").length} direct rooms indexed`
+    `  ${(data.items || []).filter((r) => r.type === "direct").length} direct rooms, ${(data.items || []).filter((r) => r.type === "group").length} group rooms indexed`
   );
 }
 
@@ -174,7 +235,7 @@ async function indexWebexDirectMessages(index: PersonIndex): Promise<void> {
   console.log(`  ${totalMsgs} messages indexed from ${(data.items || []).length} rooms`);
 }
 
-async function indexWebexRecordings(index: PersonIndex): Promise<void> {
+async function indexWebexRecordings(index: PersonIndex, topicIndex: TopicIndex): Promise<void> {
   console.log("Indexing Webex recordings and transcripts...");
 
   // Fetch recordings month by month going back 6 months
@@ -287,9 +348,34 @@ async function indexWebexRecordings(index: PersonIndex): Promise<void> {
           role: "speaker",
         });
       }
+      // Index topics from this recording
+      const topicMatches = matchTopics(rec.topic + " " + vtt.slice(0, 2000));
+      for (const topicName of topicMatches) {
+        const topic = getOrCreateTopic(topicIndex, topicName);
+        if (!topic.meetings.find((m) => m.id === rec.id)) {
+          topic.meetings.push({ id: rec.id, topic: rec.topic, date: rec.createTime });
+        }
+        // Add key transcript lines to topic
+        const allLines = Object.entries(speakerLines).flatMap(([speaker, lines]) =>
+          lines.slice(0, 3).map((l) => `${speaker}: ${l}`)
+        );
+        topic.transcriptSnippets.push({
+          topic: rec.topic,
+          date: rec.createTime,
+          speakers: Object.keys(speakerLines).filter((s) => !s.toLowerCase().includes("jason shearer")),
+          keyLines: allLines.slice(0, 8),
+        });
+        // Track people associated with this topic
+        for (const speaker of Object.keys(speakerLines)) {
+          if (!speaker.toLowerCase().includes("jason shearer") && !speaker.match(/^[A-Z]{2,}\d/)) {
+            addUnique(topic.people, speaker);
+          }
+        }
+      }
+
       transcriptCount++;
       console.log(
-        `  Transcript: ${rec.topic.slice(0, 50)} — ${Object.keys(speakerLines).length} speakers`
+        `  Transcript: ${rec.topic.slice(0, 50)} — ${Object.keys(speakerLines).length} speakers — topics: ${topicMatches.join(", ") || "none"}`
       );
     } catch (err) {
       // Transcript not available for this recording
@@ -299,12 +385,13 @@ async function indexWebexRecordings(index: PersonIndex): Promise<void> {
   console.log(`  ${transcriptCount} transcripts processed`);
 }
 
-async function indexNotionTasks(index: PersonIndex): Promise<void> {
+async function indexNotionTasks(index: PersonIndex, topicIndex: TopicIndex): Promise<void> {
   console.log("Indexing Notion tasks...");
 
   let hasMore = true;
   let startCursor: string | undefined;
   let total = 0;
+  const sourceCounts: Record<string, number> = {};
 
   while (hasMore) {
     const body: Record<string, unknown> = {
@@ -334,35 +421,44 @@ async function indexNotionTasks(index: PersonIndex): Promise<void> {
       const statusProp = page.properties?.Status as {
         status?: { name: string };
       };
+      const sourceProp = page.properties?.Source as {
+        select?: { name: string };
+      };
 
-      const title =
-        taskProp?.title?.[0]?.plain_text || "";
-      const notes =
-        notesProp?.rich_text?.[0]?.plain_text || "";
+      const title = taskProp?.title?.[0]?.plain_text || "";
+      const notes = notesProp?.rich_text?.[0]?.plain_text || "";
       const status = statusProp?.status?.name || "";
+      const source = sourceProp?.select?.name || "";
+      sourceCounts[source || "(none)"] = (sourceCounts[source || "(none)"] || 0) + 1;
 
-      // Extract person names from title and notes
-      // Look for common patterns: "Reply to X", "Follow up with X", "Meet with X", "X's"
       const text = `${title} ${notes}`;
+      const textLower = text.toLowerCase();
 
       // Match against existing people in the index
       for (const [key, entry] of Object.entries(index)) {
         const nameParts = entry.name.split(" ");
         const lastName = nameParts[nameParts.length - 1];
-        const firstName = nameParts[0];
 
-        // Check if the task mentions this person (full name, last name, or first name if unique enough)
         if (
-          text.toLowerCase().includes(entry.name.toLowerCase()) ||
-          (lastName.length > 3 &&
-            text.toLowerCase().includes(lastName.toLowerCase()))
+          textLower.includes(entry.name.toLowerCase()) ||
+          (lastName.length > 3 && textLower.includes(lastName.toLowerCase()))
         ) {
-          // Avoid duplicate task entries
           if (!entry.notionTasks.find((t) => t.id === page.id)) {
             entry.notionTasks.push({ id: page.id, title, status });
           }
         }
       }
+
+      // Match against topics
+      for (const pattern of TOPIC_PATTERNS) {
+        if (pattern.keywords.some((kw) => textLower.includes(kw))) {
+          const topic = getOrCreateTopic(topicIndex, pattern.name);
+          if (!topic.notionTasks.find((t) => t.id === page.id)) {
+            topic.notionTasks.push({ id: page.id, title, status, source });
+          }
+        }
+      }
+
       total++;
     }
 
@@ -370,6 +466,7 @@ async function indexNotionTasks(index: PersonIndex): Promise<void> {
     startCursor = data.next_cursor;
   }
   console.log(`  ${total} tasks scanned`);
+  console.log(`  Sources: ${JSON.stringify(sourceCounts)}`);
 }
 
 // --- Merge duplicates ---
@@ -418,19 +515,26 @@ async function main() {
   console.log("Building person index...\n");
 
   const index: PersonIndex = {};
+  const topicIndex: TopicIndex = {};
 
-  // Load existing index if available (incremental updates)
+  // Load existing indexes if available (incremental updates)
   if (fs.existsSync(INDEX_PATH)) {
     const existing = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
     Object.assign(index, existing);
-    console.log(`Loaded existing index: ${Object.keys(index).length} people\n`);
+    console.log(`Loaded existing person index: ${Object.keys(index).length} people`);
   }
+  if (fs.existsSync(TOPIC_INDEX_PATH)) {
+    const existing = JSON.parse(fs.readFileSync(TOPIC_INDEX_PATH, "utf-8"));
+    Object.assign(topicIndex, existing);
+    console.log(`Loaded existing topic index: ${Object.keys(topicIndex).length} topics`);
+  }
+  console.log();
 
   await indexWebexPeople(index);
-  await indexWebexRooms(index);
+  await indexWebexRooms(index, topicIndex);
   await indexWebexDirectMessages(index);
-  await indexWebexRecordings(index);
-  await indexNotionTasks(index);
+  await indexWebexRecordings(index, topicIndex);
+  await indexNotionTasks(index, topicIndex);
 
   // Merge duplicates
   const merged = mergeIndex(index);
@@ -478,6 +582,27 @@ async function main() {
       p.notionTasks.length;
     console.log(
       `  ${p.name.padEnd(30)} ${total} interactions (${p.meetings.length} mtg, ${p.transcriptMentions.length} trans, ${p.messageExcerpts.length} msg, ${p.notionTasks.length} tasks)`
+    );
+  }
+
+  // --- Save and summarize topic index ---
+  // Sort topics by total content
+  const sortedTopics = Object.fromEntries(
+    Object.entries(topicIndex).sort(
+      ([, a], [, b]) =>
+        b.meetings.length + b.notionTasks.length + b.transcriptSnippets.length + b.webexRooms.length -
+        (a.meetings.length + a.notionTasks.length + a.transcriptSnippets.length + a.webexRooms.length)
+    )
+  );
+
+  fs.writeFileSync(TOPIC_INDEX_PATH, JSON.stringify(sortedTopics, null, 2));
+
+  console.log(`\n=== Topic Index Summary ===`);
+  console.log(`Total topics: ${Object.keys(sortedTopics).length}`);
+  for (const [key, t] of Object.entries(sortedTopics)) {
+    const total = t.meetings.length + t.notionTasks.length + t.transcriptSnippets.length + t.webexRooms.length;
+    console.log(
+      `  ${t.name.padEnd(35)} ${total} items (${t.meetings.length} mtg, ${t.transcriptSnippets.length} trans, ${t.notionTasks.length} tasks, ${t.webexRooms.length} rooms, ${t.people.length} people)`
     );
   }
 }

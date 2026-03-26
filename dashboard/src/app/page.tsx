@@ -5,11 +5,14 @@ import { fmtDate } from "@/lib/dates";
 import TodayView from "@/components/views/TodayView";
 import WeekAheadView from "@/components/views/WeekAheadView";
 import WeekReviewView from "@/components/views/WeekReviewView";
+import TopicsView from "@/components/views/TopicsView";
+import SearchBar from "@/components/SearchBar";
 
 const TABS = [
   { id: "today", label: "Today" },
   { id: "week-ahead", label: "Week Ahead" },
   { id: "week-review", label: "Week in Review" },
+  { id: "topics", label: "Topics" },
 ] as const;
 
 type Tab = (typeof TABS)[number]["id"];
@@ -39,6 +42,7 @@ export default function Home() {
               </button>
             ))}
           </div>
+          <SearchBar />
           <span className="text-sm text-[var(--text-dim)]">
             {fmtDate(new Date())}
           </span>
@@ -55,6 +59,7 @@ export default function Home() {
         {tab === "today" && <TodayView />}
         {tab === "week-ahead" && <WeekAheadView />}
         {tab === "week-review" && <WeekReviewView />}
+        {tab === "topics" && <TopicsView />}
       </main>
     </>
   );
