@@ -184,10 +184,52 @@ function run() {
   }
 
   var sinceMs = Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000;
-  var inbox = outlook.inbox;
 
-  // Fetch recent messages — whose() date filtering is unreliable in JXA,
-  // so grab the most recent N and filter by date manually
+  // Find the inbox — Outlook for Mac organizes by account/folder
+  // Try default mailbox first, then fall back to searching accounts
+  var inbox = null;
+  try {
+    // Method 1: default inbox via mail account
+    var accounts = outlook.mailAccounts();
+    log("Found " + accounts.length + " mail account(s)");
+    for (var a = 0; a < accounts.length; a++) {
+      var acct = accounts[a];
+      log("  Account: " + acct.name() + " (" + acct.emailAddress() + ")");
+      try {
+        var folders = acct.mailFolders();
+        for (var f = 0; f < folders.length; f++) {
+          var fname = folders[f].name();
+          if (fname === "Inbox" || fname === "inbox" || fname === "INBOX") {
+            inbox = folders[f];
+            log("  -> Using inbox from: " + acct.name());
+            break;
+          }
+        }
+      } catch (e5) {
+        log("  Error reading folders: " + e5);
+      }
+      if (inbox) break;
+    }
+  } catch (e6) {
+    log("Error listing accounts: " + e6);
+  }
+
+  // Method 2: try the default inbox property
+  if (!inbox) {
+    try {
+      inbox = outlook.inbox;
+      log("Using default outlook.inbox");
+    } catch (e7) {
+      log("No inbox found: " + e7);
+      return "No inbox found";
+    }
+  }
+
+  if (!inbox) {
+    log("ERROR: Could not find inbox folder");
+    return "No inbox found";
+  }
+
   var allMessages = inbox.messages();
   var count = allMessages.length;
   log("Inbox has " + count + " messages, scanning most recent " + MAX_EMAILS + " for last " + LOOKBACK_HOURS + "h");
