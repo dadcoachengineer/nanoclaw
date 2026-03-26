@@ -7,6 +7,7 @@ import { WebexMeeting } from "@/lib/webex";
 import { NotionPage } from "@/lib/notion";
 import ReplyDrafter from "@/components/ReplyDrafter";
 import TaskDetail from "@/components/TaskDetail";
+import VoteButtons from "@/components/VoteButtons";
 
 /** Inline-editable task title. Click to edit, Enter/blur to save. Calls corrections API. */
 function EditableTitle({
@@ -123,7 +124,9 @@ export default function MeetingPrep({
   const [replyTo, setReplyTo] = useState<{ text: string; personName: string; personEmail?: string } | null>(null);
   const [selectedTask, setSelectedTask] = useState<NotionPage | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
+  const [scores, setScores] = useState<Record<string, number>>({});
 
+  const voteContext = `prep:${meeting.title}`;
   const disambigKey = `mc:disambig:${meeting.title}`;
 
   const fetchPrep = async (personKey?: string) => {
@@ -146,8 +149,12 @@ export default function MeetingPrep({
       const cached = localStorage.getItem(disambigKey) || undefined;
       if (cached) setSelectedCandidate(cached);
       try {
-        const data = await fetchPrep(cached);
+        const [data, scoresResp] = await Promise.all([
+          fetchPrep(cached),
+          fetch(`/api/relevance?context=${encodeURIComponent(voteContext)}`).then(r => r.ok ? r.json() : { scores: {} }),
+        ]);
         setPrep(data);
+        setScores(scoresResp.scores || {});
       } catch {
         setPrep(null);
       } finally {
@@ -171,6 +178,12 @@ export default function MeetingPrep({
       setLoading(false);
     }
   };
+
+  const updateScore = (itemType: string, itemId: string, newScore: number) => {
+    setScores((prev) => ({ ...prev, [`${itemType}:${itemId}`]: newScore }));
+  };
+  const getScore = (itemType: string, itemId: string) => scores[`${itemType}:${itemId}`] ?? 0;
+  const isSuppressed = (itemType: string, itemId: string) => getScore(itemType, itemId) <= -2;
 
   const hasContext = prep && (
     (prep.recentMessages?.length || 0) > 0 ||
@@ -278,15 +291,16 @@ export default function MeetingPrep({
             <Card>
               <CardHeader title="⚠️ Follow-ups You Owe" />
               <div>
-                {prep.followUpsOwed.map((t) => (
+                {prep.followUpsOwed.filter((t) => !isSuppressed("task", t.id)).map((t) => (
                   <button key={t.id} onClick={() => setSelectedTask(prepTaskToPage(t))}
-                    className="flex items-center gap-3 px-4 py-2.5 border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface2)] transition-colors cursor-pointer w-full text-left">
+                    className="group/row flex items-center gap-3 px-4 py-2.5 border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface2)] transition-colors cursor-pointer w-full text-left">
                     <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${
                       t.priority?.includes("P0") ? "bg-[rgba(248,81,73,0.15)] text-[var(--red)]" :
                       t.priority?.includes("P1") ? "bg-[rgba(219,109,40,0.15)] text-[var(--orange)]" :
                       "bg-[rgba(210,153,34,0.15)] text-[var(--yellow)]"
                     }`}>{t.priority?.split(" ")[0] || "P2"}</span>
                     <EditableTitle taskId={t.id} title={t.title} onSaved={(newTitle) => { t.title = newTitle; setPrep({ ...prep! }); }} />
+                    <VoteButtons context={voteContext} itemType="task" itemId={t.id} initialScore={getScore("task", t.id)} onVoted={(s) => updateScore("task", t.id, s)} />
                   </button>
                 ))}
               </div>
@@ -298,15 +312,16 @@ export default function MeetingPrep({
             <Card>
               <CardHeader title="Open Action Items" right={<span className="text-xs text-[var(--text-dim)]">{prep.openTasks.filter((t) => !prep.followUpsOwed?.some((f) => f.id === t.id)).length}</span>} />
               <div>
-                {prep.openTasks.filter((t) => !prep.followUpsOwed?.some((f) => f.id === t.id)).map((t) => (
+                {prep.openTasks.filter((t) => !prep.followUpsOwed?.some((f) => f.id === t.id) && !isSuppressed("task", t.id)).map((t) => (
                   <button key={t.id} onClick={() => setSelectedTask(prepTaskToPage(t))}
-                    className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface2)] transition-colors cursor-pointer w-full text-left">
+                    className="group/row flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0 hover:bg-[var(--surface2)] transition-colors cursor-pointer w-full text-left">
                     <span className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${
                       t.priority?.includes("P0") ? "bg-[rgba(248,81,73,0.15)] text-[var(--red)]" :
                       t.priority?.includes("P1") ? "bg-[rgba(219,109,40,0.15)] text-[var(--orange)]" :
                       "bg-[rgba(210,153,34,0.15)] text-[var(--yellow)]"
                     }`}>{t.priority?.split(" ")[0] || "P2"}</span>
                     <EditableTitle taskId={t.id} title={t.title} onSaved={(newTitle) => { t.title = newTitle; setPrep({ ...prep! }); }} />
+                    <VoteButtons context={voteContext} itemType="task" itemId={t.id} initialScore={getScore("task", t.id)} onVoted={(s) => updateScore("task", t.id, s)} />
                   </button>
                 ))}
               </div>
@@ -318,8 +333,8 @@ export default function MeetingPrep({
             <Card>
               <CardHeader title="Recent Conversation" />
               <div>
-                {prep.recentMessages.map((m, i) => (
-                  <div key={i} className="px-4 py-2.5 border-b border-[var(--border)] last:border-0 group/msg">
+                {prep.recentMessages.filter((_, i) => !isSuppressed("message", String(i))).map((m, i) => (
+                  <div key={i} className="group/row px-4 py-2.5 border-b border-[var(--border)] last:border-0">
                     <div className="flex items-center justify-between mb-1">
                       {prep.personEmail ? (
                         <a href={`mailto:${prep.personEmail}`} className="text-xs text-[var(--accent)] hover:underline">{prep.personName}</a>
@@ -327,13 +342,14 @@ export default function MeetingPrep({
                         <span className="text-xs text-[var(--accent)]">{prep.personName}</span>
                       )}
                       <div className="flex items-center gap-2">
+                        <VoteButtons context={voteContext} itemType="message" itemId={String(i)} initialScore={getScore("message", String(i))} onVoted={(s) => updateScore("message", String(i), s)} />
                         <button
                           onClick={() => setReplyTo({
                             text: m.text,
                             personName: prep.personName || "",
                             personEmail: prep.personEmail || undefined,
                           })}
-                          className="text-[10px] text-[var(--text-dim)] hover:text-[var(--accent)] opacity-0 group-hover/msg:opacity-100 transition-opacity"
+                          className="text-[10px] text-[var(--text-dim)] hover:text-[var(--accent)] opacity-0 group-hover/row:opacity-100 transition-opacity"
                         >
                           Draft Reply
                         </button>
@@ -352,13 +368,16 @@ export default function MeetingPrep({
             <Card>
               <CardHeader title="What They Said Recently" />
               <div>
-                {prep.transcriptHighlights.map((t, i) => (
-                  <div key={i} className="px-4 py-3 border-b border-[var(--border)] last:border-0">
+                {prep.transcriptHighlights.filter((_, i) => !isSuppressed("transcript", String(i))).map((t, i) => (
+                  <div key={i} className="group/row px-4 py-3 border-b border-[var(--border)] last:border-0">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-xs font-medium text-[var(--purple)]">{t.topic.slice(0, 50)}</span>
-                      <span className="text-xs text-[var(--text-dim)]">
-                        {new Date(t.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <VoteButtons context={voteContext} itemType="transcript" itemId={String(i)} initialScore={getScore("transcript", String(i))} onVoted={(s) => updateScore("transcript", String(i), s)} />
+                        <span className="text-xs text-[var(--text-dim)]">
+                          {new Date(t.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                        </span>
+                      </div>
                     </div>
                     {t.snippets.map((s, j) => (
                       <div key={j} className="text-sm text-[var(--text)] bg-[var(--surface2)] rounded px-3 py-1.5 mb-1 italic">
@@ -394,12 +413,15 @@ export default function MeetingPrep({
             <Card>
               <CardHeader title="Related Topics" />
               <div className="px-4 py-3">
-                {prep.matchedTopics.map((t, i) => (
-                  <div key={i} className="mb-2 last:mb-0">
-                    <span className="text-sm font-medium text-[var(--accent)]">{t.name}</span>
-                    <span className="text-xs text-[var(--text-dim)] ml-2">
-                      {t.meetingCount} meetings, {t.taskCount} tasks, {t.people.length} people
-                    </span>
+                {prep.matchedTopics.filter((t) => !isSuppressed("topic", t.name)).map((t, i) => (
+                  <div key={i} className="group/row flex items-center justify-between mb-2 last:mb-0">
+                    <div>
+                      <span className="text-sm font-medium text-[var(--accent)]">{t.name}</span>
+                      <span className="text-xs text-[var(--text-dim)] ml-2">
+                        {t.meetingCount} meetings, {t.taskCount} tasks, {t.people.length} people
+                      </span>
+                    </div>
+                    <VoteButtons context={voteContext} itemType="topic" itemId={t.name} initialScore={getScore("topic", t.name)} onVoted={(s) => updateScore("topic", t.name, s)} />
                   </div>
                 ))}
               </div>
