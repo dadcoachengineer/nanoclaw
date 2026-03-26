@@ -2,7 +2,12 @@
  * Build vector embeddings for semantic search across all data sources.
  * Uses Ollama nomic-embed-text for local embeddings and SQLite-vec for storage.
  *
- * Chunks and embeds: transcript segments, Notion tasks, Webex messages.
+ * Sources:
+ * - Full Webex meeting transcripts (chunked by speaker turns with overlap)
+ * - Notion tasks
+ * - Webex messages
+ * - Person index context
+ *
  * Stores in store/vectors.db
  *
  * Usage: npx tsx scripts/build-vector-index.ts
@@ -16,14 +21,20 @@ const STORE_DIR = path.join(process.cwd(), "store");
 const VECTOR_DB_PATH = path.join(STORE_DIR, "vectors.db");
 const PERSON_INDEX_PATH = path.join(STORE_DIR, "person-index.json");
 const TOPIC_INDEX_PATH = path.join(STORE_DIR, "topic-index.json");
+const WEBEX_OAUTH_PATH = path.join(STORE_DIR, "webex-oauth.json");
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const EMBED_MODEL = "nomic-embed-text";
 const DIMENSIONS = 768;
 const BATCH_SIZE = 20;
 
+// Chunking config for transcripts
+const CHUNK_TURNS = 6; // group N speaker turns per chunk
+const CHUNK_OVERLAP = 2; // overlap N turns between chunks
+const MAX_CHUNK_CHARS = 1500;
+
 interface Chunk {
   id: string;
-  source: string; // "transcript", "notion_task", "webex_message"
+  source: string;
   text: string;
   metadata: Record<string, string>;
 }
@@ -38,6 +49,111 @@ async function embed(texts: string[]): Promise<number[][]> {
   });
   const data = (await resp.json()) as { embeddings: number[][] };
   return data.embeddings;
+}
+
+// --- Webex helpers ---
+
+function getWebexToken(): string {
+  const config = JSON.parse(fs.readFileSync(WEBEX_OAUTH_PATH, "utf-8"));
+  return config.access_token;
+}
+
+async function webexGet(path: string): Promise<unknown> {
+  const resp = await fetch(`https://webexapis.com/v1${path}`, {
+    headers: { Authorization: `Bearer ${getWebexToken()}` },
+  });
+  return resp.json();
+}
+
+// --- VTT parser ---
+
+interface TranscriptTurn {
+  speaker: string;
+  text: string;
+  timestamp: string;
+}
+
+function parseVTT(vtt: string): TranscriptTurn[] {
+  const turns: TranscriptTurn[] = [];
+  const lines = vtt.split("\n");
+  let currentSpeaker = "";
+  let currentTimestamp = "";
+  let currentText = "";
+
+  const speakerRegex = /^\d+\s+"([^"]+)"\s+\(\d+\)\s*$/;
+  const timeRegex = /^(\d{2}:\d{2}:\d{2}\.\d{3})\s+-->/;
+
+  for (const line of lines) {
+    const speakerMatch = line.match(speakerRegex);
+    if (speakerMatch) {
+      // Save previous turn
+      if (currentSpeaker && currentText.trim()) {
+        turns.push({ speaker: currentSpeaker, text: currentText.trim(), timestamp: currentTimestamp });
+      }
+      currentSpeaker = speakerMatch[1];
+      currentText = "";
+      continue;
+    }
+
+    const timeMatch = line.match(timeRegex);
+    if (timeMatch) {
+      currentTimestamp = timeMatch[1];
+      continue;
+    }
+
+    if (line.trim() && line !== "WEBVTT" && !line.match(/^\d+$/)) {
+      currentText += " " + line.trim();
+    }
+  }
+
+  // Last turn
+  if (currentSpeaker && currentText.trim()) {
+    turns.push({ speaker: currentSpeaker, text: currentText.trim(), timestamp: currentTimestamp });
+  }
+
+  return turns;
+}
+
+function chunkTranscript(
+  turns: TranscriptTurn[],
+  recordingId: string,
+  topic: string,
+  date: string
+): Chunk[] {
+  const chunks: Chunk[] = [];
+
+  for (let i = 0; i < turns.length; i += CHUNK_TURNS - CHUNK_OVERLAP) {
+    const window = turns.slice(i, i + CHUNK_TURNS);
+    if (window.length === 0) break;
+
+    let text = window
+      .map((t) => `${t.speaker}: ${t.text}`)
+      .join("\n");
+
+    // Truncate if too long
+    if (text.length > MAX_CHUNK_CHARS) {
+      text = text.slice(0, MAX_CHUNK_CHARS) + "...";
+    }
+
+    const speakers = [...new Set(window.map((t) => t.speaker))];
+    const id = `ftrans:${recordingId}:${i}`;
+
+    chunks.push({
+      id,
+      source: "transcript",
+      text: `Meeting "${topic}" (${date.slice(0, 10)}):\n${text}`,
+      metadata: {
+        recordingId,
+        meeting: topic,
+        date,
+        speakers: speakers.join(", "),
+        startTimestamp: window[0].timestamp,
+        turnIndex: String(i),
+      },
+    });
+  }
+
+  return chunks;
 }
 
 // --- Database setup ---
@@ -58,67 +174,142 @@ function initDb(): Database.Database {
       id TEXT PRIMARY KEY,
       embedding float[${DIMENSIONS}]
     );
+    CREATE TABLE IF NOT EXISTS index_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 
   return db;
 }
 
+function getState(db: Database.Database, key: string): string | null {
+  const row = db.prepare("SELECT value FROM index_state WHERE key = ?").get(key) as { value: string } | undefined;
+  return row?.value || null;
+}
+
+function setState(db: Database.Database, key: string, value: string): void {
+  db.prepare("INSERT OR REPLACE INTO index_state (key, value) VALUES (?, ?)").run(key, value);
+}
+
 // --- Chunk generators ---
+
+async function chunksFromFullTranscripts(db: Database.Database): Promise<Chunk[]> {
+  console.log("Downloading full transcripts from Webex...");
+
+  const processedIds = new Set(
+    (getState(db, "processed_recordings") || "").split(",").filter(Boolean)
+  );
+
+  // Fetch all recordings going back 6 months
+  const allRecordings: { id: string; topic: string; createTime: string }[] = [];
+  const now = new Date();
+
+  for (let monthsBack = 0; monthsBack <= 6; monthsBack++) {
+    const from = new Date(now);
+    from.setMonth(from.getMonth() - monthsBack - 1);
+    from.setDate(1);
+    const to = new Date(now);
+    to.setMonth(to.getMonth() - monthsBack);
+    to.setDate(0);
+    if (to > now) to.setTime(now.getTime());
+
+    try {
+      const data = (await webexGet(
+        `/recordings?from=${from.toISOString()}&to=${to.toISOString()}&max=50`
+      )) as { items?: typeof allRecordings };
+      allRecordings.push(...(data.items || []));
+    } catch {}
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  // Current month
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  try {
+    const data = (await webexGet(
+      `/recordings?from=${monthStart.toISOString()}&to=${now.toISOString()}&max=50`
+    )) as { items?: typeof allRecordings };
+    allRecordings.push(...(data.items || []));
+  } catch {}
+
+  // Dedup
+  const seen = new Set<string>();
+  const unique = allRecordings.filter((r) => {
+    if (seen.has(r.id)) return false;
+    seen.add(r.id);
+    return true;
+  });
+
+  const newRecordings = unique.filter((r) => !processedIds.has(r.id));
+  console.log(`  ${unique.length} recordings total, ${newRecordings.length} new to process`);
+
+  const allChunks: Chunk[] = [];
+  const newlyProcessed: string[] = [];
+
+  for (const rec of newRecordings) {
+    try {
+      const detail = (await webexGet(`/recordings/${rec.id}`)) as {
+        temporaryDirectDownloadLinks?: { transcriptDownloadLink?: string };
+      };
+      const url = detail.temporaryDirectDownloadLinks?.transcriptDownloadLink;
+      if (!url) continue;
+
+      const resp = await fetch(url);
+      const vtt = await resp.text();
+      const turns = parseVTT(vtt);
+
+      if (turns.length === 0) continue;
+
+      const chunks = chunkTranscript(turns, rec.id, rec.topic, rec.createTime);
+      allChunks.push(...chunks);
+      newlyProcessed.push(rec.id);
+
+      console.log(
+        `  ${rec.topic.slice(0, 50)} — ${turns.length} turns → ${chunks.length} chunks`
+      );
+    } catch {
+      // Transcript not available
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  // Save processed IDs
+  if (newlyProcessed.length > 0) {
+    const all = [...processedIds, ...newlyProcessed];
+    setState(db, "processed_recordings", all.join(","));
+  }
+
+  return allChunks;
+}
 
 function chunksFromPersonIndex(): Chunk[] {
   const chunks: Chunk[] = [];
   if (!fs.existsSync(PERSON_INDEX_PATH)) return chunks;
-
   const index = JSON.parse(fs.readFileSync(PERSON_INDEX_PATH, "utf-8"));
 
   for (const [key, person] of Object.entries(index) as [string, any][]) {
-    // Transcript snippets — each is a chunk
-    for (const t of person.transcriptMentions || []) {
-      for (const snippet of t.snippets || []) {
-        const id = `trans:${t.recordingId}:${person.name}:${snippet.slice(0, 20)}`;
-        chunks.push({
-          id,
-          source: "transcript",
-          text: `${person.name} said in meeting "${t.topic}": ${snippet}`,
-          metadata: {
-            person: person.name,
-            meeting: t.topic,
-            date: t.date,
-            recordingId: t.recordingId,
-          },
-        });
-      }
-    }
-
-    // Messages — each is a chunk
+    // Messages
     for (const m of (person.messageExcerpts || []).slice(0, 10)) {
       if (!m.text || m.text.length < 10) continue;
       const id = `msg:${person.name}:${m.date}`;
+      if (chunks.find((c) => c.id === id)) continue;
       chunks.push({
         id,
         source: "webex_message",
         text: `Webex message with ${person.name}: ${m.text}`,
-        metadata: {
-          person: person.name,
-          date: m.date,
-          room: m.roomTitle,
-        },
+        metadata: { person: person.name, date: m.date, room: m.roomTitle },
       });
     }
 
-    // Notion tasks mentioning this person
+    // Notion tasks
     for (const t of person.notionTasks || []) {
       const id = `task:${t.id}`;
-      if (chunks.find((c) => c.id === id)) continue; // dedup
+      if (chunks.find((c) => c.id === id)) continue;
       chunks.push({
         id,
         source: "notion_task",
         text: `Task: ${t.title} (Status: ${t.status})`,
-        metadata: {
-          taskId: t.id,
-          status: t.status,
-          person: person.name,
-        },
+        metadata: { taskId: t.id, status: t.status, person: person.name },
       });
     }
   }
@@ -129,30 +320,9 @@ function chunksFromPersonIndex(): Chunk[] {
 function chunksFromTopicIndex(): Chunk[] {
   const chunks: Chunk[] = [];
   if (!fs.existsSync(TOPIC_INDEX_PATH)) return chunks;
-
   const index = JSON.parse(fs.readFileSync(TOPIC_INDEX_PATH, "utf-8"));
 
   for (const [key, topic] of Object.entries(index) as [string, any][]) {
-    // Transcript key lines
-    for (const t of topic.transcriptSnippets || []) {
-      for (const line of (t.keyLines || []).slice(0, 5)) {
-        const id = `topic:${topic.name}:${t.date}:${line.slice(0, 20)}`;
-        if (chunks.find((c) => c.id === id)) continue;
-        chunks.push({
-          id,
-          source: "transcript",
-          text: `Meeting "${t.topic}" about ${topic.name}: ${line}`,
-          metadata: {
-            topic: topic.name,
-            meeting: t.topic,
-            date: t.date,
-            speakers: (t.speakers || []).join(", "),
-          },
-        });
-      }
-    }
-
-    // Topic Notion tasks (dedup with person chunks)
     for (const t of (topic.notionTasks || []).slice(0, 20)) {
       const id = `task:${t.id}`;
       if (chunks.find((c) => c.id === id)) continue;
@@ -160,12 +330,7 @@ function chunksFromTopicIndex(): Chunk[] {
         id,
         source: "notion_task",
         text: `Task about ${topic.name}: ${t.title} (Status: ${t.status}, Source: ${t.source})`,
-        metadata: {
-          taskId: t.id,
-          topic: topic.name,
-          status: t.status,
-          source: t.source,
-        },
+        metadata: { taskId: t.id, topic: topic.name, status: t.status, source: t.source },
       });
     }
   }
@@ -180,20 +345,19 @@ async function main() {
 
   const db = initDb();
 
-  // Get existing chunk IDs to skip
   const existingIds = new Set(
-    (db.prepare("SELECT id FROM chunks").all() as { id: string }[]).map(
-      (r) => r.id
-    )
+    (db.prepare("SELECT id FROM chunks").all() as { id: string }[]).map((r) => r.id)
   );
   console.log(`Existing chunks: ${existingIds.size}`);
 
-  // Generate chunks from all sources
+  // Full transcript chunks (the big new addition)
+  const transcriptChunks = await chunksFromFullTranscripts(db);
   const personChunks = chunksFromPersonIndex();
   const topicChunks = chunksFromTopicIndex();
-  const allChunks = [...personChunks, ...topicChunks];
 
-  // Dedup by ID
+  const allChunks = [...transcriptChunks, ...personChunks, ...topicChunks];
+
+  // Dedup
   const uniqueChunks = new Map<string, Chunk>();
   for (const c of allChunks) {
     if (!existingIds.has(c.id)) {
@@ -203,7 +367,7 @@ async function main() {
 
   const newChunks = Array.from(uniqueChunks.values());
   console.log(
-    `New chunks to embed: ${newChunks.length} (${personChunks.length} from people, ${topicChunks.length} from topics, ${allChunks.length - uniqueChunks.size} dupes skipped)`
+    `\nNew chunks to embed: ${newChunks.length} (${transcriptChunks.length} transcript, ${personChunks.length} person, ${topicChunks.length} topic)`
   );
 
   if (newChunks.length === 0) {
@@ -230,28 +394,21 @@ async function main() {
 
       const tx = db.transaction(() => {
         for (let j = 0; j < batch.length; j++) {
-          const chunk = batch[j];
-          const vec = embeddings[j];
-
           insertChunk.run(
-            chunk.id,
-            chunk.source,
-            chunk.text,
-            JSON.stringify(chunk.metadata),
+            batch[j].id,
+            batch[j].source,
+            batch[j].text,
+            JSON.stringify(batch[j].metadata),
             new Date().toISOString()
           );
-
-          // sqlite-vec expects a Float32Array as a blob
-          insertVec.run(chunk.id, new Float32Array(vec));
+          insertVec.run(batch[j].id, new Float32Array(embeddings[j]));
           embedded++;
         }
       });
       tx();
 
       if ((i + BATCH_SIZE) % 100 === 0 || i + BATCH_SIZE >= newChunks.length) {
-        console.log(
-          `  Embedded ${Math.min(i + BATCH_SIZE, newChunks.length)}/${newChunks.length}`
-        );
+        console.log(`  Embedded ${Math.min(i + BATCH_SIZE, newChunks.length)}/${newChunks.length}`);
       }
     } catch (err) {
       console.error(`  Batch error at ${i}:`, err);
@@ -259,14 +416,8 @@ async function main() {
   }
 
   // Summary
-  const totalChunks = (
-    db.prepare("SELECT COUNT(*) as n FROM chunks").get() as { n: number }
-  ).n;
-  const sources = db
-    .prepare(
-      "SELECT source, COUNT(*) as n FROM chunks GROUP BY source ORDER BY n DESC"
-    )
-    .all() as { source: string; n: number }[];
+  const totalChunks = (db.prepare("SELECT COUNT(*) as n FROM chunks").get() as { n: number }).n;
+  const sources = db.prepare("SELECT source, COUNT(*) as n FROM chunks GROUP BY source ORDER BY n DESC").all() as { source: string; n: number }[];
 
   console.log(`\n=== Vector Index Summary ===`);
   console.log(`Total chunks: ${totalChunks}`);
