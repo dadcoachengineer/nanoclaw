@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control — System</title>
+<style>
+  :root { --bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#e6edf3;--text-dim:#8b949e;--text-bright:#f0f6fc;--accent:#58a6ff;--green:#3fb950;--yellow:#d29922;--red:#f85149;--purple:#bc8cff; }
+  * { margin:0;padding:0;box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.5;padding:24px;max-width:1400px;margin:0 auto; }
+  h1 { font-size:24px;font-weight:600;color:var(--text-bright);margin-bottom:4px; }
+  h2 { font-size:16px;font-weight:600;color:var(--text-bright);margin-bottom:12px; }
+  .subtitle { color:var(--text-dim);font-size:14px;margin-bottom:24px; }
+  .grid { display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px; }
+  .card { background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px; }
+  .stat-value { font-size:32px;font-weight:700;color:var(--text-bright); }
+  .stat-label { font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px; }
+  .section { margin-bottom:32px; }
+  table { width:100%;border-collapse:collapse; }
+  th { text-align:left;font-size:12px;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;padding:8px 12px;border-bottom:1px solid var(--border); }
+  td { padding:10px 12px;border-bottom:1px solid var(--border);font-size:14px;vertical-align:top; }
+  tr:hover td { background:rgba(88,166,255,.04); }
+  .badge { display:inline-block;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:500; }
+  .badge-active { background:rgba(63,185,80,.15);color:var(--green); }
+  .badge-paused { background:rgba(210,153,34,.15);color:var(--yellow); }
+  .badge-success { background:rgba(63,185,80,.15);color:var(--green); }
+  .badge-error { background:rgba(248,81,73,.15);color:var(--red); }
+  .result-text { max-width:600px;white-space:pre-wrap;word-break:break-word;font-size:13px;color:var(--text-dim); }
+  .time { color:var(--text-dim);font-size:13px;white-space:nowrap; }
+  .next-run { color:var(--accent); }
+  .container-bar { display:flex;align-items:center;gap:8px;padding:8px 0; }
+  .pulse { width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.4} }
+  .empty { color:var(--text-dim);font-style:italic;padding:24px;text-align:center; }
+  .back-link { font-size:13px;color:var(--text-dim);margin-bottom:16px;display:inline-block; }
+  .back-link:hover { color:var(--accent); }
+</style>
+</head>
+<body>
+<a class="back-link" href="/">&larr; Back to Command Center</a>
+<h1>System Diagnostics</h1>
+<div class="subtitle" id="subtitle">Loading...</div>
+<div class="grid" id="stats"></div>
+<div class="section" id="containers-section" style="display:none"><h2>Active Containers</h2><div id="containers"></div></div>
+<div class="section"><h2>Scheduled Agents</h2><div class="card" style="overflow-x:auto"><table><thead><tr><th>Agent</th><th>Schedule</th><th>Status</th><th>Last Run</th><th>Next Run</th><th>Last Result</th></tr></thead><tbody id="tasks"></tbody></table></div></div>
+<div class="section"><h2>Recent Activity</h2><div class="card" style="overflow-x:auto"><table><thead><tr><th>Agent</th><th>Time</th><th>Duration</th><th>Status</th><th>Result</th></tr></thead><tbody id="runs"></tbody></table></div></div>
+<script>
+function timeAgo(iso){if(!iso)return'-';const s=Math.floor((Date.now()-new Date(iso).getTime())/1000);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
+function timeUntil(iso){if(!iso)return'-';const s=Math.floor((new Date(iso).getTime()-Date.now())/1000);if(s<0)return'overdue';if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d'}
+function truncate(t,l){if(!t)return'';const f=t.split('\n')[0];return f.length>l?f.slice(0,l)+'...':f}
+function badge(t,c){return'<span class="badge badge-'+c+'">'+t+'</span>'}
+function esc(s){return s?s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''}
+function statCard(v,l,c){const s=c?' style="color:'+c+'"':'';return'<div class="card"><div class="stat-value"'+s+'>'+v+'</div><div class="stat-label">'+l+'</div></div>'}
+async function refresh(){
+  try{
+    const[stats,tasks,runs]=await Promise.all([fetch('/api/stats').then(r=>r.json()),fetch('/api/tasks?status=active').then(r=>r.json()),fetch('/api/runs/recent?limit=30').then(r=>r.json())]);
+    document.getElementById('subtitle').textContent=stats.tasks.active+' agents | '+stats.runs.today+' runs today | '+stats.runs.error+' errors';
+    document.getElementById('stats').innerHTML=[statCard(stats.tasks.active,'Active Agents'),statCard(stats.runs.today,'Runs Today'),statCard(stats.runs.success,'Succeeded','var(--green)'),statCard(stats.runs.error,'Failed',stats.runs.error>0?'var(--red)':'var(--text-dim)'),statCard(stats.containers?.active||0,'Containers','var(--purple)')].join('');
+    const cs=stats.containers;if(cs&&cs.groups&&cs.groups.length>0){document.getElementById('containers-section').style.display='';document.getElementById('containers').innerHTML=cs.groups.map(g=>'<div class="container-bar"><div class="pulse"></div><span>'+esc(g.containerName||g.jid)+(g.taskId?' — '+esc(g.taskId):'')+'</span></div>').join('')}else{document.getElementById('containers-section').style.display='none'}
+    const st=tasks.sort((a,b)=>(a.next_run&&b.next_run)?a.next_run.localeCompare(b.next_run):(a.next_run?-1:1));
+    document.getElementById('tasks').innerHTML=st.map(t=>'<tr><td><strong>'+esc(t.id)+'</strong></td><td class="time">'+esc(t.schedule_value)+'</td><td>'+badge(t.status,t.status)+'</td><td class="time">'+timeAgo(t.last_run)+'</td><td class="time next-run">'+timeUntil(t.next_run)+'</td><td class="result-text">'+esc(truncate(t.last_result,120))+'</td></tr>').join('')||'<tr><td colspan="6" class="empty">No active agents</td></tr>';
+    document.getElementById('runs').innerHTML=runs.map(r=>'<tr><td><strong>'+esc(r.task_id)+'</strong></td><td class="time">'+timeAgo(r.run_at)+'</td><td class="time">'+(r.duration_ms?Math.round(r.duration_ms/1000)+'s':'-')+'</td><td>'+badge(r.status,r.status)+'</td><td class="result-text">'+esc(truncate(r.result||r.error,200))+'</td></tr>').join('')||'<tr><td colspan="5" class="empty">No recent runs</td></tr>';
+  }catch(e){document.getElementById('subtitle').textContent='Error: '+e.message}
+  setTimeout(refresh,30000);
+}
+refresh();
+</script>
+</body>
+</html>

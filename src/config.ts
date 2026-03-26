@@ -83,3 +83,10 @@ function resolveConfigTimezone(): string {
   return 'UTC';
 }
 export const TIMEZONE = resolveConfigTimezone();
+
+export const DASHBOARD_PORT = parseInt(
+  process.env.DASHBOARD_PORT || '3939',
+  10,
+);
+export const DASHBOARD_ENABLED =
+  (process.env.DASHBOARD_ENABLED || 'true') !== 'false';

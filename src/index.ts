@@ -59,6 +59,8 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+import { DASHBOARD_ENABLED } from './config.js';
+import { startDashboard, stopDashboard } from './dashboard.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -510,6 +512,7 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    stopDashboard();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
@@ -618,6 +621,15 @@ async function main(): Promise<void> {
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);
+  }
+
+  // Start dashboard
+  if (DASHBOARD_ENABLED) {
+    startDashboard({
+      registeredGroups: () => registeredGroups,
+      queue,
+      startedAt: new Date(),
+    });
   }
 
   // Start subsystems (independently of connection handler)

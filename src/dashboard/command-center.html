@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mission Control</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --surface2: #1c2129; --border: #30363d;
+    --text: #e6edf3; --text-dim: #8b949e; --text-bright: #f0f6fc;
+    --accent: #58a6ff; --green: #3fb950; --yellow: #d29922; --red: #f85149;
+    --orange: #db6d28; --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* Header */
+  .header {
+    padding: 20px 32px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .header h1 { font-size: 20px; font-weight: 600; color: var(--text-bright); }
+  .header-right { display: flex; align-items: center; gap: 16px; }
+  .header-right .date { color: var(--text-dim); font-size: 14px; }
+  .tab-bar { display: flex; gap: 2px; }
+  .tab {
+    padding: 6px 16px; border-radius: 6px; font-size: 13px; cursor: pointer;
+    background: transparent; border: 1px solid transparent; color: var(--text-dim);
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--surface); border-color: var(--border); color: var(--text-bright); }
+
+  /* Layout */
+  .container { max-width: 1400px; margin: 0 auto; padding: 24px 32px; }
+  .two-col { display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
+  @media (max-width: 1024px) { .two-col { grid-template-columns: 1fr; } }
+
+  /* Cards */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; }
+  .card-header {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .card-header h2 { font-size: 14px; font-weight: 600; color: var(--text-bright); }
+  .card-body { padding: 0; }
+  .section { margin-bottom: 24px; }
+
+  /* Priority badges */
+  .p0 { color: var(--red); font-weight: 600; }
+  .p1 { color: var(--orange); font-weight: 600; }
+  .p2 { color: var(--yellow); }
+  .p3 { color: var(--text-dim); }
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 11px; font-weight: 500;
+  }
+  .badge-p0 { background: rgba(248,81,73,0.15); color: var(--red); }
+  .badge-p1 { background: rgba(219,109,40,0.15); color: var(--orange); }
+  .badge-p2 { background: rgba(210,153,34,0.15); color: var(--yellow); }
+  .badge-p3 { background: rgba(139,148,158,0.15); color: var(--text-dim); }
+  .badge-done { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-source { background: rgba(88,166,255,0.08); color: var(--accent); }
+  .badge-context { background: rgba(188,140,255,0.12); color: var(--purple); }
+
+  /* Task list */
+  .task-item {
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: flex-start; gap: 10px;
+  }
+  .task-item:last-child { border-bottom: none; }
+  .task-item:hover { background: rgba(88,166,255,0.03); }
+  .task-check { margin-top: 3px; cursor: pointer; accent-color: var(--green); }
+  .task-content { flex: 1; min-width: 0; }
+  .task-title { font-size: 14px; color: var(--text-bright); }
+  .task-meta { font-size: 12px; color: var(--text-dim); margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .task-notes { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+
+  /* Calendar */
+  .cal-item {
+    padding: 8px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .cal-item:last-child { border-bottom: none; }
+  .cal-time { font-size: 13px; color: var(--text-dim); width: 110px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .cal-title { font-size: 14px; flex: 1; }
+  .cal-title.missed { color: var(--text-dim); text-decoration: line-through; }
+  .cal-title.active { color: var(--green); font-weight: 500; }
+  .cal-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .cal-dot.webex { background: var(--accent); }
+  .cal-dot.gcal { background: var(--green); }
+  .cal-host { font-size: 11px; color: var(--text-dim); }
+
+  /* Stats row */
+  .stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  .stat-val { font-size: 28px; font-weight: 700; color: var(--text-bright); }
+  .stat-lbl { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+
+  /* View sections */
+  .view { display: none; }
+  .view.active { display: block; }
+
+  /* Summary cards for weekly views */
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 24px; }
+  .summary-item { padding: 16px; }
+  .summary-item h3 { font-size: 13px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+  .summary-list { list-style: none; }
+  .summary-list li { padding: 4px 0; font-size: 14px; border-bottom: 1px solid var(--border); }
+  .summary-list li:last-child { border-bottom: none; }
+
+  /* Loading */
+  .loading { text-align: center; padding: 40px; color: var(--text-dim); }
+  .error-msg { color: var(--red); padding: 16px; text-align: center; }
+
+  /* Group headers in task list */
+  .group-header { padding: 8px 16px; font-size: 12px; font-weight: 600; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: 0.5px; background: var(--bg); border-bottom: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Mission Control</h1>
+  <div class="header-right">
+    <div class="tab-bar">
+      <div class="tab active" data-view="today">Today</div>
+      <div class="tab" data-view="week-ahead">Week Ahead</div>
+      <div class="tab" data-view="week-review">Week in Review</div>
+    </div>
+    <div class="date" id="header-date"></div>
+    <a href="/system" style="font-size:12px; color:var(--text-dim)">System</a>
+  </div>
+</div>
+
+<!-- TODAY VIEW -->
+<div class="view active" id="view-today">
+<div class="container">
+  <div class="stats-row" id="today-stats"></div>
+  <div class="two-col">
+    <div>
+      <div class="section">
+        <div class="card">
+          <div class="card-header"><h2>Action Items</h2><span class="badge badge-source" id="task-count">-</span></div>
+          <div class="card-body" id="today-tasks"><div class="loading">Loading tasks...</div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="section">
+        <div class="card">
+          <div class="card-header"><h2>Today's Calendar</h2></div>
+          <div class="card-body" id="today-calendar"><div class="loading">Loading calendar...</div></div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="card">
+          <div class="card-header"><h2>Recent Agent Activity</h2></div>
+          <div class="card-body" id="today-activity"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- WEEK AHEAD VIEW -->
+<div class="view" id="view-week-ahead">
+<div class="container">
+  <div class="stats-row" id="week-ahead-stats"></div>
+  <div class="two-col">
+    <div>
+      <div class="section" id="week-ahead-days"></div>
+    </div>
+    <div>
+      <div class="section">
+        <div class="card">
+          <div class="card-header"><h2>Prep Needed</h2></div>
+          <div class="card-body" id="week-ahead-prep"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="card">
+          <div class="card-header"><h2>Carryover Tasks</h2></div>
+          <div class="card-body" id="week-ahead-carryover"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- WEEK IN REVIEW VIEW -->
+<div class="view" id="view-week-review">
+<div class="container">
+  <div class="stats-row" id="week-review-stats"></div>
+  <div class="summary-grid" id="week-review-summary"></div>
+  <div class="two-col">
+    <div>
+      <div class="section">
+        <div class="card">
+          <div class="card-header"><h2>Completed This Week</h2></div>
+          <div class="card-body" id="week-review-done"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="section">
+        <div class="card">
+          <div class="card-header"><h2>Still Open</h2></div>
+          <div class="card-body" id="week-review-open"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+      <div class="section">
+        <div class="card">
+          <div class="card-header"><h2>Meetings Attended vs Missed</h2></div>
+          <div class="card-body" id="week-review-meetings"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const NOTION_DB = '5b4e1d2d7259496ea237ef0525c3ce78';
+const DAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+const SHORT_DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+// --- Utility ---
+function esc(s) { return s ? s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+function fmt12(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  let h = d.getHours(), m = d.getMinutes(), ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return h + ':' + String(m).padStart(2,'0') + ' ' + ampm;
+}
+function fmtDate(d) {
+  return DAYS[d.getDay()] + ', ' + d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+}
+function isoDate(d) { return d.toISOString().slice(0,10); }
+function startOfWeek(d, offset=1) { // Monday=1
+  const r = new Date(d); r.setDate(r.getDate() - ((r.getDay() + 6) % 7)); r.setHours(0,0,0,0); return r;
+}
+function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
+function timeAgo(iso) {
+  if (!iso) return '';
+  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return s + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+}
+
+// --- API ---
+async function fetchJson(url) { return (await fetch(url)).json(); }
+
+async function fetchNotionTasks(filter) {
+  const r = await fetch('/api/notion/query', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ database_id: NOTION_DB, filter, sorts: [
+      { property: 'Priority', select: { direction: 'ascending' } }
+    ] })
+  });
+  return r.json();
+}
+
+async function fetchWebexMeetings(from, to) {
+  return fetchJson('/api/webex/meetings?from=' + from + '&to=' + to);
+}
+
+// --- Priority helpers ---
+function priorityClass(p) {
+  if (!p) return 'p2';
+  if (p.includes('P0')) return 'p0';
+  if (p.includes('P1')) return 'p1';
+  if (p.includes('P2')) return 'p2';
+  return 'p3';
+}
+function priorityBadge(p) {
+  if (!p) return '';
+  const cls = priorityClass(p);
+  const label = p.split(' ')[0];
+  return '<span class="badge badge-' + cls + '">' + esc(label) + '</span>';
+}
+
+// --- Notion property helpers ---
+function prop(page, name) {
+  const p = page.properties?.[name];
+  if (!p) return null;
+  if (p.type === 'title') return p.title?.map(t => t.plain_text).join('') || '';
+  if (p.type === 'select') return p.select?.name || '';
+  if (p.type === 'rich_text') return p.rich_text?.map(t => t.plain_text).join('') || '';
+  if (p.type === 'date') return p.date?.start || '';
+  if (p.type === 'multi_select') return p.multi_select?.map(s => s.name) || [];
+  return null;
+}
+
+// --- Render task item ---
+function renderTask(page) {
+  const title = prop(page, 'Name') || prop(page, 'Task') || 'Untitled';
+  const priority = prop(page, 'Priority');
+  const status = prop(page, 'Status');
+  const context = prop(page, 'Context');
+  const source = prop(page, 'Source');
+  const project = prop(page, 'Project');
+  const notes = prop(page, 'Notes');
+  const delegated = prop(page, 'Delegated To');
+
+  return '<div class="task-item">' +
+    '<div class="task-content">' +
+      '<div class="task-title">' + esc(title) + '</div>' +
+      '<div class="task-meta">' +
+        (priority ? priorityBadge(priority) : '') +
+        (context ? '<span class="badge badge-context">' + esc(context) + '</span>' : '') +
+        (source ? '<span class="badge badge-source">' + esc(source) + '</span>' : '') +
+        (project ? '<span style="color:var(--text-dim)">' + esc(project) + '</span>' : '') +
+        (delegated ? '<span style="color:var(--purple)">' + esc(delegated) + '</span>' : '') +
+      '</div>' +
+      (notes ? '<div class="task-notes">' + esc(notes.slice(0, 150)) + (notes.length > 150 ? '...' : '') + '</div>' : '') +
+    '</div>' +
+  '</div>';
+}
+
+// --- Render calendar item ---
+function renderMeeting(m) {
+  const start = fmt12(m.start);
+  const end = fmt12(m.end);
+  const isActive = m.state === 'inProgress';
+  const isMissed = m.state === 'missed';
+  const cls = isActive ? 'active' : (isMissed ? 'missed' : '');
+  return '<div class="cal-item">' +
+    '<div class="cal-dot webex"></div>' +
+    '<div class="cal-time">' + start + ' - ' + end + '</div>' +
+    '<div class="cal-title ' + cls + '">' + esc(m.title) +
+      (m.hostDisplayName && m.hostEmail !== 'jasheare@cisco.com' ? '<div class="cal-host">' + esc(m.hostDisplayName) + '</div>' : '') +
+    '</div>' +
+  '</div>';
+}
+
+// --- TODAY VIEW ---
+async function loadToday() {
+  const now = new Date();
+  const todayStr = isoDate(now);
+  const tomorrowStr = isoDate(addDays(now, 1));
+
+  const [notionActive, meetings, runs] = await Promise.all([
+    fetchNotionTasks({
+      and: [
+        { property: 'Status', select: { does_not_equal: 'Done' } },
+        { or: [
+          { property: 'Priority', select: { equals: 'P0 \\u2014 Today' } },
+          { property: 'Priority', select: { equals: 'P1 \\u2014 This Week' } },
+          { property: 'Priority', select: { equals: 'P2 \\u2014 This Month' } },
+        ]}
+      ]
+    }),
+    fetchWebexMeetings(todayStr + 'T00:00:00Z', todayStr + 'T23:59:59Z'),
+    fetchJson('/api/runs/recent?limit=10'),
+  ]);
+
+  const tasks = notionActive.results || [];
+  const p0 = tasks.filter(t => (prop(t,'Priority')||'').includes('P0'));
+  const p1 = tasks.filter(t => (prop(t,'Priority')||'').includes('P1'));
+  const p2 = tasks.filter(t => (prop(t,'Priority')||'').includes('P2'));
+  const mtgs = meetings.items || [];
+
+  // Stats
+  document.getElementById('today-stats').innerHTML =
+    statCard(p0.length, 'P0 Today', 'var(--red)') +
+    statCard(p1.length, 'P1 This Week', 'var(--orange)') +
+    statCard(mtgs.filter(m=>m.state!=='missed').length, 'Meetings', 'var(--accent)') +
+    statCard(tasks.length, 'Total Open', 'var(--text-dim)');
+
+  // Task count
+  document.getElementById('task-count').textContent = tasks.length + ' open';
+
+  // Tasks grouped by priority
+  let html = '';
+  if (p0.length) { html += '<div class="group-header">P0 — Today</div>' + p0.map(renderTask).join(''); }
+  if (p1.length) { html += '<div class="group-header">P1 — This Week</div>' + p1.map(renderTask).join(''); }
+  if (p2.length) { html += '<div class="group-header">P2 — This Month</div>' + p2.map(renderTask).join(''); }
+  document.getElementById('today-tasks').innerHTML = html || '<div class="loading">No open tasks</div>';
+
+  // Calendar
+  const sortedMtgs = mtgs.sort((a,b) => a.start.localeCompare(b.start));
+  document.getElementById('today-calendar').innerHTML =
+    sortedMtgs.map(renderMeeting).join('') || '<div class="loading">No meetings today</div>';
+
+  // Recent activity
+  document.getElementById('today-activity').innerHTML = (runs || []).map(r =>
+    '<div class="cal-item"><div class="cal-dot" style="background:' + (r.status==='success'?'var(--green)':'var(--red)') + '"></div>' +
+    '<div class="cal-time">' + timeAgo(r.run_at) + '</div>' +
+    '<div class="cal-title" style="font-size:13px">' + esc(r.task_id) + '</div></div>'
+  ).join('') || '<div class="loading">No recent activity</div>';
+}
+
+// --- WEEK AHEAD VIEW ---
+async function loadWeekAhead() {
+  const now = new Date();
+  const monday = startOfWeek(addDays(now, (now.getDay() === 0 || now.getDay() === 6) ? 1 : 0));
+  // If it's Mon-Thu, show this week. If Fri-Sun, show next week.
+  const targetMonday = now.getDay() >= 5 || now.getDay() === 0 ? addDays(monday, 7) : monday;
+  const friday = addDays(targetMonday, 4);
+
+  const [meetings, carryover] = await Promise.all([
+    fetchWebexMeetings(isoDate(targetMonday) + 'T00:00:00Z', isoDate(friday) + 'T23:59:59Z'),
+    fetchNotionTasks({
+      and: [
+        { property: 'Status', select: { does_not_equal: 'Done' } },
+        { or: [
+          { property: 'Priority', select: { equals: 'P0 \\u2014 Today' } },
+          { property: 'Priority', select: { equals: 'P1 \\u2014 This Week' } },
+        ]}
+      ]
+    }),
+  ]);
+
+  const mtgs = meetings.items || [];
+  const totalHours = mtgs.reduce((sum, m) => {
+    const dur = (new Date(m.end) - new Date(m.start)) / 3600000;
+    return sum + dur;
+  }, 0);
+
+  // Stats
+  document.getElementById('week-ahead-stats').innerHTML =
+    statCard(mtgs.length, 'Meetings', 'var(--accent)') +
+    statCard(Math.round(totalHours) + 'h', 'Meeting Hours', 'var(--yellow)') +
+    statCard((carryover.results||[]).length, 'Carryover Tasks', 'var(--orange)') +
+    statCard('', '', '');
+
+  // Group by day
+  let daysHtml = '';
+  for (let i = 0; i < 5; i++) {
+    const day = addDays(targetMonday, i);
+    const dayStr = isoDate(day);
+    const dayMtgs = mtgs.filter(m => m.start.startsWith(dayStr)).sort((a,b) => a.start.localeCompare(b.start));
+    const dayHours = dayMtgs.reduce((s, m) => s + (new Date(m.end) - new Date(m.start)) / 3600000, 0);
+    const heavy = dayHours >= 3;
+    daysHtml += '<div class="card section">' +
+      '<div class="card-header"><h2>' + DAYS[day.getDay()] + ', ' + day.toLocaleDateString('en-US',{month:'short',day:'numeric'}) +
+      '</h2><span style="color:' + (heavy?'var(--red)':'var(--text-dim)') + ';font-size:12px">' +
+      Math.round(dayHours*10)/10 + 'h meetings' + (heavy?' — heavy day':'') + '</span></div>' +
+      '<div class="card-body">' +
+        (dayMtgs.length ? dayMtgs.map(renderMeeting).join('') : '<div class="loading" style="padding:12px">No meetings</div>') +
+      '</div></div>';
+  }
+  document.getElementById('week-ahead-days').innerHTML = daysHtml;
+
+  // Carryover
+  document.getElementById('week-ahead-carryover').innerHTML =
+    (carryover.results||[]).map(renderTask).join('') || '<div class="loading">No carryover</div>';
+
+  // Prep needed: meetings Jason hosts or with external attendees
+  const prep = mtgs.filter(m => m.hostEmail === 'jasheare@cisco.com' || !m.hostEmail?.endsWith('@cisco.com'));
+  document.getElementById('week-ahead-prep').innerHTML =
+    prep.slice(0, 10).map(m =>
+      '<div class="cal-item"><div class="cal-dot webex"></div>' +
+      '<div class="cal-time">' + SHORT_DAYS[new Date(m.start).getDay()] + ' ' + fmt12(m.start) + '</div>' +
+      '<div class="cal-title">' + esc(m.title) +
+      (m.hostEmail === 'jasheare@cisco.com' ? '<div class="cal-host" style="color:var(--yellow)">You\'re hosting</div>' : '') +
+      '</div></div>'
+    ).join('') || '<div class="loading">No prep needed</div>';
+}
+
+// --- WEEK IN REVIEW VIEW ---
+async function loadWeekReview() {
+  const now = new Date();
+  const monday = startOfWeek(now);
+  const friday = addDays(monday, 4);
+
+  const [meetings, done, open, runs] = await Promise.all([
+    fetchWebexMeetings(isoDate(monday) + 'T00:00:00Z', isoDate(friday) + 'T23:59:59Z'),
+    fetchNotionTasks({
+      and: [
+        { property: 'Status', select: { equals: 'Done' } },
+        { timestamp: 'last_edited_time', last_edited_time: { on_or_after: isoDate(monday) } },
+      ]
+    }),
+    fetchNotionTasks({
+      and: [
+        { property: 'Status', select: { does_not_equal: 'Done' } },
+        { or: [
+          { property: 'Priority', select: { equals: 'P0 \\u2014 Today' } },
+          { property: 'Priority', select: { equals: 'P1 \\u2014 This Week' } },
+        ]}
+      ]
+    }),
+    fetchJson('/api/runs/recent?limit=100'),
+  ]);
+
+  const mtgs = meetings.items || [];
+  const attended = mtgs.filter(m => m.state === 'ended');
+  const missed = mtgs.filter(m => m.state === 'missed');
+  const completed = done.results || [];
+  const stillOpen = open.results || [];
+  const weekRuns = (runs || []).filter(r => r.run_at >= isoDate(monday));
+
+  // Stats
+  document.getElementById('week-review-stats').innerHTML =
+    statCard(completed.length, 'Completed', 'var(--green)') +
+    statCard(stillOpen.length, 'Still Open', 'var(--orange)') +
+    statCard(attended.length, 'Meetings Attended', 'var(--accent)') +
+    statCard(missed.length, 'Meetings Missed', missed.length > 5 ? 'var(--red)' : 'var(--text-dim)');
+
+  // Completed
+  document.getElementById('week-review-done').innerHTML =
+    completed.map(p =>
+      '<div class="task-item"><div class="task-content">' +
+      '<div class="task-title" style="text-decoration:line-through;color:var(--text-dim)">' + esc(prop(p,'Name')||prop(p,'Task')||'') + '</div>' +
+      '<div class="task-meta">' + (prop(p,'Project') ? '<span>' + esc(prop(p,'Project')) + '</span>' : '') + '</div>' +
+      '</div></div>'
+    ).join('') || '<div class="loading">Nothing completed yet</div>';
+
+  // Still open
+  document.getElementById('week-review-open').innerHTML =
+    stillOpen.map(renderTask).join('') || '<div class="loading">All clear</div>';
+
+  // Meetings
+  const meetingHtml = '<div class="group-header">Attended (' + attended.length + ')</div>' +
+    attended.sort((a,b) => a.start.localeCompare(b.start)).map(renderMeeting).join('') +
+    (missed.length ? '<div class="group-header">Missed (' + missed.length + ')</div>' +
+    missed.sort((a,b) => a.start.localeCompare(b.start)).map(renderMeeting).join('') : '');
+  document.getElementById('week-review-meetings').innerHTML = meetingHtml || '<div class="loading">No meetings</div>';
+
+  // Summary
+  document.getElementById('week-review-summary').innerHTML =
+    '<div class="card summary-item"><h3>Agent Runs This Week</h3><ul class="summary-list">' +
+    '<li>Total: ' + weekRuns.length + '</li>' +
+    '<li style="color:var(--green)">Success: ' + weekRuns.filter(r=>r.status==='success').length + '</li>' +
+    '<li style="color:var(--red)">Errors: ' + weekRuns.filter(r=>r.status==='error').length + '</li>' +
+    '</ul></div>' +
+    '<div class="card summary-item"><h3>Meeting Load</h3><ul class="summary-list">' +
+    '<li>Total scheduled: ' + mtgs.length + '</li>' +
+    '<li>Hours in meetings: ' + Math.round(attended.reduce((s,m) => s + (new Date(m.end)-new Date(m.start))/3600000, 0)) + 'h</li>' +
+    '<li>Attendance rate: ' + (mtgs.length ? Math.round(attended.length/mtgs.length*100) : 0) + '%</li>' +
+    '</ul></div>';
+}
+
+// --- Stat card helper ---
+function statCard(val, lbl, color) {
+  const c = color ? ' style="color:' + color + '"' : '';
+  return '<div class="stat-card"><div class="stat-val"' + c + '>' + val + '</div><div class="stat-lbl">' + lbl + '</div></div>';
+}
+
+// --- Tab navigation ---
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('view-' + tab.dataset.view).classList.add('active');
+    loadView(tab.dataset.view);
+  });
+});
+
+function loadView(view) {
+  if (view === 'today') loadToday().catch(e => console.error(e));
+  else if (view === 'week-ahead') loadWeekAhead().catch(e => console.error(e));
+  else if (view === 'week-review') loadWeekReview().catch(e => console.error(e));
+}
+
+// --- Init ---
+document.getElementById('header-date').textContent = fmtDate(new Date());
+loadView('today');
+
+// Auto-refresh every 60s
+setInterval(() => {
+  const activeTab = document.querySelector('.tab.active');
+  if (activeTab) loadView(activeTab.dataset.view);
+}, 60000);
+</script>
+</body>
+</html>

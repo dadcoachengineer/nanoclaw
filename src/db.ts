@@ -496,6 +496,28 @@ export function logTaskRun(log: TaskRunLog): void {
   );
 }
 
+// --- Task run log readers ---
+
+export interface TaskRunLogRow extends TaskRunLog {
+  id?: number;
+}
+
+export function getRecentRunLogs(limit = 50): TaskRunLogRow[] {
+  return db
+    .prepare(
+      'SELECT * FROM task_run_logs ORDER BY run_at DESC LIMIT ?',
+    )
+    .all(limit) as TaskRunLogRow[];
+}
+
+export function getRunLogsForTask(taskId: string, limit = 20): TaskRunLogRow[] {
+  return db
+    .prepare(
+      'SELECT * FROM task_run_logs WHERE task_id = ? ORDER BY run_at DESC LIMIT ?',
+    )
+    .all(taskId, limit) as TaskRunLogRow[];
+}
+
 // --- Router state accessors ---
 
 export function getRouterState(key: string): string | undefined {
