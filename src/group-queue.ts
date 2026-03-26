@@ -59,14 +59,37 @@ export class GroupQueue {
     return this.activeCount;
   }
 
-  getStatus(): { active: number; waiting: number; groups: { jid: string; active: boolean; containerName: string | null; taskId: string | null }[] } {
-    const groups: { jid: string; active: boolean; containerName: string | null; taskId: string | null }[] = [];
+  getStatus(): {
+    active: number;
+    waiting: number;
+    groups: {
+      jid: string;
+      active: boolean;
+      containerName: string | null;
+      taskId: string | null;
+    }[];
+  } {
+    const groups: {
+      jid: string;
+      active: boolean;
+      containerName: string | null;
+      taskId: string | null;
+    }[] = [];
     for (const [jid, state] of this.groups) {
       if (state.active || state.idleWaiting) {
-        groups.push({ jid, active: state.active, containerName: state.containerName, taskId: state.runningTaskId });
+        groups.push({
+          jid,
+          active: state.active,
+          containerName: state.containerName,
+          taskId: state.runningTaskId,
+        });
       }
     }
-    return { active: this.activeCount, waiting: this.waitingGroups.length, groups };
+    return {
+      active: this.activeCount,
+      waiting: this.waitingGroups.length,
+      groups,
+    };
   }
 
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {

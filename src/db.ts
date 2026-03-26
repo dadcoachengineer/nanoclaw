@@ -504,9 +504,7 @@ export interface TaskRunLogRow extends TaskRunLog {
 
 export function getRecentRunLogs(limit = 50): TaskRunLogRow[] {
   return db
-    .prepare(
-      'SELECT * FROM task_run_logs ORDER BY run_at DESC LIMIT ?',
-    )
+    .prepare('SELECT * FROM task_run_logs ORDER BY run_at DESC LIMIT ?')
     .all(limit) as TaskRunLogRow[];
 }
 

@@ -42,7 +42,11 @@ function json(res: http.ServerResponse, data: unknown, status = 200): void {
   res.end(JSON.stringify(data));
 }
 
-function serveFile(res: http.ServerResponse, filePath: string, contentType: string): void {
+function serveFile(
+  res: http.ServerResponse,
+  filePath: string,
+  contentType: string,
+): void {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
     res.writeHead(200, { 'Content-Type': contentType });
@@ -77,7 +81,9 @@ function setCache(key: string, data: unknown): void {
 
 function getWebexToken(): string | null {
   try {
-    const config = JSON.parse(fs.readFileSync(path.join(STORE_DIR, 'webex-oauth.json'), 'utf-8'));
+    const config = JSON.parse(
+      fs.readFileSync(path.join(STORE_DIR, 'webex-oauth.json'), 'utf-8'),
+    );
     return config.access_token;
   } catch {
     return null;
@@ -89,7 +95,9 @@ function getNotionToken(): string | null {
   // The Notion token is managed by OneCLI. For the dashboard proxy,
   // we'll read it from a local cache file if available.
   try {
-    const config = JSON.parse(fs.readFileSync(path.join(STORE_DIR, 'notion-token.json'), 'utf-8'));
+    const config = JSON.parse(
+      fs.readFileSync(path.join(STORE_DIR, 'notion-token.json'), 'utf-8'),
+    );
     return config.token;
   } catch {
     return null;
@@ -110,15 +118,20 @@ function proxyRequest(
       method,
       headers: {
         ...headers,
-        'Accept': 'application/json',
+        Accept: 'application/json',
       },
     };
     const req = https.request(opts, (proxyRes) => {
       let data = '';
-      proxyRes.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      proxyRes.on('data', (chunk: Buffer) => {
+        data += chunk.toString();
+      });
       proxyRes.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch { resolve({ raw: data }); }
+        try {
+          resolve(JSON.parse(data));
+        } catch {
+          resolve({ raw: data });
+        }
       });
     });
     req.on('error', reject);
@@ -132,7 +145,9 @@ function proxyRequest(
 function readBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve) => {
     let data = '';
-    req.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+    req.on('data', (chunk: Buffer) => {
+      data += chunk.toString();
+    });
     req.on('end', () => resolve(data));
   });
 }
@@ -164,12 +179,21 @@ async function handleApi(
     const tasks = getAllTasks();
     const status = searchParams.get('status');
     const filtered = status ? tasks.filter((t) => t.status === status) : tasks;
-    return json(res, filtered.map((t) => ({
-      id: t.id, group_folder: t.group_folder, schedule_type: t.schedule_type,
-      schedule_value: t.schedule_value, status: t.status, next_run: t.next_run,
-      last_run: t.last_run, last_result: t.last_result, context_mode: t.context_mode,
-      created_at: t.created_at,
-    })));
+    return json(
+      res,
+      filtered.map((t) => ({
+        id: t.id,
+        group_folder: t.group_folder,
+        schedule_type: t.schedule_type,
+        schedule_value: t.schedule_value,
+        status: t.status,
+        next_run: t.next_run,
+        last_run: t.last_run,
+        last_result: t.last_result,
+        context_mode: t.context_mode,
+        created_at: t.created_at,
+      })),
+    );
   }
 
   const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)$/);
@@ -200,8 +224,16 @@ async function handleApi(
     const today = new Date().toISOString().slice(0, 10);
     const todayRuns = runs.filter((r) => r.run_at.startsWith(today));
     return json(res, {
-      tasks: { total: tasks.length, active: tasks.filter((t) => t.status === 'active').length, paused: tasks.filter((t) => t.status === 'paused').length },
-      runs: { today: todayRuns.length, success: todayRuns.filter((r) => r.status === 'success').length, error: todayRuns.filter((r) => r.status === 'error').length },
+      tasks: {
+        total: tasks.length,
+        active: tasks.filter((t) => t.status === 'active').length,
+        paused: tasks.filter((t) => t.status === 'paused').length,
+      },
+      runs: {
+        today: todayRuns.length,
+        success: todayRuns.filter((r) => r.status === 'success').length,
+        error: todayRuns.filter((r) => r.status === 'error').length,
+      },
       containers: deps.queue.getStatus(),
     });
   }
@@ -234,7 +266,15 @@ async function handleApi(
 
   if (pathname === '/api/notion/query' && req.method === 'POST') {
     const token = getNotionToken();
-    if (!token) return json(res, { error: 'Notion token not configured — create store/notion-token.json with {"token":"secret_xxx"}' }, 500);
+    if (!token)
+      return json(
+        res,
+        {
+          error:
+            'Notion token not configured — create store/notion-token.json with {"token":"secret_xxx"}',
+        },
+        500,
+      );
 
     try {
       const body = await readBody(req);
@@ -267,7 +307,11 @@ async function handleApi(
 // --- Server ---
 
 export function startDashboard(deps: DashboardDependencies): http.Server {
-  const commandCenterPath = path.join(__dirname, 'dashboard', 'command-center.html');
+  const commandCenterPath = path.join(
+    __dirname,
+    'dashboard',
+    'command-center.html',
+  );
   // System dashboard is inline (already built)
   const systemDashboardPath = path.join(__dirname, 'dashboard', 'system.html');
 
