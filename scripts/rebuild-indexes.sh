@@ -7,6 +7,9 @@ cd /Users/nanoclaw/nanoclaw
 
 echo "=== $(date) — Starting index rebuild ==="
 
+echo "--- Webex AI Summaries ---"
+npx tsx scripts/fetch-webex-summaries.ts
+
 echo "--- Person + Topic Index ---"
 npx tsx scripts/build-person-index.ts
 

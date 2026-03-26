@@ -74,6 +74,13 @@ interface PersonEntry {
   }[];
   notionTasks: { id: string; title: string; status: string }[];
   messageExcerpts: { text: string; date: string; roomTitle: string }[];
+  aiSummaries: {
+    meetingId: string;
+    title: string;
+    date: string;
+    summary: string;
+    actionItems: string[];
+  }[];
 }
 
 type PersonIndex = Record<string, PersonEntry>;
@@ -113,7 +120,7 @@ function normalizeKey(name: string): string {
 
 function getOrCreate(index: PersonIndex, name: string): PersonEntry {
   const key = normalizeKey(name);
-  if (!key) return { name, emails: [], webexRoomIds: [], webexGroupRooms: [], meetings: [], transcriptMentions: [], notionTasks: [], messageExcerpts: [] };
+  if (!key) return { name, emails: [], webexRoomIds: [], webexGroupRooms: [], meetings: [], transcriptMentions: [], notionTasks: [], messageExcerpts: [], aiSummaries: [] };
   if (!index[key]) {
     index[key] = {
       name,
@@ -124,6 +131,7 @@ function getOrCreate(index: PersonIndex, name: string): PersonEntry {
       transcriptMentions: [],
       notionTasks: [],
       messageExcerpts: [],
+      aiSummaries: [],
     };
   }
   // Keep the most "complete" version of the name
@@ -145,6 +153,7 @@ function getOrCreateTopic(index: TopicIndex, name: string): TopicEntry {
       webexRooms: [],
       notionTasks: [],
       messageExcerpts: [],
+      aiSummaries: [],
       people: [],
     };
   }
@@ -552,6 +561,83 @@ function mergeIndex(index: PersonIndex): PersonIndex {
 
 // --- Main ---
 
+// --- AI Summaries (from store/webex-summaries.json) ---
+
+const SUMMARIES_PATH = path.join(STORE_DIR, "webex-summaries.json");
+
+async function indexAiSummaries(index: PersonIndex, topicIndex: TopicIndex) {
+  if (!fs.existsSync(SUMMARIES_PATH)) {
+    console.log("--- AI Summaries: no data file, skipping ---\n");
+    return;
+  }
+
+  const summaries = JSON.parse(fs.readFileSync(SUMMARIES_PATH, "utf-8")) as Record<
+    string,
+    { title: string; date: string; host?: string; summary: string; actionItems: string[] }
+  >;
+
+  let linked = 0;
+  for (const [meetingId, s] of Object.entries(summaries)) {
+    // Match people mentioned in the summary or title
+    for (const [key, person] of Object.entries(index)) {
+      const nameLower = person.name.toLowerCase();
+      const firstName = nameLower.split(" ")[0];
+      const lastName = nameLower.split(" ").slice(-1)[0];
+
+      // Check if person is mentioned in meeting title, summary text, or host
+      const searchText = `${s.title} ${s.summary} ${s.host || ""}`.toLowerCase();
+      const mentioned =
+        searchText.includes(nameLower) ||
+        (firstName.length > 3 && searchText.includes(firstName)) ||
+        // Check if person was in a meeting with this title
+        person.meetings.some((m) => m.id === meetingId || m.topic.toLowerCase() === s.title.toLowerCase());
+
+      if (mentioned) {
+        // Avoid duplicates
+        if (!person.aiSummaries.some((a) => a.meetingId === meetingId)) {
+          person.aiSummaries.push({
+            meetingId,
+            title: s.title,
+            date: s.date,
+            summary: s.summary.slice(0, 500),
+            actionItems: s.actionItems.slice(0, 5),
+          });
+          linked++;
+        }
+      }
+    }
+
+    // Index into topics
+    const titleLower = s.title.toLowerCase();
+    for (const pattern of TOPIC_PATTERNS) {
+      if (pattern.keywords.some((kw) => titleLower.includes(kw) || s.summary.toLowerCase().includes(kw))) {
+        if (!topicIndex[pattern.name]) {
+          topicIndex[pattern.name] = {
+            name: pattern.name,
+            meetings: [],
+            transcriptSnippets: [],
+            webexRooms: [],
+            notionTasks: [],
+            messageExcerpts: [],
+            people: [],
+          };
+        }
+        // Add summary action items as transcript-like snippets
+        if (!topicIndex[pattern.name].transcriptSnippets.some((t) => t.topic === s.title && t.date === s.date)) {
+          topicIndex[pattern.name].transcriptSnippets.push({
+            topic: s.title,
+            date: s.date,
+            speakers: [],
+            keyLines: s.actionItems.slice(0, 3),
+          });
+        }
+      }
+    }
+  }
+
+  console.log(`--- AI Summaries: ${Object.keys(summaries).length} meetings, ${linked} person links ---\n`);
+}
+
 async function main() {
   console.log("Building person index...\n");
 
@@ -576,6 +662,7 @@ async function main() {
   await indexWebexDirectMessages(index);
   await indexWebexRecordings(index, topicIndex);
   await indexNotionTasks(index, topicIndex);
+  await indexAiSummaries(index, topicIndex);
   await fetchAvatars(index);
 
   // Merge duplicates
@@ -588,11 +675,13 @@ async function main() {
         b.meetings.length +
         b.transcriptMentions.length +
         b.messageExcerpts.length +
-        b.notionTasks.length -
+        b.notionTasks.length +
+        (b.aiSummaries?.length || 0) -
         (a.meetings.length +
           a.transcriptMentions.length +
           a.messageExcerpts.length +
-          a.notionTasks.length)
+          a.notionTasks.length +
+          (a.aiSummaries?.length || 0))
     )
   );
 

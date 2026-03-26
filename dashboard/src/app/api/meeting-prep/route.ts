@@ -6,6 +6,7 @@ import { proxiedFetch } from "@/lib/onecli";
 const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
 const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
 const TOPIC_INDEX_PATH = path.join(STORE_DIR, "topic-index.json");
+const SUMMARIES_PATH = path.join(STORE_DIR, "webex-summaries.json");
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
 
 function loadJson(p: string) {
@@ -231,6 +232,33 @@ export async function GET(req: NextRequest) {
       transcripts: (person.transcriptMentions || []).length,
       messages: (person.messageExcerpts || []).length,
       tasks: (person.notionTasks || []).length,
+      aiSummaries: (person.aiSummaries || []).length,
+    };
+
+    // AI meeting summaries for this person
+    if (person.aiSummaries?.length > 0) {
+      prep.aiSummaries = person.aiSummaries
+        .sort((a: any, b: any) => b.date.localeCompare(a.date))
+        .slice(0, 3)
+        .map((s: any) => ({
+          title: s.title,
+          date: s.date,
+          summary: s.summary,
+          actionItems: s.actionItems,
+        }));
+    }
+  }
+
+  // Check for a direct AI summary for this meeting title
+  const summaries = loadJson(SUMMARIES_PATH);
+  const directSummary = Object.values(summaries).find(
+    (s: any) => s.title?.toLowerCase() === title.toLowerCase()
+  ) as { summary?: string; actionItems?: string[]; date?: string } | undefined;
+  if (directSummary) {
+    prep.meetingSummary = {
+      summary: directSummary.summary,
+      actionItems: directSummary.actionItems,
+      date: directSummary.date,
     };
   }
 
