@@ -62,6 +62,7 @@ export default function PeopleView() {
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
+  const [detailFilter, setDetailFilter] = useState<"all" | "meetings" | "transcripts" | "messages" | "tasks">("all");
 
   useEffect(() => {
     fetch("/api/people")
@@ -75,6 +76,7 @@ export default function PeopleView() {
 
   async function selectPerson(name: string) {
     setSelectedName(name);
+    setDetailFilter("all");
     const resp = await fetch(`/api/people?name=${encodeURIComponent(name)}`);
     const data = await resp.json();
     setSelected(data);
@@ -175,35 +177,38 @@ export default function PeopleView() {
                       ))}
                     </div>
                   </div>
-                  <div className="flex gap-4 pt-3 border-t border-[var(--border)]">
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-[var(--accent)]">{selected.meetings.length}</div>
-                      <div className="text-[10px] text-[var(--text-dim)] uppercase">Meetings</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-[var(--purple)]">{selected.transcriptMentions.length}</div>
-                      <div className="text-[10px] text-[var(--text-dim)] uppercase">Transcripts</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-[var(--green)]">{selected.messageExcerpts.length}</div>
-                      <div className="text-[10px] text-[var(--text-dim)] uppercase">Messages</div>
-                    </div>
-                    <div className="text-center">
-                      <div className="text-lg font-bold text-[var(--yellow)]">{selected.notionTasks.length}</div>
-                      <div className="text-[10px] text-[var(--text-dim)] uppercase">Tasks</div>
-                    </div>
+                  <div className="flex gap-1 pt-3 border-t border-[var(--border)]">
+                    {([
+                      { key: "meetings" as const, value: selected.meetings.length, label: "Meetings", color: "var(--accent)" },
+                      { key: "transcripts" as const, value: selected.transcriptMentions.length, label: "Transcripts", color: "var(--purple)" },
+                      { key: "messages" as const, value: selected.messageExcerpts.length, label: "Messages", color: "var(--green)" },
+                      { key: "tasks" as const, value: selected.notionTasks.length, label: "Tasks", color: "var(--yellow)" },
+                    ]).map((s) => (
+                      <button
+                        key={s.key}
+                        onClick={() => setDetailFilter(detailFilter === s.key ? "all" : s.key)}
+                        className={`flex-1 text-center py-2 rounded-md transition-colors cursor-pointer ${
+                          detailFilter === s.key
+                            ? "bg-[rgba(88,166,255,0.1)] border border-[var(--border)]"
+                            : "hover:bg-[rgba(88,166,255,0.04)]"
+                        }`}
+                      >
+                        <div className="text-lg font-bold" style={{ color: s.color }}>{s.value}</div>
+                        <div className="text-[10px] text-[var(--text-dim)] uppercase">{s.label}</div>
+                      </button>
+                    ))}
                   </div>
                 </div>
               </Card>
 
               {/* Transcript quotes */}
-              {selected.transcriptMentions.length > 0 && (
+              {selected.transcriptMentions.length > 0 && (detailFilter === "all" || detailFilter === "transcripts") && (
                 <Card>
                   <CardHeader title="What They Said" />
                   <div>
                     {selected.transcriptMentions
                       .sort((a, b) => b.date.localeCompare(a.date))
-                      .slice(0, 5)
+                      .slice(0, detailFilter === "transcripts" ? 20 : 5)
                       .map((t, i) => (
                         <div key={i} className="px-4 py-3 border-b border-[var(--border)] last:border-0">
                           <div className="flex items-center justify-between mb-2">
@@ -231,13 +236,13 @@ export default function PeopleView() {
               )}
 
               {/* Recent messages */}
-              {selected.messageExcerpts.length > 0 && (
+              {selected.messageExcerpts.length > 0 && (detailFilter === "all" || detailFilter === "messages") && (
                 <Card>
                   <CardHeader title="Recent Messages" />
                   <div>
                     {selected.messageExcerpts
                       .sort((a, b) => b.date.localeCompare(a.date))
-                      .slice(0, 10)
+                      .slice(0, detailFilter === "messages" ? 30 : 10)
                       .map((m, i) => (
                         <div key={i} className="px-4 py-2.5 border-b border-[var(--border)] last:border-0">
                           <div className="flex items-center justify-between mb-1">
@@ -256,13 +261,13 @@ export default function PeopleView() {
               )}
 
               {/* Meeting history */}
-              {selected.meetings.length > 0 && (
+              {selected.meetings.length > 0 && (detailFilter === "all" || detailFilter === "meetings") && (
                 <Card>
                   <CardHeader title="Meeting History" />
                   <div>
                     {selected.meetings
                       .sort((a, b) => b.date.localeCompare(a.date))
-                      .slice(0, 10)
+                      .slice(0, detailFilter === "meetings" ? 30 : 10)
                       .map((m, i) => (
                         <div key={i} className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0">
                           <div
@@ -280,7 +285,7 @@ export default function PeopleView() {
               )}
 
               {/* Related tasks */}
-              {selected.notionTasks.length > 0 && (
+              {selected.notionTasks.length > 0 && (detailFilter === "all" || detailFilter === "tasks") && (
                 <Card>
                   <CardHeader title="Related Tasks" />
                   <div>
