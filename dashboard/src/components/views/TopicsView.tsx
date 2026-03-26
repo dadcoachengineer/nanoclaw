@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Card, CardHeader, StatCard, GroupHeader } from "@/components/Card";
+import { Card, CardHeader, StatCard } from "@/components/Card";
+import VoteButtons from "@/components/VoteButtons";
 
 interface TopicSummary {
   key: string;
@@ -32,6 +33,12 @@ export default function TopicsView() {
   const [selected, setSelected] = useState<TopicDetail | null>(null);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [scores, setScores] = useState<Record<string, number>>({});
+
+  const voteContext = selectedName ? `topic:${selectedName}` : "";
+  const updateScore = (itemType: string, itemId: string, s: number) => setScores((prev) => ({ ...prev, [`${itemType}:${itemId}`]: s }));
+  const getScore = (itemType: string, itemId: string) => scores[`${itemType}:${itemId}`] ?? 0;
+  const isSuppressed = (itemType: string, itemId: string) => getScore(itemType, itemId) <= -2;
 
   useEffect(() => {
     fetch("/api/topics")
@@ -45,9 +52,13 @@ export default function TopicsView() {
 
   async function selectTopic(name: string) {
     setSelectedName(name);
-    const resp = await fetch(`/api/topics?name=${encodeURIComponent(name)}`);
+    const [resp, scoresResp] = await Promise.all([
+      fetch(`/api/topics?name=${encodeURIComponent(name)}`),
+      fetch(`/api/relevance?context=${encodeURIComponent(`topic:${name}`)}`).then(r => r.ok ? r.json() : { scores: {} }),
+    ]);
     const data = await resp.json();
     setSelected(data);
+    setScores(scoresResp.scores || {});
   }
 
   return (
@@ -154,21 +165,24 @@ export default function TopicsView() {
                 <Card>
                   <CardHeader title="From Transcripts" />
                   <div>
-                    {selected.transcriptSnippets.slice(0, 5).map((t, i) => (
+                    {selected.transcriptSnippets.slice(0, 5).filter((_, i) => !isSuppressed("transcript", String(i))).map((t, i) => (
                       <div
                         key={i}
-                        className="px-4 py-3 border-b border-[var(--border)] last:border-0"
+                        className="group/row px-4 py-3 border-b border-[var(--border)] last:border-0"
                       >
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-xs font-medium text-[var(--purple)]">
                             {t.topic.slice(0, 50)}
                           </span>
-                          <span className="text-xs text-[var(--text-dim)]">
-                            {new Date(t.date).toLocaleDateString("en-US", {
-                              month: "short",
-                              day: "numeric",
-                            })}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <VoteButtons context={voteContext} itemType="transcript" itemId={String(i)} initialScore={getScore("transcript", String(i))} onVoted={(s) => updateScore("transcript", String(i), s)} />
+                            <span className="text-xs text-[var(--text-dim)]">
+                              {new Date(t.date).toLocaleDateString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                              })}
+                            </span>
+                          </div>
                         </div>
                         {t.keyLines.slice(0, 3).map((line, j) => (
                           <div
@@ -199,10 +213,10 @@ export default function TopicsView() {
                     }
                   />
                   <div>
-                    {selected.notionTasks.slice(0, 15).map((t) => (
+                    {selected.notionTasks.slice(0, 15).filter((t) => !isSuppressed("task", t.id)).map((t) => (
                       <div
                         key={t.id}
-                        className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0"
+                        className="group/row flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0"
                       >
                         <span
                           className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${
@@ -216,6 +230,7 @@ export default function TopicsView() {
                         <span className="text-sm flex-1 truncate">
                           {t.title}
                         </span>
+                        <VoteButtons context={voteContext} itemType="task" itemId={t.id} initialScore={getScore("task", t.id)} onVoted={(s) => updateScore("task", t.id, s)} />
                         {t.source && (
                           <span className="text-[10px] text-[var(--text-dim)] shrink-0">
                             {t.source}

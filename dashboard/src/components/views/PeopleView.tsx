@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Card, CardHeader, StatCard } from "@/components/Card";
 import { timeAgo } from "@/lib/dates";
 import ReplyDrafter from "@/components/ReplyDrafter";
+import VoteButtons from "@/components/VoteButtons";
 
 interface PersonSummary {
   key: string;
@@ -65,6 +66,12 @@ export default function PeopleView() {
   const [filter, setFilter] = useState("");
   const [detailFilter, setDetailFilter] = useState<"all" | "meetings" | "transcripts" | "messages" | "tasks">("all");
   const [replyTo, setReplyTo] = useState<{ text: string; personName: string; personEmail?: string; roomId?: string } | null>(null);
+  const [scores, setScores] = useState<Record<string, number>>({});
+
+  const voteContext = selectedName ? `person:${selectedName}` : "";
+  const updateScore = (itemType: string, itemId: string, s: number) => setScores((prev) => ({ ...prev, [`${itemType}:${itemId}`]: s }));
+  const getScore = (itemType: string, itemId: string) => scores[`${itemType}:${itemId}`] ?? 0;
+  const isSuppressed = (itemType: string, itemId: string) => getScore(itemType, itemId) <= -2;
 
   useEffect(() => {
     fetch("/api/people")
@@ -79,9 +86,13 @@ export default function PeopleView() {
   async function selectPerson(name: string) {
     setSelectedName(name);
     setDetailFilter("all");
-    const resp = await fetch(`/api/people?name=${encodeURIComponent(name)}`);
+    const [resp, scoresResp] = await Promise.all([
+      fetch(`/api/people?name=${encodeURIComponent(name)}`),
+      fetch(`/api/relevance?context=${encodeURIComponent(`person:${name}`)}`).then(r => r.ok ? r.json() : { scores: {} }),
+    ]);
     const data = await resp.json();
     setSelected(data);
+    setScores(scoresResp.scores || {});
   }
 
   const filtered = filter
@@ -211,15 +222,19 @@ export default function PeopleView() {
                     {selected.transcriptMentions
                       .sort((a, b) => b.date.localeCompare(a.date))
                       .slice(0, detailFilter === "transcripts" ? 20 : 5)
+                      .filter((t) => !isSuppressed("transcript", t.recordingId))
                       .map((t, i) => (
-                        <div key={i} className="px-4 py-3 border-b border-[var(--border)] last:border-0">
+                        <div key={i} className="group/row px-4 py-3 border-b border-[var(--border)] last:border-0">
                           <div className="flex items-center justify-between mb-2">
                             <span className="text-xs font-medium text-[var(--purple)]">
                               {t.topic.slice(0, 50)}
                             </span>
-                            <span className="text-xs text-[var(--text-dim)]">
-                              {new Date(t.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <VoteButtons context={voteContext} itemType="transcript" itemId={t.recordingId} initialScore={getScore("transcript", t.recordingId)} onVoted={(s) => updateScore("transcript", t.recordingId, s)} />
+                              <span className="text-xs text-[var(--text-dim)]">
+                                {new Date(t.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                              </span>
+                            </div>
                           </div>
                           {t.snippets.slice(0, 3).map((s, j) => (
                             <div key={j} className="text-sm text-[var(--text)] bg-[var(--surface2)] rounded px-3 py-1.5 mb-1 italic">
@@ -245,13 +260,15 @@ export default function PeopleView() {
                     {selected.messageExcerpts
                       .sort((a, b) => b.date.localeCompare(a.date))
                       .slice(0, detailFilter === "messages" ? 30 : 10)
+                      .filter((_, i) => !isSuppressed("message", String(i)))
                       .map((m, i) => (
-                        <div key={i} className="px-4 py-2.5 border-b border-[var(--border)] last:border-0 group/msg">
+                        <div key={i} className="group/row px-4 py-2.5 border-b border-[var(--border)] last:border-0">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-xs text-[var(--accent)]">
                               {m.roomTitle}
                             </span>
                             <div className="flex items-center gap-2">
+                              <VoteButtons context={voteContext} itemType="message" itemId={String(i)} initialScore={getScore("message", String(i))} onVoted={(s) => updateScore("message", String(i), s)} />
                               <button
                                 onClick={() => setReplyTo({
                                   text: m.text,
@@ -259,7 +276,7 @@ export default function PeopleView() {
                                   personEmail: selected.emails?.[0],
                                   roomId: selected.webexRoomIds?.[0],
                                 })}
-                                className="text-[10px] text-[var(--text-dim)] hover:text-[var(--accent)] opacity-0 group-hover/msg:opacity-100 transition-opacity"
+                                className="text-[10px] text-[var(--text-dim)] hover:text-[var(--accent)] opacity-0 group-hover/row:opacity-100 transition-opacity"
                               >
                                 Draft Reply
                               </button>
@@ -304,8 +321,8 @@ export default function PeopleView() {
                 <Card>
                   <CardHeader title="Related Tasks" />
                   <div>
-                    {selected.notionTasks.map((t) => (
-                      <div key={t.id} className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0">
+                    {selected.notionTasks.filter((t) => !isSuppressed("task", t.id)).map((t) => (
+                      <div key={t.id} className="group/row flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] last:border-0">
                         <span
                           className={`text-xs px-2 py-0.5 rounded-full shrink-0 ${
                             t.status === "Done"
@@ -316,6 +333,7 @@ export default function PeopleView() {
                           {t.status}
                         </span>
                         <span className="text-sm flex-1 truncate">{t.title}</span>
+                        <VoteButtons context={voteContext} itemType="task" itemId={t.id} initialScore={getScore("task", t.id)} onVoted={(s) => updateScore("task", t.id, s)} />
                       </div>
                     ))}
                   </div>
