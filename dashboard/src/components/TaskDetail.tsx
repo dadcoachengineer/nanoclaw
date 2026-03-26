@@ -1,7 +1,100 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { NotionPage, prop } from "@/lib/notion";
+import EditableBadge from "@/components/EditableBadge";
+
+/** Check if this is a briefing/prep page (has rich body content) */
+function isRichPage(title: string): boolean {
+  return /daily briefing|meeting prep|weekly review|transcript summary/i.test(title);
+}
+
+/** Extract plain text from a Notion rich_text array */
+function richText(rt: { plain_text: string }[] | undefined): string {
+  return (rt || []).map((t) => t.plain_text).join("");
+}
+
+/** Render Notion blocks as React elements */
+function NotionBlocks({ blocks }: { blocks: any[] }) {
+  return (
+    <div className="space-y-1.5">
+      {blocks.map((block, i) => {
+        const type = block.type;
+
+        if (type === "heading_1") {
+          return <h2 key={i} className="text-base font-bold text-[var(--text-bright)] mt-4 mb-1">{richText(block.heading_1?.rich_text)}</h2>;
+        }
+        if (type === "heading_2") {
+          return <h3 key={i} className="text-sm font-bold text-[var(--text-bright)] mt-3 mb-1">{richText(block.heading_2?.rich_text)}</h3>;
+        }
+        if (type === "heading_3") {
+          return <h4 key={i} className="text-sm font-semibold text-[var(--text)] mt-2 mb-0.5">{richText(block.heading_3?.rich_text)}</h4>;
+        }
+        if (type === "paragraph") {
+          const text = richText(block.paragraph?.rich_text);
+          if (!text) return <div key={i} className="h-2" />;
+          return <p key={i} className="text-sm text-[var(--text)] leading-relaxed">{text}</p>;
+        }
+        if (type === "bulleted_list_item") {
+          return (
+            <div key={i} className="flex gap-2 text-sm text-[var(--text)]">
+              <span className="text-[var(--text-dim)] shrink-0">•</span>
+              <span>{richText(block.bulleted_list_item?.rich_text)}</span>
+            </div>
+          );
+        }
+        if (type === "numbered_list_item") {
+          return (
+            <div key={i} className="flex gap-2 text-sm text-[var(--text)]">
+              <span className="text-[var(--text-dim)] shrink-0 w-4 text-right">{i + 1}.</span>
+              <span>{richText(block.numbered_list_item?.rich_text)}</span>
+            </div>
+          );
+        }
+        if (type === "to_do") {
+          const checked = block.to_do?.checked;
+          return (
+            <div key={i} className="flex items-start gap-2 text-sm">
+              <span className={`shrink-0 ${checked ? "text-[var(--green)]" : "text-[var(--text-dim)]"}`}>
+                {checked ? "☑" : "☐"}
+              </span>
+              <span className={checked ? "text-[var(--text-dim)] line-through" : "text-[var(--text)]"}>
+                {richText(block.to_do?.rich_text)}
+              </span>
+            </div>
+          );
+        }
+        if (type === "divider") {
+          return <hr key={i} className="border-[var(--border)] my-2" />;
+        }
+        if (type === "callout") {
+          return (
+            <div key={i} className="flex gap-2 text-sm bg-[rgba(88,166,255,0.06)] rounded-lg px-3 py-2 my-1">
+              <span>{block.callout?.icon?.emoji || "💡"}</span>
+              <span className="text-[var(--text)]">{richText(block.callout?.rich_text)}</span>
+            </div>
+          );
+        }
+        if (type === "quote") {
+          return (
+            <div key={i} className="border-l-2 border-[var(--accent)] pl-3 text-sm text-[var(--text-dim)] italic my-1">
+              {richText(block.quote?.rich_text)}
+            </div>
+          );
+        }
+        if (type === "table_row" || type === "table") {
+          return null; // Skip complex tables for now
+        }
+        // Fallback: render as paragraph if it has rich_text
+        const fallbackText = richText(block[type]?.rich_text);
+        if (fallbackText) {
+          return <p key={i} className="text-sm text-[var(--text)]">{fallbackText}</p>;
+        }
+        return null;
+      })}
+    </div>
+  );
+}
 
 function badgeCls(type: string, value: string): string {
   const base = "inline-block px-2.5 py-0.5 rounded-full text-xs font-medium";
@@ -46,8 +139,22 @@ export default function TaskDetail({
   const [completing, setCompleting] = useState(false);
   const [comment, setComment] = useState("");
   const [done, setDone] = useState(false);
+  const [blocks, setBlocks] = useState<any[] | null>(null);
+  const [loadingBlocks, setLoadingBlocks] = useState(false);
 
   const title = prop(page, "Task") || prop(page, "Name") || "Untitled";
+  const isRich = isRichPage(title);
+
+  // Fetch page blocks for briefing/prep pages
+  useEffect(() => {
+    if (!isRich) return;
+    setLoadingBlocks(true);
+    fetch(`/api/notion/blocks?page_id=${page.id}`)
+      .then((r) => r.json())
+      .then((data) => setBlocks(data.blocks || []))
+      .catch(() => setBlocks(null))
+      .finally(() => setLoadingBlocks(false));
+  }, [page.id, isRich]);
   const priority = prop(page, "Priority");
   const status = prop(page, "Status");
   const context = prop(page, "Context");
@@ -83,8 +190,8 @@ export default function TaskDetail({
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
 
-      {/* Modal */}
-      <div className="relative w-[600px] max-h-[80vh] bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden flex flex-col">
+      {/* Modal — wider for rich content pages */}
+      <div className={`relative ${isRich ? "w-[750px]" : "w-[600px]"} max-h-[80vh] bg-[var(--surface)] border border-[var(--border)] rounded-xl overflow-hidden flex flex-col`}>
         {/* Header */}
         <div className="px-6 py-5 border-b border-[var(--border)]">
           <div className="flex items-start justify-between gap-4">
@@ -99,9 +206,12 @@ export default function TaskDetail({
                 </h2>
               )}
               <div className="flex flex-wrap items-center gap-2 mt-2">
-                {priority && <span className={badgeCls("priority", priority)}>{priority}</span>}
-                {status && <span className={badgeCls("status", status)}>{done ? "Done" : status}</span>}
-                {context && <span className={badgeCls("context", context)}>{context}</span>}
+                {priority && <EditableBadge pageId={page.id} field="Priority" value={priority} />}
+                {status && (done
+                  ? <span className={badgeCls("status", "Done")}>Done</span>
+                  : <EditableBadge pageId={page.id} field="Status" value={status} />
+                )}
+                {context && <EditableBadge pageId={page.id} field="Context" value={context} />}
               </div>
             </div>
             <button
@@ -120,19 +230,19 @@ export default function TaskDetail({
             {project && (
               <div>
                 <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-1">Project</div>
-                <div className="text-sm text-[var(--text)]">{project}</div>
+                <div className="text-sm"><EditableBadge pageId={page.id} field="Project" value={project} /></div>
               </div>
             )}
             {source && (
               <div>
                 <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-1">Source</div>
-                <div className="text-sm"><span className={badgeCls("source", source)}>{source}</span></div>
+                <div className="text-sm"><EditableBadge pageId={page.id} field="Source" value={source} /></div>
               </div>
             )}
             {delegated && (
               <div>
                 <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-1">Delegated To</div>
-                <div className="text-sm text-[var(--purple)]">{delegated}</div>
+                <div className="text-sm"><EditableBadge pageId={page.id} field="Delegated To" value={delegated} /></div>
               </div>
             )}
             {energy && (
@@ -156,6 +266,16 @@ export default function TaskDetail({
               <div className="text-sm text-[var(--text)] bg-[var(--bg)] rounded-lg p-4 whitespace-pre-wrap leading-relaxed">
                 {displayNotes}
               </div>
+            </div>
+          )}
+
+          {/* Rich page content (briefings, prep, reviews) */}
+          {isRich && loadingBlocks && (
+            <div className="text-center text-[var(--text-dim)] py-4 text-sm">Loading content...</div>
+          )}
+          {isRich && blocks && blocks.length > 0 && (
+            <div className="bg-[var(--bg)] rounded-lg p-5">
+              <NotionBlocks blocks={blocks} />
             </div>
           )}
 

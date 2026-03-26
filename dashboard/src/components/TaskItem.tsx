@@ -1,6 +1,7 @@
 "use client";
 
 import { NotionPage, prop } from "@/lib/notion";
+import EditableBadge from "@/components/EditableBadge";
 
 function badgeStyle(type: "priority" | "context" | "source"): string {
   const base = "inline-block px-2 py-0.5 rounded-full text-[11px] font-medium";
@@ -43,18 +44,16 @@ export default function TaskItem({
         <div className="text-sm text-[var(--text-bright)]">{title}</div>
         <div className="flex flex-wrap items-center gap-2 mt-1">
           {priority && (
-            <span className={`${badgeStyle("priority")} ${priorityBadge(priority)}`}>
-              {priority.split(" ")[0]}
-            </span>
+            <EditableBadge pageId={page.id} field="Priority" value={priority} displayValue={priority.split(" ")[0]} />
           )}
           {context && (
-            <span className={badgeStyle("context")}>{context}</span>
+            <EditableBadge pageId={page.id} field="Context" value={context} />
           )}
           {source && (
-            <span className={badgeStyle("source")}>{source}</span>
+            <EditableBadge pageId={page.id} field="Source" value={source} />
           )}
           {project && (
-            <span className="text-xs text-[var(--text-dim)]">{project}</span>
+            <EditableBadge pageId={page.id} field="Project" value={project} />
           )}
         </div>
         {notes && (
