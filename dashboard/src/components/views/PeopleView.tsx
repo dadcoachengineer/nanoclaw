@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Card, CardHeader, StatCard } from "@/components/Card";
 import { timeAgo } from "@/lib/dates";
+import ReplyDrafter from "@/components/ReplyDrafter";
 
 interface PersonSummary {
   key: string;
@@ -63,6 +64,7 @@ export default function PeopleView() {
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [detailFilter, setDetailFilter] = useState<"all" | "meetings" | "transcripts" | "messages" | "tasks">("all");
+  const [replyTo, setReplyTo] = useState<{ text: string; personName: string; personEmail?: string; roomId?: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/people")
@@ -244,14 +246,27 @@ export default function PeopleView() {
                       .sort((a, b) => b.date.localeCompare(a.date))
                       .slice(0, detailFilter === "messages" ? 30 : 10)
                       .map((m, i) => (
-                        <div key={i} className="px-4 py-2.5 border-b border-[var(--border)] last:border-0">
+                        <div key={i} className="px-4 py-2.5 border-b border-[var(--border)] last:border-0 group/msg">
                           <div className="flex items-center justify-between mb-1">
                             <span className="text-xs text-[var(--accent)]">
                               {m.roomTitle}
                             </span>
-                            <span className="text-xs text-[var(--text-dim)]">
-                              {timeAgo(m.date)}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => setReplyTo({
+                                  text: m.text,
+                                  personName: selected.name,
+                                  personEmail: selected.emails?.[0],
+                                  roomId: selected.webexRoomIds?.[0],
+                                })}
+                                className="text-[10px] text-[var(--text-dim)] hover:text-[var(--accent)] opacity-0 group-hover/msg:opacity-100 transition-opacity"
+                              >
+                                Draft Reply
+                              </button>
+                              <span className="text-xs text-[var(--text-dim)]">
+                                {timeAgo(m.date)}
+                              </span>
+                            </div>
                           </div>
                           <div className="text-sm text-[var(--text)]">{m.text}</div>
                         </div>
@@ -310,6 +325,18 @@ export default function PeopleView() {
           )}
         </div>
       </div>
+
+      {/* Reply drafter modal */}
+      {replyTo && (
+        <ReplyDrafter
+          message={replyTo.text}
+          personName={replyTo.personName}
+          personEmail={replyTo.personEmail}
+          channel="Webex"
+          roomId={replyTo.roomId}
+          onClose={() => setReplyTo(null)}
+        />
+      )}
     </div>
   );
 }
