@@ -1,25 +1,23 @@
-# Outlook → Mission Control via Power Automate
+# Outlook → Mission Control via Power Automate + Webex
 
 ## Overview
 
-Three Power Automate flows that scan your Outlook inbox and create Notion tasks in Mission Control. Each flow handles a different heuristic. They run automatically — no clicks needed.
+Power Automate flows scan your Outlook inbox and post email summaries to a dedicated Webex space ("Email Triage"). The existing mc-webex-messages agent picks these up hourly and creates Notion tasks in Mission Control.
+
+**Data path:** Power Automate → Webex (both Cisco infrastructure) → NanoClaw reads via Webex API → Notion
 
 **What you need:**
 - Power Automate access (flow.microsoft.com)
-- A Notion API key (from notion.so/my-integrations)
-- Your Mission Control database ID: `5b4e1d2d7259496ea237ef0525c3ce78`
+- Webex connector available in Power Automate
+- The "Email Triage" Webex space (already created)
 
 ---
 
-## Step 0: Create a Notion Integration
+## Step 0: Get the Email Triage Space ID
 
-1. Go to **notion.so/my-integrations**
-2. Click **New integration**
-3. Name: `Outlook Scanner`
-4. Associated workspace: your workspace
-5. Copy the **Internal Integration Secret** (starts with `secret_`)
-6. Go to your Mission Control database in Notion
-7. Click **...** → **Connections** → **Connect to** → select `Outlook Scanner`
+1. In Power Automate, add a **Webex → Get spaces list** action
+2. Find "Email Triage" in the results
+3. Copy its **Room ID** — you'll need this for each flow
 
 ---
 
@@ -33,37 +31,34 @@ Catches any email you flag in Outlook.
 2. Name: `MC: Flagged Emails`
 3. Trigger: **When an email is flagged (V3)** (Office 365 Outlook)
    - Folder: Inbox
-4. Add action: **HTTP**
-   - Method: `POST`
-   - URI: `https://api.notion.com/v1/pages`
-   - Headers:
-     - `Authorization`: `Bearer secret_YOUR_KEY_HERE`
-     - `Content-Type`: `application/json`
-     - `Notion-Version`: `2022-06-28`
-   - Body:
-```json
-{
-  "parent": { "database_id": "5b4e1d2d7259496ea237ef0525c3ce78" },
-  "properties": {
-    "Task": { "title": [{ "text": { "content": "Reply to @{triggerOutputs()?['body/from']} re: @{triggerOutputs()?['body/subject']}" } }] },
-    "Priority": { "select": { "name": "P1 — This Week" } },
-    "Status": { "status": { "name": "Not started" } },
-    "Context": { "select": { "name": "Quick Win" } },
-    "Zone": { "select": { "name": "Air-Gapped" } },
-    "Source": { "select": { "name": "Email" } },
-    "Project": { "select": { "name": "Cisco" } },
-    "Delegated To": { "select": { "name": "Jason" } },
-    "Notes": { "rich_text": [{ "type": "text", "text": { "content": "From: @{triggerOutputs()?['body/from']} on @{triggerOutputs()?['body/receivedDateTime']}\nFlagged in Outlook\n\nPreview: @{substring(triggerOutputs()?['body/bodyPreview'], 0, min(length(triggerOutputs()?['body/bodyPreview']), 300))}" } }] }
-  }
-}
-```
-5. **Save** and **Turn on**
+
+4. Add action: **Condition** (sensitivity filter)
+   - AND group — all must be true:
+     - `subject` does not contain `confidential`
+     - `subject` does not contain `NDA`
+     - `subject` does not contain `compensation`
+     - `subject` does not contain `salary`
+     - `subject` does not contain `acquisition`
+     - `subject` does not contain `termination`
+     - `subject` does not contain `reorg`
+
+5. In **If yes** branch, add: **Webex → Send a message**
+   - Room ID: *paste the Email Triage room ID*
+   - Message text:
+   ```
+   [EMAIL] From: @{triggerOutputs()?['body/from']}
+   Subject: @{triggerOutputs()?['body/subject']}
+   Reason: flagged
+   Preview: @{substring(triggerOutputs()?['body/bodyPreview'], 0, min(length(triggerOutputs()?['body/bodyPreview']), 300))}
+   ```
+
+6. **Save** and **Turn on**
 
 ---
 
 ## Flow 2: Direct Questions & Requests
 
-Catches emails sent directly to you (not CC) that contain questions or action requests.
+Catches emails sent directly to you that contain questions or action requests.
 
 ### Setup
 
@@ -72,31 +67,43 @@ Catches emails sent directly to you (not CC) that contain questions or action re
 3. Trigger: **When a new email arrives (V3)** (Office 365 Outlook)
    - Folder: Inbox
    - To: `jasheare@cisco.com`
-   - Include Attachments: No
    - Only with Importance: Normal, High
-4. Add action: **Condition**
-   - Check if body contains any action phrase. Use an **OR** group:
-     - `body/bodyPreview` contains `?`
-     - `body/bodyPreview` contains `can you`
-     - `body/bodyPreview` contains `could you`
-     - `body/bodyPreview` contains `please`
-     - `body/bodyPreview` contains `your thoughts`
-     - `body/bodyPreview` contains `action item`
-     - `body/bodyPreview` contains `follow up`
-     - `body/bodyPreview` contains `by EOD`
-     - `body/bodyPreview` contains `ASAP`
-5. In the **If yes** branch, add action: **HTTP** (same as Flow 1 but with these changes):
-   - Body changes:
-     - Priority: `"P0 — Today"` (direct asks are urgent)
-     - Notes: change "Flagged in Outlook" to `"Direct ask / question detected"`
-6. In the **If no** branch: leave empty (do nothing)
+
+4. Add action: **Condition** (sensitivity filter — same as Flow 1)
+
+5. In **If yes**, add another **Condition** (action detection):
+   - OR group — any must be true:
+     - `bodyPreview` contains `?`
+     - `bodyPreview` contains `can you`
+     - `bodyPreview` contains `could you`
+     - `bodyPreview` contains `please`
+     - `bodyPreview` contains `would you`
+     - `bodyPreview` contains `need your`
+     - `bodyPreview` contains `your thoughts`
+     - `bodyPreview` contains `your input`
+     - `bodyPreview` contains `follow up`
+     - `bodyPreview` contains `action item`
+     - `bodyPreview` contains `by EOD`
+     - `bodyPreview` contains `by end of`
+     - `bodyPreview` contains `ASAP`
+
+6. In the inner **If yes**, add: **Webex → Send a message**
+   - Room ID: *Email Triage room ID*
+   - Message text:
+   ```
+   [EMAIL] From: @{triggerOutputs()?['body/from']}
+   Subject: @{triggerOutputs()?['body/subject']}
+   Reason: direct ask
+   Preview: @{substring(triggerOutputs()?['body/bodyPreview'], 0, min(length(triggerOutputs()?['body/bodyPreview']), 300))}
+   ```
+
 7. **Save** and **Turn on**
 
 ---
 
 ## Flow 3: VIP Senders
 
-Catches any email from key collaborators regardless of content.
+Catches any email from key collaborators.
 
 ### Setup
 
@@ -104,25 +111,33 @@ Catches any email from key collaborators regardless of content.
 2. Name: `MC: VIP Emails`
 3. Trigger: **When a new email arrives (V3)** (Office 365 Outlook)
    - Folder: Inbox
-   - From: *(leave blank — we'll filter in a condition)*
-4. Add action: **Condition**
-   - Use an **OR** group:
+
+4. Add action: **Condition** (sensitivity filter — same as above)
+
+5. In **If yes**, add **Condition** (VIP check):
+   - OR group:
      - `from` contains `marcemon@cisco.com`
      - `from` contains `jlovisol@cisco.com`
      - `from` contains `tfeldgoi@cisco.com`
      - `from` contains `brduque@cisco.com`
      - `from` contains `rsweetzi@cisco.com`
      - `from` contains `rsia@cisco.com`
-5. In the **If yes** branch, add: **HTTP** (same pattern):
-   - Priority: `"P1 — This Week"`
-   - Notes: `"VIP sender — @{triggerOutputs()?['body/from']}"`
-6. **Save** and **Turn on**
+
+6. Inner **If yes** → **Webex → Send a message**
+   - Room ID: *Email Triage room ID*
+   - Message text:
+   ```
+   [EMAIL] From: @{triggerOutputs()?['body/from']}
+   Subject: @{triggerOutputs()?['body/subject']}
+   Reason: VIP sender
+   Preview: @{substring(triggerOutputs()?['body/bodyPreview'], 0, min(length(triggerOutputs()?['body/bodyPreview']), 300))}
+   ```
+
+7. **Save** and **Turn on**
 
 ---
 
 ## Flow 4 (Optional): Meeting-Related Emails
-
-Catches agenda, recap, minutes, and follow-up emails.
 
 ### Setup
 
@@ -131,65 +146,72 @@ Catches agenda, recap, minutes, and follow-up emails.
 3. Trigger: **When a new email arrives (V3)**
    - Folder: Inbox
    - To: `jasheare@cisco.com`
-4. Add action: **Condition** (OR group):
-   - `subject` contains `agenda`
-   - `subject` contains `recap`
-   - `subject` contains `minutes`
-   - `subject` contains `action item`
-   - `subject` contains `follow up`
-   - `subject` contains `prep`
-5. **If yes** → **HTTP** with:
-   - Priority: `"P1 — This Week"`
-   - Context: `"Deep Work"` (meeting prep usually needs focus)
-   - Notes: `"Meeting-related email"`
-6. **Save** and **Turn on**
+
+4. Add: **Condition** (sensitivity filter)
+
+5. In **If yes**, add **Condition** (meeting detection):
+   - OR group:
+     - `subject` contains `agenda`
+     - `subject` contains `recap`
+     - `subject` contains `minutes`
+     - `subject` contains `action item`
+     - `subject` contains `follow up`
+     - `subject` contains `prep`
+
+6. Inner **If yes** → **Webex → Send a message**
+   - Room ID: *Email Triage room ID*
+   - Message text:
+   ```
+   [EMAIL] From: @{triggerOutputs()?['body/from']}
+   Subject: @{triggerOutputs()?['body/subject']}
+   Reason: meeting-related
+   Preview: @{substring(triggerOutputs()?['body/bodyPreview'], 0, min(length(triggerOutputs()?['body/bodyPreview']), 300))}
+   ```
+
+7. **Save** and **Turn on**
 
 ---
 
-## Sensitivity Filter
+## How It Works End-to-End
 
-To avoid capturing sensitive emails, add a **Condition** at the top of each flow (before the HTTP action) that checks the subject + body do NOT contain:
-
-- `confidential`
-- `compensation`
-- `salary`
-- `NDA`
-- `acquisition`
-- `merger`
-- `deal value`
-- `termination`
-- `reorg`
-
-Set this as an **AND** group of "does not contain" checks. Put the HTTP action inside the **If yes** (passed filter) branch.
-
----
-
-## Deduplication
-
-Power Automate triggers on each new email, so duplicates are rare. However, if the same email thread triggers multiple flows (e.g., a flagged VIP email), you may get duplicate tasks. To handle this:
-
-1. Add a **Search** step before creating: HTTP GET to Notion API searching for the subject line
-2. Only create if no matching task exists
-
-Or just accept occasional duplicates — they're easy to spot and mark done in Mission Control.
+```
+Outlook Email
+    ↓ (Power Automate trigger)
+Sensitivity Filter
+    ↓ (passes)
+Heuristic Match (flagged/VIP/question/meeting)
+    ↓ (matches)
+Webex "Email Triage" Space
+    ↓ (mc-webex-messages agent, hourly)
+Parse [EMAIL] format
+    ↓
+Notion Task (Source: Email, Zone: Air-Gapped)
+    ↓ (index rebuild)
+Mission Control Dashboard
+    → Today's Action Items
+    → People view (correlated with Webex context)
+    → Initiatives (auto-linked by keywords)
+    → Morning Briefing
+```
 
 ---
 
 ## Testing
 
-1. Send yourself a test email with "Can you review this?" in the body
-2. Wait 1-2 minutes (Power Automate triggers aren't instant)
-3. Check Mission Control — the task should appear with Source: Email, Zone: Air-Gapped
+1. Flag any email in Outlook (or send yourself a test from a VIP address)
+2. Wait 1-2 minutes for Power Automate to trigger
+3. Check the "Email Triage" Webex space — you should see the `[EMAIL]` message
+4. Wait for the next mc-webex-messages run (hourly at :47) or trigger manually
+5. Check Mission Control — task should appear with Source: Email
 
 ---
 
-## What Happens Next
+## Deduplication
 
-Once tasks land in Notion:
-- Mission Control's hourly index rebuild picks them up
-- They appear in Today's Action Items (filtered by priority)
-- They correlate with Webex context (same people → linked in People view)
-- The morning briefing agent includes them in the daily brief
-- They can be assigned to Initiatives from the task modal
+If the same email triggers multiple flows (e.g., a flagged VIP email with a question), you'll get multiple messages in the Webex space. The mc-webex-messages agent should handle near-duplicates, but occasional doubles may appear. Easy to spot and dismiss in Mission Control.
 
-No data flows through NanoClaw. Power Automate reads your mailbox (server-side in Microsoft's cloud) and writes to Notion (SaaS). The Mac Mini only reads from Notion.
+---
+
+## Adding/Removing VIPs
+
+Edit Flow 3's condition to add or remove email addresses. No changes needed on the NanoClaw side.

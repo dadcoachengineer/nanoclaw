@@ -57,6 +57,26 @@ ZONE RULE: Never access Cisco systems, email, or data. Cisco tasks get Zone = "A
 
 After creating, confirm briefly: "✅ Added to MC: [title] (P2, [project])"
 
+## Email Triage (Webex Space)
+
+The "Email Triage" Webex space receives forwarded email summaries from Power Automate. Messages follow this format:
+
+```
+[EMAIL] From: Sender Name (email@cisco.com)
+Subject: The email subject
+Reason: flagged | VIP sender | direct ask | meeting-related
+Preview: First 300 chars of email body...
+```
+
+When processing messages from this space (via mc-webex-messages):
+- Create Notion tasks with **Source: "Email"** and **Zone: "Air-Gapped"**
+- The task title should be: "Reply to [Sender]: [Subject]"
+- Infer Priority from the Reason: "direct ask" or "flagged" → P0, "VIP sender" or "meeting-related" → P1
+- Infer Context from the preview length/complexity: short → Quick Win, long → Deep Work
+- Always set Project: "Cisco", Delegated To: "Jason"
+- Apply the corrections glossary before creating tasks
+- Do NOT include the raw email body in the Notion task — just the preview (first 300 chars)
+
 ## Corrections Glossary
 
 Before creating tasks from transcripts or recordings, load the corrections glossary at `/workspace/project/store/corrections.json`. If it exists, apply word-level substitutions to task titles before posting to Notion. The glossary maps commonly misspelled/mistranscribed words to their correct form: `{"Nika": "NECA", "Marsela": "Marcela"}`. Apply corrections case-insensitively, whole-word only.
