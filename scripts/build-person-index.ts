@@ -220,6 +220,9 @@ async function indexWebexDirectMessages(index: PersonIndex): Promise<void> {
     };
 
     for (const m of (msgs.items || []).slice(0, 10)) {
+      if (!m.text || m.text.length < 5) continue;
+      const dedupKey = `${m.created}:${(m.text || "").slice(0, 50)}`;
+      if (entry.messageExcerpts.some((e) => `${e.date}:${e.text.slice(0, 50)}` === dedupKey)) continue;
       entry.messageExcerpts.push({
         text: (m.text || "").slice(0, 300),
         date: m.created,
@@ -335,20 +338,25 @@ async function indexWebexRecordings(index: PersonIndex, topicIndex: TopicIndex):
         if (speaker.match(/^[A-Z]{2,}\d/)) continue;
 
         const entry = getOrCreate(index, speaker);
-        entry.transcriptMentions.push({
-          recordingId: rec.id,
-          topic: rec.topic,
-          date: rec.createTime,
-          snippetCount: sLines.length,
-          snippets: sLines.slice(0, 5).map((s) => s.slice(0, 200)),
-        });
-        entry.meetings.push({
-          id: rec.id,
-          topic: rec.topic,
-          date: rec.createTime,
-          role: "speaker",
-        });
+        if (!entry.transcriptMentions.some((t) => t.recordingId === rec.id)) {
+          entry.transcriptMentions.push({
+            recordingId: rec.id,
+            topic: rec.topic,
+            date: rec.createTime,
+            snippetCount: sLines.length,
+            snippets: sLines.slice(0, 5).map((s) => s.slice(0, 200)),
+          });
+        }
+        if (!entry.meetings.some((m) => m.id === rec.id)) {
+          entry.meetings.push({
+            id: rec.id,
+            topic: rec.topic,
+            date: rec.createTime,
+            role: "speaker",
+          });
+        }
       }
+
       // Index topics from this recording
       const topicMatches = matchTopics(rec.topic + " " + vtt.slice(0, 2000));
       for (const topicName of topicMatches) {
