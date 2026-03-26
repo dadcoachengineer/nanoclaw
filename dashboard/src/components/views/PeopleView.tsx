@@ -123,7 +123,7 @@ export default function PeopleView() {
         <StatCard value={withMessages.length} label="Messaged" color="var(--yellow)" />
       </div>
 
-      <div className="grid grid-cols-[1fr_480px] gap-6">
+      <div className="grid grid-cols-[320px_1fr] gap-6">
         {/* Left: People list */}
         <Card>
           <CardHeader
