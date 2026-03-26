@@ -14,9 +14,9 @@ interface ProjectSummary {
   name: string;
   description: string;
   status: "active" | "paused" | "complete";
-  tasks: number;
-  people: number;
-  meetings: number;
+  taskCount: number;
+  peopleCount: number;
+  meetingCount: number;
 }
 
 interface ActivityItem {
@@ -38,16 +38,17 @@ interface ProjectTask {
 
 interface ProjectPerson {
   name: string;
+  email?: string | null;
   avatar?: string | null;
-  meetings: number;
+  meetingCount: number;
   pinned?: boolean;
 }
 
 interface ProjectMeeting {
-  id: string;
-  topic: string;
+  title: string;
   date: string;
-  summaryExcerpt?: string;
+  hasSummary?: boolean;
+  pinned?: boolean;
 }
 
 interface ProjectDetail {
@@ -284,10 +285,10 @@ export default function ProjectsView() {
     const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
     setSelected({ ...selected, status: next });
     // Optimistic — fire and forget
-    fetch(`/api/projects?slug=${encodeURIComponent(selected.slug)}`, {
+    fetch("/api/projects", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: next }),
+      body: JSON.stringify({ slug: selectedSlug, status: next }),
     });
   }
 
@@ -300,8 +301,8 @@ export default function ProjectsView() {
     : projects;
 
   const activeCount = projects.filter((p) => p.status === "active").length;
-  const totalTasks = projects.reduce((s, p) => s + p.tasks, 0);
-  const totalPeople = projects.reduce((s, p) => s + p.people, 0);
+  const totalTasks = projects.reduce((s, p) => s + p.taskCount, 0);
+  const totalPeople = projects.reduce((s, p) => s + p.peopleCount, 0);
 
   return (
     <div className="max-w-[1400px] mx-auto px-8 py-6">
@@ -351,9 +352,9 @@ export default function ProjectsView() {
                     </div>
                   )}
                   <div className="flex gap-3 text-xs text-[var(--text-dim)]">
-                    {p.tasks > 0 && <span>{p.tasks} tasks</span>}
-                    {p.people > 0 && <span>{p.people} people</span>}
-                    {p.meetings > 0 && <span>{p.meetings} mtg</span>}
+                    {p.taskCount > 0 && <span>{p.taskCount} tasks</span>}
+                    {p.peopleCount > 0 && <span>{p.peopleCount} people</span>}
+                    {p.meetingCount > 0 && <span>{p.meetingCount} mtg</span>}
                   </div>
                 </div>
               ))}
@@ -429,7 +430,7 @@ export default function ProjectsView() {
                   />
                   <div className="max-h-[50vh] overflow-y-auto">
                     {selected.activity
-                      .sort((a, b) => b.date.localeCompare(a.date))
+                      .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
                       .map((item, i) => {
                         const style = ACTIVITY_STYLES[item.type] || ACTIVITY_STYLES.task;
                         return (
@@ -452,7 +453,7 @@ export default function ProjectsView() {
                                   {item.title}
                                 </span>
                                 <span className="text-xs text-[var(--text-dim)] shrink-0">
-                                  {timeAgo(item.date)}
+                                  {item.date ? timeAgo(item.date) : ""}
                                 </span>
                               </div>
                               {item.detail && (
@@ -549,9 +550,9 @@ export default function ProjectsView() {
                         >
                           <Avatar name={p.name} avatar={p.avatar} />
                           <span className="text-xs text-[var(--text-bright)]">{p.name}</span>
-                          {p.meetings > 0 && (
+                          {p.meetingCount > 0 && (
                             <span className="text-[10px] text-[var(--text-dim)]">
-                              {p.meetings} mtg
+                              {p.meetingCount} mtg
                             </span>
                           )}
                           {p.pinned && (
@@ -578,24 +579,24 @@ export default function ProjectsView() {
                   />
                   <div>
                     {selected.meetings
-                      .sort((a, b) => b.date.localeCompare(a.date))
+                      .sort((a, b) => (b.date || "").localeCompare(a.date || ""))
                       .map((m) => (
                         <div
-                          key={m.id}
+                          key={m.title}
                           className="px-4 py-3 border-b border-[var(--border)] last:border-0"
                         >
                           <div className="flex items-center gap-3">
                             <div className="w-1.5 h-1.5 rounded-full shrink-0 bg-[var(--accent)]" />
                             <span className="text-sm flex-1 truncate text-[var(--text-bright)]">
-                              {m.topic}
+                              {m.title}
                             </span>
                             <span className="text-xs text-[var(--text-dim)] shrink-0">
-                              {shortDate(m.date)}
+                              {m.date ? shortDate(m.date) : ""}
                             </span>
                           </div>
-                          {m.summaryExcerpt && (
-                            <div className="text-xs text-[var(--text)] mt-1.5 ml-[18px] line-clamp-2 bg-[var(--surface2)] rounded px-3 py-1.5">
-                              {m.summaryExcerpt}
+                          {m.hasSummary && (
+                            <div className="text-[10px] text-[var(--green)] mt-1 ml-[18px]">
+                              AI Summary available
                             </div>
                           )}
                         </div>
