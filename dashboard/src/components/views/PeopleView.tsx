@@ -33,6 +33,13 @@ interface PersonDetail {
   }[];
   notionTasks: { id: string; title: string; status: string }[];
   messageExcerpts: { text: string; date: string; roomTitle: string }[];
+  aiSummaries: {
+    meetingId: string;
+    title: string;
+    date: string;
+    summary: string;
+    actionItems: string[];
+  }[];
 }
 
 function Avatar({ name, avatar, size = "sm" }: { name: string; avatar?: string | null; size?: "sm" | "lg" }) {
@@ -64,7 +71,7 @@ export default function PeopleView() {
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
-  const [detailFilter, setDetailFilter] = useState<"all" | "meetings" | "transcripts" | "messages" | "tasks">("all");
+  const [detailFilter, setDetailFilter] = useState<"all" | "meetings" | "transcripts" | "messages" | "tasks" | "summaries">("all");
   const [replyTo, setReplyTo] = useState<{ text: string; personName: string; personEmail?: string; roomId?: string } | null>(null);
   const [scores, setScores] = useState<Record<string, number>>({});
 
@@ -196,6 +203,7 @@ export default function PeopleView() {
                       { key: "transcripts" as const, value: selected.transcriptMentions.length, label: "Transcripts", color: "var(--purple)" },
                       { key: "messages" as const, value: selected.messageExcerpts.length, label: "Messages", color: "var(--green)" },
                       { key: "tasks" as const, value: selected.notionTasks.length, label: "Tasks", color: "var(--yellow)" },
+                      ...((selected.aiSummaries?.length || 0) > 0 ? [{ key: "summaries" as const, value: selected.aiSummaries.length, label: "AI Summaries", color: "var(--green)" }] : []),
                     ]).map((s) => (
                       <button
                         key={s.key}
@@ -244,6 +252,42 @@ export default function PeopleView() {
                           {t.snippetCount > 3 && (
                             <div className="text-xs text-[var(--text-dim)] mt-1">
                               +{t.snippetCount - 3} more lines
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                  </div>
+                </Card>
+              )}
+
+              {/* AI Meeting Summaries */}
+              {(selected.aiSummaries?.length || 0) > 0 && (detailFilter === "all" || detailFilter === "summaries") && (
+                <Card>
+                  <CardHeader title="AI Meeting Summaries" />
+                  <div>
+                    {selected.aiSummaries
+                      .sort((a, b) => b.date.localeCompare(a.date))
+                      .slice(0, detailFilter === "summaries" ? 10 : 3)
+                      .map((s, i) => (
+                        <div key={i} className="group/row px-4 py-3 border-b border-[var(--border)] last:border-0">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-medium text-[var(--green)]">{s.title}</span>
+                            <div className="flex items-center gap-2">
+                              <VoteButtons context={voteContext} itemType="summary" itemId={s.meetingId} initialScore={getScore("summary", s.meetingId)} onVoted={(sc) => updateScore("summary", s.meetingId, sc)} />
+                              <span className="text-xs text-[var(--text-dim)]">
+                                {new Date(s.date).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                              </span>
+                            </div>
+                          </div>
+                          <p className="text-sm text-[var(--text)] mb-2 line-clamp-3">{s.summary}</p>
+                          {s.actionItems.length > 0 && (
+                            <div className="space-y-1">
+                              {s.actionItems.map((item, j) => (
+                                <div key={j} className="flex gap-1.5 text-xs text-[var(--text-dim)]">
+                                  <span className="text-[var(--yellow)] shrink-0">→</span>
+                                  <span>{item}</span>
+                                </div>
+                              ))}
                             </div>
                           )}
                         </div>

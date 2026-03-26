@@ -594,6 +594,7 @@ async function indexAiSummaries(index: PersonIndex, topicIndex: TopicIndex) {
 
       if (mentioned) {
         // Avoid duplicates
+        if (!person.aiSummaries) person.aiSummaries = [];
         if (!person.aiSummaries.some((a) => a.meetingId === meetingId)) {
           person.aiSummaries.push({
             meetingId,

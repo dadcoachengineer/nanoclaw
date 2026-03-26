@@ -378,7 +378,33 @@ async function main() {
       await new Promise((r) => setTimeout(r, 300));
     }
 
-    // 4. Store summary data for index builders
+    // 4. Enrich person index with meeting participant emails
+    try {
+      const inviteeData = (await webexGet(
+        `/meetingInvitees?meetingId=${meeting.id}&max=50`
+      )) as { items?: { displayName?: string; email?: string }[] };
+      const personIndexPath = path.join(STORE_DIR, "person-index.json");
+      if (inviteeData.items?.length && fs.existsSync(personIndexPath)) {
+        const personIndex = JSON.parse(fs.readFileSync(personIndexPath, "utf-8"));
+        for (const inv of inviteeData.items) {
+          if (!inv.displayName || !inv.email) continue;
+          const key = inv.displayName.toLowerCase().trim();
+          // Find by exact key or name match
+          const entry = personIndex[key] ||
+            Object.values(personIndex).find((p: any) =>
+              p.name?.toLowerCase() === key ||
+              inv.displayName!.toLowerCase().includes(p.name?.toLowerCase().split(" ").pop() || "???")
+            ) as any;
+          if (entry && !entry.emails.includes(inv.email)) {
+            entry.emails.push(inv.email);
+          }
+        }
+        fs.writeFileSync(personIndexPath, JSON.stringify(personIndex, null, 2));
+        console.log(`  Enriched person index with ${inviteeData.items.length} participant emails`);
+      }
+    } catch { /* best-effort enrichment */ }
+
+    // 5. Store summary data for index builders
     summaries[meeting.id] = {
       title: meeting.title,
       date: meeting.start,
@@ -388,7 +414,7 @@ async function main() {
       notionTaskIds,
     };
 
-    // 5. Mark as processed
+    // 6. Mark as processed
     state.processedMeetings.push(meeting.id);
     meetingsProcessed++;
 
@@ -396,12 +422,12 @@ async function main() {
     await new Promise((r) => setTimeout(r, 500));
   }
 
-  // 6. Save state and summaries
+  // 7. Save state and summaries
   state.lastCheck = now.toISOString();
   saveState(state);
   saveSummaries(summaries);
 
-  // 7. Print summary
+  // 8. Print summary
   console.log("\n=== Summary ===");
   console.log(`Meetings processed: ${meetingsProcessed}`);
   console.log(`Action items created as Notion tasks: ${totalActionItems}`);
