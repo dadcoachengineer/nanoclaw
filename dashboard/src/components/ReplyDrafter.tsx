@@ -11,6 +11,25 @@ interface ReplyDrafterProps {
   onClose: () => void;
 }
 
+function copyText(text: string): boolean {
+  try {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  // Fallback for non-HTTPS (LAN)
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return true;
+}
+
 export default function ReplyDrafter({
   message,
   personName,
@@ -51,28 +70,21 @@ export default function ReplyDrafter({
     }
   }
 
-  function openInWebex() {
-    if (!roomId || !draft) return;
-    copyToClipboard();
-    window.open(`webexteams://im?space=${roomId}`, "_blank");
+  function handleCopy() {
+    copyText(draft);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 3000);
   }
 
-  function copyToClipboard() {
-    try {
-      navigator.clipboard.writeText(draft);
-    } catch {
-      // Fallback for non-HTTPS contexts (LAN access)
-      const textarea = document.createElement("textarea");
-      textarea.value = draft;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-    }
+  function handleCopyAndOpen() {
+    copyText(draft);
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    // Use email-based deep link — most reliable for opening the right conversation
+    if (personEmail) {
+      window.location.href = `webexteams://im?email=${encodeURIComponent(personEmail)}`;
+    } else if (roomId) {
+      window.location.href = `webexteams://im?space=${roomId}`;
+    }
   }
 
   // Auto-generate on mount
@@ -94,6 +106,7 @@ export default function ReplyDrafter({
               </h2>
               <div className="text-xs text-[var(--text-dim)] mt-0.5">
                 via {channel}
+                {personEmail && <span className="ml-1">({personEmail})</span>}
               </div>
             </div>
             <button
@@ -145,6 +158,12 @@ export default function ReplyDrafter({
               className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-lg px-4 py-3 text-sm text-[var(--text)] focus:outline-none focus:border-[var(--accent)] resize-y"
             />
           )}
+
+          {copied && (
+            <div className="text-xs text-[var(--green)] mt-2 text-center">
+              Copied to clipboard — paste in Webex with Cmd+V
+            </div>
+          )}
         </div>
 
         {/* Actions */}
@@ -159,17 +178,17 @@ export default function ReplyDrafter({
             </button>
             <div className="flex-1" />
             <button
-              onClick={copyToClipboard}
+              onClick={handleCopy}
               className="px-4 py-1.5 bg-[var(--surface2)] border border-[var(--border)] text-sm text-[var(--text)] rounded-md hover:border-[var(--accent)]"
             >
               {copied ? "Copied!" : "Copy"}
             </button>
-            {roomId && (
+            {(personEmail || roomId) && (
               <button
-                onClick={openInWebex}
+                onClick={handleCopyAndOpen}
                 className="px-4 py-1.5 bg-[var(--accent)] text-[var(--bg)] text-sm font-medium rounded-md hover:opacity-90"
               >
-                {copied ? "Copied — opening Webex..." : "Copy & Open in Webex"}
+                Copy & Open Webex
               </button>
             )}
           </div>
