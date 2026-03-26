@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Card, CardHeader, StatCard, GroupHeader } from "@/components/Card";
 import TaskItem from "@/components/TaskItem";
 import MeetingItem from "@/components/MeetingItem";
-import MeetingContext from "@/components/MeetingContext";
+import MeetingPrep from "@/components/MeetingPrep";
 import TaskDetail from "@/components/TaskDetail";
 import { NotionPage, prop, priorityRank, queryNotion } from "@/lib/notion";
 import { WebexMeeting, fetchMeetings } from "@/lib/webex";
@@ -208,9 +208,9 @@ export default function TodayView() {
         />
       )}
 
-      {/* Meeting context slide-over */}
+      {/* Meeting prep slide-over */}
       {selectedMeeting && (
-        <MeetingContext
+        <MeetingPrep
           meeting={selectedMeeting}
           onClose={() => setSelectedMeeting(null)}
         />
