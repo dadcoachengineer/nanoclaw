@@ -53,14 +53,24 @@ export default function ReplyDrafter({
 
   function openInWebex() {
     if (!roomId || !draft) return;
-    navigator.clipboard.writeText(draft);
-    setCopied(true);
-    // Open Webex native app to this conversation (copied to clipboard for paste)
+    copyToClipboard();
     window.open(`webexteams://im?space=${roomId}`, "_blank");
   }
 
   function copyToClipboard() {
-    navigator.clipboard.writeText(draft);
+    try {
+      navigator.clipboard.writeText(draft);
+    } catch {
+      // Fallback for non-HTTPS contexts (LAN access)
+      const textarea = document.createElement("textarea");
+      textarea.value = draft;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   }
