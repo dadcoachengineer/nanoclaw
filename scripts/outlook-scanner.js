@@ -185,48 +185,57 @@ function run() {
 
   var sinceMs = Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000;
 
-  // Find the inbox — Outlook for Mac organizes by account/folder
-  // Try default mailbox first, then fall back to searching accounts
+  // Discover Outlook's scripting interface
+  // Log available properties to find the right path to messages
   var inbox = null;
-  try {
-    // Method 1: default inbox via mail account
-    var accounts = outlook.mailAccounts();
-    log("Found " + accounts.length + " mail account(s)");
-    for (var a = 0; a < accounts.length; a++) {
-      var acct = accounts[a];
-      log("  Account: " + acct.name() + " (" + acct.emailAddress() + ")");
-      try {
-        var folders = acct.mailFolders();
-        for (var f = 0; f < folders.length; f++) {
-          var fname = folders[f].name();
-          if (fname === "Inbox" || fname === "inbox" || fname === "INBOX") {
-            inbox = folders[f];
-            log("  -> Using inbox from: " + acct.name());
-            break;
-          }
+
+  // Try every known way to reach the inbox in Outlook for Mac JXA
+  var attempts = [
+    function() { return { name: "outlook.inbox", val: outlook.inbox }; },
+    function() { return { name: "outlook.defaultAccount.inbox", val: outlook.defaultAccount.inbox }; },
+    function() { return { name: "outlook.accounts[0].inbox", val: outlook.accounts()[0].inbox }; },
+    function() { return { name: "outlook.exchangeAccounts[0].inbox", val: outlook.exchangeAccounts()[0].inbox }; },
+    function() { return { name: "outlook.mailFolders['Inbox']", val: outlook.mailFolders.byName("Inbox") }; },
+    function() { return { name: "outlook.mailFolders[0]", val: outlook.mailFolders()[0] }; },
+    function() {
+      // Try to find Inbox by iterating folders
+      var folders = outlook.mailFolders();
+      log("  Found " + folders.length + " top-level folders");
+      for (var f = 0; f < folders.length; f++) {
+        var fname = folders[f].name();
+        log("    Folder: " + fname);
+        if (fname === "Inbox" || fname === "inbox") {
+          return { name: "mailFolders['" + fname + "']", val: folders[f] };
         }
-      } catch (e5) {
-        log("  Error reading folders: " + e5);
       }
-      if (inbox) break;
+      return null;
+    },
+    function() {
+      // Try inboxFolder (newer Outlook)
+      return { name: "outlook.inboxFolder", val: outlook.inboxFolder };
     }
-  } catch (e6) {
-    log("Error listing accounts: " + e6);
-  }
+  ];
 
-  // Method 2: try the default inbox property
-  if (!inbox) {
+  for (var a = 0; a < attempts.length; a++) {
     try {
-      inbox = outlook.inbox;
-      log("Using default outlook.inbox");
-    } catch (e7) {
-      log("No inbox found: " + e7);
-      return "No inbox found";
+      var result = attempts[a]();
+      if (result && result.val) {
+        // Test that it actually has messages
+        var testMsgs = result.val.messages();
+        log("SUCCESS: " + result.name + " has " + testMsgs.length + " messages");
+        inbox = result.val;
+        break;
+      }
+    } catch (e5) {
+      var attemptName = "attempt " + a;
+      try { attemptName = attempts[a]().name; } catch(e99) {}
+      log("  Try " + a + ": " + e5.message);
     }
   }
 
   if (!inbox) {
-    log("ERROR: Could not find inbox folder");
+    log("ERROR: Could not find inbox through any known method");
+    log("Outlook may need 'Automation' permission in System Settings > Privacy & Security");
     return "No inbox found";
   }
 
