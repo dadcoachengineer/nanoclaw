@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { NotionPage, prop } from "@/lib/notion";
 import EditableBadge from "@/components/EditableBadge";
 
@@ -127,6 +127,27 @@ async function completeTask(pageId: string, comment?: string) {
   return resp.ok;
 }
 
+async function addNoteComment(pageId: string, text: string): Promise<boolean> {
+  const resp = await fetch("/api/notion/update", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ page_id: pageId, comment: text }),
+  });
+  return resp.ok;
+}
+
+interface Initiative {
+  slug: string;
+  name: string;
+  status: string;
+  pinnedTaskIds?: string[];
+}
+
+interface LocalNote {
+  text: string;
+  timestamp: string;
+}
+
 export default function TaskDetail({
   page,
   onClose,
@@ -142,6 +163,20 @@ export default function TaskDetail({
   const [blocks, setBlocks] = useState<any[] | null>(null);
   const [loadingBlocks, setLoadingBlocks] = useState(false);
 
+  // Editable notes state
+  const [addingNote, setAddingNote] = useState(false);
+  const [noteText, setNoteText] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+  const [localNotes, setLocalNotes] = useState<LocalNote[]>([]);
+  const noteTextareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // Initiative assignment state
+  const [initiatives, setInitiatives] = useState<Initiative[]>([]);
+  const [currentInitiative, setCurrentInitiative] = useState<Initiative | null>(null);
+  const [initiativeOpen, setInitiativeOpen] = useState(false);
+  const [savingInitiative, setSavingInitiative] = useState(false);
+  const initiativeRef = useRef<HTMLDivElement>(null);
+
   const title = prop(page, "Task") || prop(page, "Name") || "Untitled";
   const isRich = isRichPage(title);
 
@@ -155,6 +190,85 @@ export default function TaskDetail({
       .catch(() => setBlocks(null))
       .finally(() => setLoadingBlocks(false));
   }, [page.id, isRich]);
+
+  // Fetch initiatives and detect current assignment
+  useEffect(() => {
+    fetch("/api/initiatives")
+      .then((r) => r.json())
+      .then((data: Initiative[]) => {
+        setInitiatives(data);
+        // Find which initiative has this task pinned
+        const match = data.find((ini) =>
+          (ini.pinnedTaskIds || []).includes(page.id)
+        );
+        if (match) setCurrentInitiative(match);
+      })
+      .catch(() => {});
+  }, [page.id]);
+
+  // Close initiative dropdown on outside click
+  useEffect(() => {
+    if (!initiativeOpen) return;
+    function handleClick(e: MouseEvent) {
+      if (initiativeRef.current && !initiativeRef.current.contains(e.target as Node)) {
+        setInitiativeOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [initiativeOpen]);
+
+  // Auto-focus the note textarea when opened
+  useEffect(() => {
+    if (addingNote && noteTextareaRef.current) {
+      noteTextareaRef.current.focus();
+    }
+  }, [addingNote]);
+
+  async function handleSaveNote() {
+    if (!noteText.trim()) return;
+    setSavingNote(true);
+    const ok = await addNoteComment(page.id, noteText.trim());
+    if (ok) {
+      setLocalNotes((prev) => [
+        ...prev,
+        { text: noteText.trim(), timestamp: new Date().toLocaleString() },
+      ]);
+      setNoteText("");
+      setAddingNote(false);
+    }
+    setSavingNote(false);
+  }
+
+  async function handleInitiativeSelect(ini: Initiative) {
+    if (currentInitiative?.slug === ini.slug) {
+      setInitiativeOpen(false);
+      return;
+    }
+    setSavingInitiative(true);
+    setInitiativeOpen(false);
+
+    // Unpin from current initiative if assigned
+    if (currentInitiative) {
+      await fetch("/api/initiatives", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug: currentInitiative.slug, unpinTask: page.id }),
+      });
+    }
+
+    // Pin to the new initiative
+    const resp = await fetch("/api/initiatives", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: ini.slug, pinTask: page.id }),
+    });
+
+    if (resp.ok) {
+      setCurrentInitiative(ini);
+    }
+    setSavingInitiative(false);
+  }
   const priority = prop(page, "Priority");
   const status = prop(page, "Status");
   const context = prop(page, "Context");
@@ -212,6 +326,52 @@ export default function TaskDetail({
                   : <EditableBadge pageId={page.id} field="Status" value={status} />
                 )}
                 {context && <EditableBadge pageId={page.id} field="Context" value={context} />}
+                {/* Initiative assignment pill */}
+                <div ref={initiativeRef} className="relative inline-block">
+                  <span
+                    className={`inline-block px-2.5 py-0.5 rounded-full text-xs font-medium cursor-pointer transition-opacity hover:opacity-80 ${
+                      savingInitiative
+                        ? "opacity-50"
+                        : currentInitiative
+                          ? "bg-[rgba(56,178,172,0.15)] text-[#38b2ac]"
+                          : "bg-[rgba(56,178,172,0.08)] text-[rgba(56,178,172,0.6)] border border-dashed border-[rgba(56,178,172,0.3)]"
+                    }`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setInitiativeOpen(!initiativeOpen);
+                    }}
+                  >
+                    {currentInitiative ? currentInitiative.name : "+ Initiative"}
+                  </span>
+
+                  {initiativeOpen && (
+                    <div className="absolute top-full left-0 mt-1 z-[60] min-w-[200px] bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg py-1 space-y-0.5">
+                      <div className="px-3 py-1 text-[10px] text-[var(--text-dim)] uppercase tracking-wider">
+                        Initiative
+                      </div>
+                      {initiatives.length === 0 && (
+                        <div className="px-3 py-1.5 text-xs text-[var(--text-dim)]">No initiatives found</div>
+                      )}
+                      {initiatives.map((ini) => (
+                        <button
+                          key={ini.slug}
+                          className={`block w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors text-[#38b2ac] hover:bg-[rgba(56,178,172,0.1)] ${
+                            currentInitiative?.slug === ini.slug ? "ring-1 ring-[#38b2ac]" : ""
+                          }`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleInitiativeSelect(ini);
+                          }}
+                        >
+                          {ini.name}
+                          {ini.status !== "active" && (
+                            <span className="ml-1.5 text-[var(--text-dim)]">({ini.status})</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
             <button
@@ -260,12 +420,74 @@ export default function TaskDetail({
           </div>
 
           {/* Notes */}
-          {notes && (
+          {(notes || localNotes.length > 0) && (
             <div>
               <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2">Notes</div>
-              <div className="text-sm text-[var(--text)] bg-[var(--bg)] rounded-lg p-4 whitespace-pre-wrap leading-relaxed">
-                {displayNotes}
-              </div>
+              {displayNotes && (
+                <div className="text-sm text-[var(--text)] bg-[var(--bg)] rounded-lg p-4 whitespace-pre-wrap leading-relaxed">
+                  {displayNotes}
+                </div>
+              )}
+              {/* Locally added notes */}
+              {localNotes.map((ln, i) => (
+                <div key={i} className="text-sm text-[var(--text)] bg-[var(--bg)] rounded-lg p-4 mt-2 whitespace-pre-wrap leading-relaxed">
+                  <div className="text-[10px] text-[var(--text-dim)] mb-1">{ln.timestamp}</div>
+                  {ln.text}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Add Note */}
+          {!done && (
+            <div>
+              {!addingNote ? (
+                <button
+                  onClick={() => setAddingNote(true)}
+                  className="text-xs text-[var(--accent)] hover:underline"
+                >
+                  + Add Note
+                </button>
+              ) : (
+                <div className="bg-[var(--bg)] rounded-lg p-3 border border-[var(--border)]">
+                  <textarea
+                    ref={noteTextareaRef}
+                    value={noteText}
+                    onChange={(e) => setNoteText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                        e.preventDefault();
+                        handleSaveNote();
+                      }
+                      if (e.key === "Escape") {
+                        setAddingNote(false);
+                        setNoteText("");
+                      }
+                    }}
+                    placeholder="Write a note..."
+                    rows={3}
+                    className="w-full bg-transparent text-sm text-[var(--text)] placeholder:text-[var(--text-dim)] resize-none focus:outline-none"
+                  />
+                  <div className="flex items-center justify-between mt-2">
+                    <span className="text-[10px] text-[var(--text-dim)]">Ctrl+Enter to save, Esc to cancel</span>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => { setAddingNote(false); setNoteText(""); }}
+                        className="px-3 py-1 text-xs text-[var(--text-dim)] hover:text-[var(--text)]"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSaveNote}
+                        disabled={savingNote || !noteText.trim()}
+                        className="px-3 py-1 text-xs bg-[var(--accent)] text-[var(--bg)] rounded-md hover:opacity-90 disabled:opacity-50"
+                      >
+                        {savingNote ? "Saving..." : "Save Note"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -308,7 +530,7 @@ export default function TaskDetail({
             <div className="flex items-center gap-3">
               <input
                 type="text"
-                placeholder="Completion note (optional)..."
+                placeholder="Completion note..."
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleComplete()}

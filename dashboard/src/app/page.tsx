@@ -7,14 +7,14 @@ import WeekAheadView from "@/components/views/WeekAheadView";
 import WeekReviewView from "@/components/views/WeekReviewView";
 import TopicsView from "@/components/views/TopicsView";
 import PeopleView from "@/components/views/PeopleView";
-import ProjectsView from "@/components/views/ProjectsView";
+import InitiativesView from "@/components/views/ProjectsView";
 import SearchBar from "@/components/SearchBar";
 
 const TABS = [
   { id: "today", label: "Today" },
   { id: "week-ahead", label: "Week Ahead" },
   { id: "week-review", label: "Week in Review" },
-  { id: "projects", label: "Projects" },
+  { id: "initiatives", label: "Initiatives" },
   { id: "people", label: "People" },
   { id: "topics", label: "Topics" },
 ] as const;
@@ -63,7 +63,7 @@ export default function Home() {
         {tab === "today" && <TodayView />}
         {tab === "week-ahead" && <WeekAheadView />}
         {tab === "week-review" && <WeekReviewView />}
-        {tab === "projects" && <ProjectsView />}
+        {tab === "initiatives" && <InitiativesView />}
         {tab === "people" && <PeopleView />}
         {tab === "topics" && <TopicsView />}
       </main>

@@ -9,7 +9,7 @@ import VoteButtons from "@/components/VoteButtons";
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-interface ProjectSummary {
+interface InitiativeSummary {
   slug: string;
   name: string;
   description: string;
@@ -27,7 +27,7 @@ interface ActivityItem {
   id?: string;
 }
 
-interface ProjectTask {
+interface InitiativeTask {
   id: string;
   title: string;
   priority?: string;
@@ -36,7 +36,7 @@ interface ProjectTask {
   pinned?: boolean;
 }
 
-interface ProjectPerson {
+interface InitiativePerson {
   name: string;
   email?: string | null;
   avatar?: string | null;
@@ -44,14 +44,14 @@ interface ProjectPerson {
   pinned?: boolean;
 }
 
-interface ProjectMeeting {
+interface InitiativeMeeting {
   title: string;
   date: string;
   hasSummary?: boolean;
   pinned?: boolean;
 }
 
-interface ProjectDetail {
+interface InitiativeDetail {
   slug: string;
   name: string;
   description: string;
@@ -59,9 +59,9 @@ interface ProjectDetail {
   keywords: string[];
   owner?: string;
   activity: ActivityItem[];
-  tasks: ProjectTask[];
-  people: ProjectPerson[];
-  meetings: ProjectMeeting[];
+  tasks: InitiativeTask[];
+  people: InitiativePerson[];
+  meetings: InitiativeMeeting[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -137,10 +137,10 @@ function shortDate(iso: string): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  New Project Modal                                                  */
+/*  New Initiative Modal                                                */
 /* ------------------------------------------------------------------ */
 
-function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
+function NewInitiativeModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [keywords, setKeywords] = useState("");
@@ -159,7 +159,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
     if (!name.trim()) return;
     setSaving(true);
     try {
-      const resp = await fetch("/api/projects", {
+      const resp = await fetch("/api/initiatives", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -181,7 +181,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[rgba(0,0,0,0.6)]">
       <div ref={ref} className="w-full max-w-md bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg">
         <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
-          <h2 className="text-sm font-semibold text-[var(--text-bright)]">New Project</h2>
+          <h2 className="text-sm font-semibold text-[var(--text-bright)]">New Initiative</h2>
           <button
             onClick={onClose}
             className="text-[var(--text-dim)] hover:text-[var(--text)] text-lg leading-none"
@@ -196,7 +196,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Project name"
+              placeholder="Initiative name"
               className="w-full bg-[var(--bg)] border border-[var(--border)] rounded-md px-3 py-2 text-sm text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)]"
             />
           </div>
@@ -225,7 +225,7 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
             disabled={saving || !name.trim()}
             className="w-full py-2 rounded-md text-sm font-medium bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-50 transition-opacity"
           >
-            {saving ? "Creating..." : "Create Project"}
+            {saving ? "Creating..." : "Create Initiative"}
           </button>
         </div>
       </div>
@@ -237,40 +237,40 @@ function NewProjectModal({ onClose, onCreated }: { onClose: () => void; onCreate
 /*  Main View                                                          */
 /* ------------------------------------------------------------------ */
 
-export default function ProjectsView() {
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [selected, setSelected] = useState<ProjectDetail | null>(null);
+export default function InitiativesView() {
+  const [initiatives, setInitiatives] = useState<InitiativeSummary[]>([]);
+  const [selected, setSelected] = useState<InitiativeDetail | null>(null);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [scores, setScores] = useState<Record<string, number>>({});
 
-  const voteContext = selectedSlug ? `project:${selectedSlug}` : "";
+  const voteContext = selectedSlug ? `initiative:${selectedSlug}` : "";
   const updateScore = (itemType: string, itemId: string, s: number) =>
     setScores((prev) => ({ ...prev, [`${itemType}:${itemId}`]: s }));
   const getScore = (itemType: string, itemId: string) => scores[`${itemType}:${itemId}`] ?? 0;
   const isSuppressed = (itemType: string, itemId: string) => getScore(itemType, itemId) <= -2;
 
-  function loadProjects() {
-    fetch("/api/projects")
+  function loadInitiatives() {
+    fetch("/api/initiatives")
       .then((r) => r.json())
       .then((data) => {
-        setProjects(data);
+        setInitiatives(data);
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }
 
   useEffect(() => {
-    loadProjects();
+    loadInitiatives();
   }, []);
 
-  async function selectProject(slug: string) {
+  async function selectInitiative(slug: string) {
     setSelectedSlug(slug);
     const [resp, scoresResp] = await Promise.all([
-      fetch(`/api/projects?slug=${encodeURIComponent(slug)}`),
-      fetch(`/api/relevance?context=${encodeURIComponent(`project:${slug}`)}`).then(
+      fetch(`/api/initiatives?slug=${encodeURIComponent(slug)}`),
+      fetch(`/api/relevance?context=${encodeURIComponent(`initiative:${slug}`)}`).then(
         (r) => (r.ok ? r.json() : { scores: {} })
       ),
     ]);
@@ -285,7 +285,7 @@ export default function ProjectsView() {
     const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
     setSelected({ ...selected, status: next });
     // Optimistic — fire and forget
-    fetch("/api/projects", {
+    fetch("/api/initiatives", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ slug: selectedSlug, status: next }),
@@ -293,31 +293,31 @@ export default function ProjectsView() {
   }
 
   const filtered = filter
-    ? projects.filter(
+    ? initiatives.filter(
         (p) =>
           p.name.toLowerCase().includes(filter.toLowerCase()) ||
           p.description.toLowerCase().includes(filter.toLowerCase())
       )
-    : projects;
+    : initiatives;
 
-  const activeCount = projects.filter((p) => p.status === "active").length;
-  const totalTasks = projects.reduce((s, p) => s + p.taskCount, 0);
-  const totalPeople = projects.reduce((s, p) => s + p.peopleCount, 0);
+  const activeCount = initiatives.filter((p) => p.status === "active").length;
+  const totalTasks = initiatives.reduce((s, p) => s + p.taskCount, 0);
+  const totalPeople = initiatives.reduce((s, p) => s + p.peopleCount, 0);
 
   return (
     <div className="max-w-[1400px] mx-auto px-8 py-6">
       <div className="grid grid-cols-3 gap-4 mb-6">
-        <StatCard value={activeCount} label="Active Projects" color="var(--green)" />
+        <StatCard value={activeCount} label="Active Initiatives" color="var(--green)" />
         <StatCard value={totalTasks} label="Total Tasks" color="var(--yellow)" />
         <StatCard value={totalPeople} label="Total People" color="var(--accent)" />
       </div>
 
       <div className="grid grid-cols-[320px_1fr] gap-6">
-        {/* Left: Project list */}
+        {/* Left: Initiative list */}
         <div className="space-y-4">
           <Card>
             <CardHeader
-              title="Projects"
+              title="Initiatives"
               right={
                 <input
                   type="text"
@@ -338,7 +338,7 @@ export default function ProjectsView() {
                   className={`px-4 py-3 border-b border-[var(--border)] cursor-pointer hover:bg-[rgba(88,166,255,0.03)] ${
                     selectedSlug === p.slug ? "bg-[rgba(88,166,255,0.06)]" : ""
                   }`}
-                  onClick={() => selectProject(p.slug)}
+                  onClick={() => selectInitiative(p.slug)}
                 >
                   <div className="flex items-center gap-2 mb-1">
                     <span className="text-sm font-medium text-[var(--text-bright)] truncate flex-1">
@@ -365,16 +365,16 @@ export default function ProjectsView() {
             onClick={() => setShowModal(true)}
             className="w-full py-2 rounded-lg border border-dashed border-[var(--border)] text-sm text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
           >
-            + New Project
+            + New Initiative
           </button>
         </div>
 
-        {/* Right: Project detail */}
+        {/* Right: Initiative detail */}
         <div className="space-y-6">
           {!selected && (
             <Card>
               <div className="p-8 text-center text-[var(--text-dim)] italic">
-                Select a project to see its full context
+                Select an initiative to see its full context
               </div>
             </Card>
           )}
@@ -609,11 +609,11 @@ export default function ProjectsView() {
         </div>
       </div>
 
-      {/* New Project modal */}
+      {/* New Initiative modal */}
       {showModal && (
-        <NewProjectModal
+        <NewInitiativeModal
           onClose={() => setShowModal(false)}
-          onCreated={() => loadProjects()}
+          onCreated={() => loadInitiatives()}
         />
       )}
     </div>
