@@ -5,7 +5,7 @@ import { Card, CardHeader, StatCard, GroupHeader } from "@/components/Card";
 import TaskItem from "@/components/TaskItem";
 import MeetingItem from "@/components/MeetingItem";
 import { NotionPage, prop, queryNotion } from "@/lib/notion";
-import { WebexMeeting, fetchMeetings, meetingDurationHours } from "@/lib/webex";
+import { WebexMeeting, fetchMeetings, meetingDurationHours, timedMeetings } from "@/lib/webex";
 import { isoDate, addDays, startOfWeek } from "@/lib/dates";
 
 export default function WeekReviewView() {
@@ -20,7 +20,7 @@ export default function WeekReviewView() {
       const monday = startOfWeek(now);
       const friday = addDays(monday, 4);
 
-      const [mtgData, doneData, openData] = await Promise.all([
+      const [mtgResult, doneResult, openResult] = await Promise.allSettled([
         fetchMeetings(
           `${isoDate(monday)}T00:00:00Z`,
           `${isoDate(friday)}T23:59:59Z`
@@ -47,9 +47,9 @@ export default function WeekReviewView() {
         }),
       ]);
 
-      setMeetings(mtgData);
-      setCompleted(doneData);
-      setStillOpen(openData);
+      if (mtgResult.status === "fulfilled") setMeetings(mtgResult.value);
+      if (doneResult.status === "fulfilled") setCompleted(doneResult.value);
+      if (openResult.status === "fulfilled") setStillOpen(openResult.value);
       setLoading(false);
     }
     load();
@@ -57,7 +57,8 @@ export default function WeekReviewView() {
 
   const attended = meetings.filter((m) => m.state === "ended");
   const missed = meetings.filter((m) => m.state === "missed");
-  const attendedHours = attended.reduce(
+  const timedAttended = timedMeetings(attended);
+  const attendedHours = timedAttended.reduce(
     (s, m) => s + meetingDurationHours(m),
     0
   );
@@ -87,7 +88,7 @@ export default function WeekReviewView() {
               Meeting Load
             </h3>
             <div className="space-y-1 text-sm">
-              <div>Total scheduled: {meetings.length}</div>
+              <div>Total scheduled: {timedMeetings(meetings).length} ({meetings.length - timedMeetings(meetings).length} all-day)</div>
               <div>Hours in meetings: {Math.round(attendedHours)}h</div>
               <div>Attendance rate: {attendanceRate}%</div>
             </div>

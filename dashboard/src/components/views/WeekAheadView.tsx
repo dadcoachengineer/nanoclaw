@@ -5,7 +5,7 @@ import { Card, CardHeader, StatCard, GroupHeader } from "@/components/Card";
 import TaskItem from "@/components/TaskItem";
 import MeetingItem from "@/components/MeetingItem";
 import { NotionPage, queryNotion } from "@/lib/notion";
-import { WebexMeeting, fetchMeetings, meetingDurationHours } from "@/lib/webex";
+import { WebexMeeting, fetchMeetings, meetingDurationHours, timedMeetings } from "@/lib/webex";
 import { isoDate, addDays, startOfWeek, DAYS, fmt12, SHORT_DAYS } from "@/lib/dates";
 
 export default function WeekAheadView() {
@@ -22,7 +22,7 @@ export default function WeekAheadView() {
         ? addDays(monday, 7) : monday;
       const friday = addDays(target, 4);
 
-      const [mtgData, taskData] = await Promise.all([
+      const [mtgResult, taskResult] = await Promise.allSettled([
         fetchMeetings(`${isoDate(target)}T00:00:00Z`, `${isoDate(friday)}T23:59:59Z`),
         queryNotion({
           and: [
@@ -37,8 +37,8 @@ export default function WeekAheadView() {
         }),
       ]);
 
-      setMeetings(mtgData);
-      setCarryover(taskData);
+      if (mtgResult.status === "fulfilled") setMeetings(mtgResult.value);
+      if (taskResult.status === "fulfilled") setCarryover(taskResult.value);
       setLoading(false);
     }
     load();
@@ -49,7 +49,8 @@ export default function WeekAheadView() {
   const target = now.getDay() >= 5 || now.getDay() === 0
     ? addDays(monday, 7) : monday;
 
-  const totalHours = meetings.reduce((s, m) => s + meetingDurationHours(m), 0);
+  const timed = timedMeetings(meetings);
+  const totalHours = timed.reduce((s, m) => s + meetingDurationHours(m), 0);
   const hosted = meetings.filter((m) => m.hostEmail === "jasheare@cisco.com");
 
   return (
@@ -70,7 +71,8 @@ export default function WeekAheadView() {
             const dayMtgs = meetings
               .filter((m) => m.start.startsWith(dayStr))
               .sort((a, b) => a.start.localeCompare(b.start));
-            const dayHours = dayMtgs.reduce(
+            const dayTimed = timedMeetings(dayMtgs);
+            const dayHours = dayTimed.reduce(
               (s, m) => s + meetingDurationHours(m), 0
             );
             const heavy = dayHours >= 3;

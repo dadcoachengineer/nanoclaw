@@ -29,3 +29,12 @@ export function meetingDurationHours(m: WebexMeeting): number {
     (new Date(m.end).getTime() - new Date(m.start).getTime()) / 3600000
   );
 }
+
+export function isAllDay(m: WebexMeeting): boolean {
+  return meetingDurationHours(m) >= 12;
+}
+
+/** Filter out all-day events for time calculations */
+export function timedMeetings(meetings: WebexMeeting[]): WebexMeeting[] {
+  return meetings.filter((m) => !isAllDay(m));
+}

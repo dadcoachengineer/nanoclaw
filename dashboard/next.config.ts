@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Allow LAN devices to access dev server
+  allowedDevOrigins: ["192.168.1.40", "local-ip"],
   // Allow API requests to NanoClaw's system dashboard
   async rewrites() {
     return [

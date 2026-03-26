@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { Card, CardHeader, StatCard, GroupHeader } from "@/components/Card";
 import TaskItem from "@/components/TaskItem";
 import MeetingItem from "@/components/MeetingItem";
+import MeetingContext from "@/components/MeetingContext";
+import TaskDetail from "@/components/TaskDetail";
 import { NotionPage, prop, priorityRank, queryNotion } from "@/lib/notion";
 import { WebexMeeting, fetchMeetings } from "@/lib/webex";
 import { isoDate, timeAgo } from "@/lib/dates";
@@ -21,38 +23,51 @@ export default function TodayView() {
   const [runs, setRuns] = useState<RunLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [selectedMeeting, setSelectedMeeting] = useState<WebexMeeting | null>(null);
+  const [selectedTask, setSelectedTask] = useState<NotionPage | null>(null);
 
   useEffect(() => {
     async function load() {
-      try {
-        const today = isoDate(new Date());
-        const [taskData, mtgData, runData] = await Promise.all([
-          queryNotion({
-            and: [
-              { property: "Status", status: { does_not_equal: "Done" } },
-              {
-                or: [
-                  { property: "Priority", select: { equals: "P0 \u2014 Today" } },
-                  { property: "Priority", select: { equals: "P1 \u2014 This Week" } },
-                  { property: "Priority", select: { equals: "P2 \u2014 This Month" } },
-                ],
-              },
-            ],
-          }),
-          fetchMeetings(`${today}T00:00:00Z`, `${today}T23:59:59Z`),
-          fetch("/api/system?path=/api/runs/recent?limit=10").then((r) =>
-            r.json()
-          ),
-        ]);
+      const today = isoDate(new Date());
 
-        setTasks(taskData.sort((a, b) => priorityRank(prop(a, "Priority")) - priorityRank(prop(b, "Priority"))));
-        setMeetings(mtgData.sort((a, b) => a.start.localeCompare(b.start)));
-        setRuns(runData);
-      } catch (err) {
-        setError(String(err));
-      } finally {
-        setLoading(false);
+      // Fetch independently so one failure doesn't block the others
+      const [taskResult, mtgResult, runResult] = await Promise.allSettled([
+        queryNotion({
+          and: [
+            { property: "Status", status: { does_not_equal: "Done" } },
+            {
+              or: [
+                { property: "Priority", select: { equals: "P0 \u2014 Today" } },
+                { property: "Priority", select: { equals: "P1 \u2014 This Week" } },
+                { property: "Priority", select: { equals: "P2 \u2014 This Month" } },
+              ],
+            },
+          ],
+        }),
+        fetchMeetings(`${today}T00:00:00Z`, `${today}T23:59:59Z`),
+        fetch(`/api/system?path=${encodeURIComponent("/api/runs/recent?limit=10")}`).then((r) =>
+          r.json()
+        ),
+      ]);
+
+      const errors: string[] = [];
+      if (taskResult.status === "fulfilled") {
+        setTasks(taskResult.value.sort((a: NotionPage, b: NotionPage) => priorityRank(prop(a, "Priority")) - priorityRank(prop(b, "Priority"))));
+      } else {
+        errors.push(`Tasks: ${taskResult.reason}`);
       }
+      if (mtgResult.status === "fulfilled") {
+        setMeetings(mtgResult.value.sort((a: WebexMeeting, b: WebexMeeting) => a.start.localeCompare(b.start)));
+      } else {
+        errors.push(`Calendar: ${mtgResult.reason}`);
+      }
+      if (runResult.status === "fulfilled") {
+        setRuns(runResult.value);
+      } else {
+        errors.push(`Runs: ${runResult.reason}`);
+      }
+      if (errors.length > 0) setError(errors.join(" | "));
+      setLoading(false);
     }
     load();
     const interval = setInterval(load, 60000);
@@ -66,6 +81,12 @@ export default function TodayView() {
 
   return (
     <div className="max-w-[1400px] mx-auto px-8 py-6">
+      {/* Debug banner — remove after fixing LAN issue */}
+      {error && (
+        <div className="mb-4 p-3 bg-[rgba(248,81,73,0.1)] border border-[var(--red)] rounded-lg text-sm text-[var(--red)]">
+          {error}
+        </div>
+      )}
       {/* Stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">
         <StatCard value={p0.length} label="P0 Today" color="var(--red)" />
@@ -107,7 +128,7 @@ export default function TodayView() {
                 <>
                   <GroupHeader title="P0 — Today" />
                   {p0.map((t) => (
-                    <TaskItem key={t.id} page={t} />
+                    <TaskItem key={t.id} page={t} onClick={setSelectedTask} />
                   ))}
                 </>
               )}
@@ -115,7 +136,7 @@ export default function TodayView() {
                 <>
                   <GroupHeader title="P1 — This Week" />
                   {p1.map((t) => (
-                    <TaskItem key={t.id} page={t} />
+                    <TaskItem key={t.id} page={t} onClick={setSelectedTask} />
                   ))}
                 </>
               )}
@@ -123,7 +144,7 @@ export default function TodayView() {
                 <>
                   <GroupHeader title="P2 — This Month" />
                   {p2.map((t) => (
-                    <TaskItem key={t.id} page={t} />
+                    <TaskItem key={t.id} page={t} onClick={setSelectedTask} />
                   ))}
                 </>
               )}
@@ -142,7 +163,7 @@ export default function TodayView() {
                 </div>
               )}
               {meetings.map((m) => (
-                <MeetingItem key={m.id} meeting={m} />
+                <MeetingItem key={m.id} meeting={m} onClick={setSelectedMeeting} />
               ))}
             </div>
           </Card>
@@ -174,6 +195,26 @@ export default function TodayView() {
           </Card>
         </div>
       </div>
+
+      {/* Task detail modal */}
+      {selectedTask && (
+        <TaskDetail
+          page={selectedTask}
+          onClose={() => setSelectedTask(null)}
+          onComplete={(id) => {
+            setTasks((prev) => prev.filter((p) => p.id !== id));
+            setSelectedTask(null);
+          }}
+        />
+      )}
+
+      {/* Meeting context slide-over */}
+      {selectedMeeting && (
+        <MeetingContext
+          meeting={selectedMeeting}
+          onClose={() => setSelectedMeeting(null)}
+        />
+      )}
     </div>
   );
 }
