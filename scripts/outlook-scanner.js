@@ -183,19 +183,28 @@ function run() {
     return "Outlook not running";
   }
 
-  var since = new Date(Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000);
+  var sinceMs = Date.now() - LOOKBACK_HOURS * 60 * 60 * 1000;
   var inbox = outlook.inbox;
-  var messages = inbox.messages.whose({ timeReceived: { _greaterThan: since } });
-  var count = messages.length;
-  log("Found " + count + " emails in last " + LOOKBACK_HOURS + "h");
+
+  // Fetch recent messages — whose() date filtering is unreliable in JXA,
+  // so grab the most recent N and filter by date manually
+  var allMessages = inbox.messages();
+  var count = allMessages.length;
+  log("Inbox has " + count + " messages, scanning most recent " + MAX_EMAILS + " for last " + LOOKBACK_HOURS + "h");
 
   var created = 0;
   var skipped = 0;
+  var scanned = 0;
   var limit = Math.min(count, MAX_EMAILS);
 
   for (var i = 0; i < limit; i++) {
     try {
-      var msg = messages[i];
+      var msg = allMessages[i];
+
+      // Check date — messages are newest-first
+      var msgDate = msg.timeReceived();
+      if (msgDate && msgDate.getTime() < sinceMs) break; // Older than lookback, stop
+      scanned++;
       var msgId = msg.id().toString();
 
       if (arrayContains(processedIds, msgId)) {
@@ -293,7 +302,7 @@ function run() {
   state.processedIds = processedIds;
   saveState(state);
 
-  var summary = "Scanned " + count + " emails, created " + created + " tasks, skipped " + skipped + " already processed";
+  var summary = "Scanned " + scanned + " recent emails, created " + created + " tasks, skipped " + skipped + " already processed";
   log(summary);
   return summary;
 }
