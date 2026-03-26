@@ -13,11 +13,13 @@ Power Automate flows scan your Outlook inbox and post email summaries to a dedic
 
 ---
 
-## Step 0: Get the Email Triage Space ID
+## Step 0: Email Triage Room ID
 
-1. In Power Automate, add a **Webex → Get spaces list** action
-2. Find "Email Triage" in the results
-3. Copy its **Room ID** — you'll need this for each flow
+Use this Room ID in every Webex "Send a message" action:
+
+```
+Y2lzY29zcGFyazovL3VzL1JPT00vYTM1N2Y3OTAtMjk1Yi0xMWYxLTljMzAtZDExMmMxZGU0Yjhl
+```
 
 ---
 
