@@ -21,6 +21,7 @@ import {
 } from './config.js';
 import { logger } from './logger.js';
 import { repairToolCalls } from './shim-tool-repair.js';
+import { StreamTranslator } from './shim-stream-translator.js';
 import { translateRequest, translateResponse } from './shim-tool-translator.js';
 import type {
   AnthropicRequest,
@@ -45,7 +46,8 @@ function json(res: http.ServerResponse, data: unknown, status = 200): void {
     'Content-Type': 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Ollama-Model, X-Ollama-Num-Ctx, Authorization, X-Api-Key, Anthropic-Version',
+    'Access-Control-Allow-Headers':
+      'Content-Type, X-Ollama-Model, X-Ollama-Num-Ctx, Authorization, X-Api-Key, Anthropic-Version',
   });
   res.end(JSON.stringify(data));
 }
@@ -176,13 +178,12 @@ async function handleMessages(
     const raw = await readBody(req);
     anthropicReq = JSON.parse(raw) as AnthropicRequest;
   } catch (err) {
-    errorResponse(res, 400, 'invalid_request', `Failed to parse request body: ${err}`);
-    return;
-  }
-
-  // Check for streaming (Phase 3)
-  if (anthropicReq.stream) {
-    errorResponse(res, 501, 'not_implemented', 'Streaming not yet supported. Use stream: false.');
+    errorResponse(
+      res,
+      400,
+      'invalid_request',
+      `Failed to parse request body: ${err}`,
+    );
     return;
   }
 
@@ -194,6 +195,8 @@ async function handleMessages(
   const headerNumCtx = req.headers['x-ollama-num-ctx'] as string | undefined;
   const numCtx = headerNumCtx ? parseInt(headerNumCtx, 10) : OLLAMA_NUM_CTX;
 
+  const isStreaming = !!anthropicReq.stream;
+
   // Log the incoming request
   logger.info(
     {
@@ -202,14 +205,145 @@ async function handleMessages(
       numCtx,
       messageCount: anthropicReq.messages.length,
       hasTools: !!(anthropicReq.tools && anthropicReq.tools.length > 0),
-      hasStream: !!anthropicReq.stream,
+      streaming: isStreaming,
     },
     'shim: incoming request',
   );
 
   // Translate Anthropic request to OpenAI/Ollama format
   const openaiReq = translateRequest(anthropicReq, ollamaModel, numCtx);
-  // Force non-streaming for the Ollama request
+
+  if (isStreaming) {
+    // -----------------------------------------------------------------------
+    // Streaming path: pipe Ollama chunks through StreamTranslator as SSE
+    // -----------------------------------------------------------------------
+    openaiReq.stream = true;
+
+    logger.debug({ openaiReq }, 'shim: translated streaming request to Ollama format');
+
+    // Set SSE response headers
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers':
+        'Content-Type, X-Ollama-Model, X-Ollama-Num-Ctx, Authorization, X-Api-Key, Anthropic-Version',
+    });
+
+    // Rough input token estimate (actual count comes from Ollama's final chunk)
+    const estimatedInputTokens = Math.ceil(
+      JSON.stringify(openaiReq.messages).length / 4,
+    );
+
+    // SSE write callback: formats event + data and writes to response
+    const writeSSE = (event: string, data: unknown): void => {
+      res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const translator = new StreamTranslator({
+      requestModel: anthropicReq.model,
+      inputTokens: estimatedInputTokens,
+      write: writeSSE,
+    });
+
+    // Open a streaming connection to Ollama
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const baseUrl = new URL(OLLAMA_BASE_URL);
+        const opts: http.RequestOptions = {
+          hostname: baseUrl.hostname,
+          port: baseUrl.port || (baseUrl.protocol === 'https:' ? 443 : 80),
+          path: '/api/chat',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          timeout: OLLAMA_TIMEOUT_MS,
+        };
+
+        const ollamaReq = http.request(opts, (ollamaRes) => {
+          ollamaRes.on('data', (chunk: Buffer) => {
+            try {
+              translator.processChunk(chunk.toString());
+            } catch (err) {
+              logger.error(
+                { err },
+                'shim: error processing Ollama stream chunk',
+              );
+            }
+          });
+
+          ollamaRes.on('end', () => {
+            try {
+              translator.finalize();
+            } catch (err) {
+              logger.error(
+                { err },
+                'shim: error finalizing Ollama stream',
+              );
+            }
+            res.end();
+            const latencyMs = Date.now() - requestStart;
+            logger.info(
+              { status: 200, latencyMs, streaming: true },
+              'shim: streaming response complete',
+            );
+            resolve();
+          });
+
+          ollamaRes.on('error', (err) => {
+            logger.error({ err }, 'shim: Ollama stream error');
+            reject(err);
+          });
+        });
+
+        ollamaReq.on('timeout', () => {
+          ollamaReq.destroy();
+          reject(new Error(`TIMEOUT:${OLLAMA_TIMEOUT_MS}`));
+        });
+
+        ollamaReq.on('error', (err) => {
+          reject(err);
+        });
+
+        // Handle client disconnect (e.g. agent killed mid-stream)
+        res.on('close', () => {
+          ollamaReq.destroy();
+        });
+
+        ollamaReq.write(JSON.stringify(openaiReq));
+        ollamaReq.end();
+      });
+    } catch (err) {
+      const latencyMs = Date.now() - requestStart;
+      const errMsg = err instanceof Error ? err.message : String(err);
+
+      if (errMsg.startsWith('TIMEOUT:')) {
+        logger.warn({ latencyMs }, 'shim: Ollama streaming request timed out');
+      } else {
+        logger.error({ err, latencyMs }, 'shim: Ollama streaming connection error');
+      }
+
+      // If headers already sent, just end the response
+      if (res.headersSent) {
+        res.end();
+      } else {
+        errorResponse(
+          res,
+          502,
+          'connection_error',
+          `Ollama not reachable at ${OLLAMA_BASE_URL}`,
+        );
+      }
+    }
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Non-streaming path (unchanged)
+  // -------------------------------------------------------------------------
   openaiReq.stream = false;
 
   logger.debug({ openaiReq }, 'shim: translated request to Ollama format');
@@ -217,7 +351,11 @@ async function handleMessages(
   // Forward to Ollama's /api/chat endpoint
   let ollamaResp: RawOllamaResponse;
   try {
-    const result = await ollamaRequest('/api/chat', openaiReq, OLLAMA_TIMEOUT_MS);
+    const result = await ollamaRequest(
+      '/api/chat',
+      openaiReq,
+      OLLAMA_TIMEOUT_MS,
+    );
     ollamaResp = result.data as RawOllamaResponse;
   } catch (err) {
     const latencyMs = Date.now() - requestStart;
@@ -226,12 +364,22 @@ async function handleMessages(
     if (errMsg.startsWith('TIMEOUT:')) {
       const ms = errMsg.split(':')[1];
       logger.warn({ latencyMs }, 'shim: Ollama request timed out');
-      errorResponse(res, 504, 'timeout', `Ollama request timed out after ${ms}ms`);
+      errorResponse(
+        res,
+        504,
+        'timeout',
+        `Ollama request timed out after ${ms}ms`,
+      );
       return;
     }
 
     logger.error({ err, latencyMs }, 'shim: Ollama connection error');
-    errorResponse(res, 502, 'connection_error', `Ollama not reachable at ${OLLAMA_BASE_URL}`);
+    errorResponse(
+      res,
+      502,
+      'connection_error',
+      `Ollama not reachable at ${OLLAMA_BASE_URL}`,
+    );
     return;
   }
 
@@ -240,8 +388,16 @@ async function handleMessages(
   // Guard against malformed Ollama response
   if (!ollamaResp || !ollamaResp.message) {
     const latencyMs = Date.now() - requestStart;
-    logger.error({ ollamaResp, latencyMs }, 'shim: Ollama returned invalid response (no message)');
-    errorResponse(res, 502, 'invalid_response', 'Ollama returned an invalid response');
+    logger.error(
+      { ollamaResp, latencyMs },
+      'shim: Ollama returned invalid response (no message)',
+    );
+    errorResponse(
+      res,
+      502,
+      'invalid_response',
+      'Ollama returned an invalid response',
+    );
     return;
   }
 
@@ -268,13 +424,16 @@ async function handleMessages(
             },
           })),
         },
-        finish_reason: ollamaResp.message.tool_calls?.length ? 'tool_calls' : 'stop',
+        finish_reason: ollamaResp.message.tool_calls?.length
+          ? 'tool_calls'
+          : 'stop',
       },
     ],
     usage: {
       prompt_tokens: ollamaResp.prompt_eval_count || 0,
       completion_tokens: ollamaResp.eval_count || 0,
-      total_tokens: (ollamaResp.prompt_eval_count || 0) + (ollamaResp.eval_count || 0),
+      total_tokens:
+        (ollamaResp.prompt_eval_count || 0) + (ollamaResp.eval_count || 0),
     },
   };
 
@@ -372,9 +531,9 @@ function handleModels(
  * @returns A promise that resolves when the server is listening, providing
  *   the bound port and a close() method.
  */
-export function startShimServer(
-  options?: { port?: number },
-): Promise<{ port: number; close: () => void }> {
+export function startShimServer(options?: {
+  port?: number;
+}): Promise<{ port: number; close: () => void }> {
   // Validate that OLLAMA_BASE_URL points somewhere safe
   if (!isPrivateUrl(OLLAMA_BASE_URL)) {
     logger.warn(
@@ -395,7 +554,8 @@ export function startShimServer(
         res.writeHead(204, {
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, X-Ollama-Model, X-Ollama-Num-Ctx, Authorization, X-Api-Key, Anthropic-Version',
+          'Access-Control-Allow-Headers':
+            'Content-Type, X-Ollama-Model, X-Ollama-Num-Ctx, Authorization, X-Api-Key, Anthropic-Version',
         });
         res.end();
         return;
@@ -409,7 +569,12 @@ export function startShimServer(
         } else if (pathname === '/v1/models' && req.method === 'GET') {
           handleModels(req, res);
         } else {
-          errorResponse(res, 404, 'not_found', `No route for ${req.method} ${pathname}`);
+          errorResponse(
+            res,
+            404,
+            'not_found',
+            `No route for ${req.method} ${pathname}`,
+          );
         }
       } catch (err) {
         logger.error({ err, pathname }, 'shim: unhandled error');
@@ -423,7 +588,14 @@ export function startShimServer(
     });
 
     server.listen(port, '127.0.0.1', () => {
-      logger.info({ port, ollamaUrl: OLLAMA_BASE_URL, defaultModel: OLLAMA_DEFAULT_MODEL }, 'shim: server started');
+      logger.info(
+        {
+          port,
+          ollamaUrl: OLLAMA_BASE_URL,
+          defaultModel: OLLAMA_DEFAULT_MODEL,
+        },
+        'shim: server started',
+      );
       resolve({
         port,
         close: () => server.close(),
