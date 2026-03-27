@@ -436,10 +436,44 @@ async function runQuery(
   })) {
     messageCount++;
     const msgType = message.type === 'system' ? `system/${(message as { subtype?: string }).subtype}` : message.type;
-    log(`[msg #${messageCount}] type=${msgType}`);
+    const m = message as Record<string, unknown>;
+    log(`[msg #${messageCount}] type=${msgType} keys=[${Object.keys(m)}]`);
+    if (message.type === 'assistant' || message.type === 'user') {
+      // Safe key-by-key dump
+      for (const k of Object.keys(m)) {
+        const v = m[k];
+        if (k === 'type') continue;
+        const vStr = typeof v === 'string' ? v.slice(0, 150) : typeof v === 'object' && v !== null ? (Array.isArray(v) ? `array[${v.length}]` : `obj[${Object.keys(v)}]`) : String(v);
+        log(`  ${k}: ${vStr}`);
+      }
+    }
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+      // Debug: dump full assistant message shape for local model debugging
+      const keys = Object.keys(message as Record<string, unknown>);
+      log(`  assistant keys: ${keys.join(', ')}`);
+      const msg = message as Record<string, unknown>;
+      if (msg.content) {
+        log(`  content type: ${typeof msg.content}, isArray: ${Array.isArray(msg.content)}`);
+        if (Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            log(`  block: type=${(block as any).type} ${(block as any).name ? 'name=' + (block as any).name : ''} ${(block as any).text ? 'text=' + String((block as any).text).slice(0, 80) : ''}`);
+          }
+        }
+      }
+    }
+
+    // Debug: log user messages too (tool results)
+    if (message.type === 'user') {
+      const msg = message as Record<string, unknown>;
+      const keys = Object.keys(msg);
+      log(`  user keys: ${keys.join(', ')}`);
+      if (Array.isArray(msg.content)) {
+        for (const block of msg.content) {
+          log(`  block: type=${(block as any).type} ${(block as any).tool_use_id ? 'tool_use_id=' + (block as any).tool_use_id : ''} ${(block as any).is_error !== undefined ? 'is_error=' + (block as any).is_error : ''}`);
+        }
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {

@@ -40,6 +40,74 @@ function randomId(): string {
   return randomBytes(8).toString('hex');
 }
 
+/**
+ * Parse XML-formatted tool calls from text content and convert to tool_use blocks.
+ * Local models sometimes output:
+ *   <function=ToolName><parameter=key>value</parameter></function>
+ * This converts them to proper Anthropic tool_use content blocks.
+ */
+function parseXmlToolCalls(resp: Record<string, unknown>): void {
+  const content = resp.content;
+  if (!Array.isArray(content)) return;
+
+  const newContent: Record<string, unknown>[] = [];
+  let foundToolCalls = false;
+
+  for (const block of content) {
+    const b = block as Record<string, unknown>;
+    if (b.type !== 'text' || typeof b.text !== 'string') {
+      newContent.push(b);
+      continue;
+    }
+
+    const text = b.text;
+    const funcPattern = /<function=([^>]+)>([\s\S]*?)<\/function>/g;
+    let match;
+    let lastIndex = 0;
+    const calls: Record<string, unknown>[] = [];
+
+    while ((match = funcPattern.exec(text)) !== null) {
+      const before = text.slice(lastIndex, match.index).trim();
+      if (before) newContent.push({ type: 'text', text: before });
+
+      const toolName = match[1].trim();
+      const paramsBlock = match[2];
+      const params: Record<string, string> = {};
+      const paramPattern = /<parameter=([^>]+)>([\s\S]*?)<\/parameter>/g;
+      let pmatch;
+      while ((pmatch = paramPattern.exec(paramsBlock)) !== null) {
+        params[pmatch[1].trim()] = pmatch[2].trim();
+      }
+
+      calls.push({
+        type: 'tool_use',
+        id: `toolu_${randomBytes(12).toString('hex')}`,
+        name: toolName,
+        input: params,
+      });
+      lastIndex = match.index + match[0].length;
+      foundToolCalls = true;
+    }
+
+    if (calls.length > 0) {
+      const after = text.slice(lastIndex).replace(/<\/tool_call>/g, '').trim();
+      if (after) newContent.push({ type: 'text', text: after });
+      for (const call of calls) newContent.push(call);
+    } else {
+      newContent.push(b);
+    }
+  }
+
+  if (foundToolCalls) {
+    resp.content = newContent;
+    resp.stop_reason = 'tool_use';
+    logger.info(
+      { toolCount: newContent.filter((b) => b.type === 'tool_use').length },
+      'shim: parsed XML tool calls from text response',
+    );
+  }
+}
+
 /** Send a JSON response with CORS headers. */
 function json(res: http.ServerResponse, data: unknown, status = 200): void {
   res.writeHead(status, {
@@ -195,7 +263,11 @@ async function handleMessages(
   const headerNumCtx = req.headers['x-ollama-num-ctx'] as string | undefined;
   const numCtx = headerNumCtx ? parseInt(headerNumCtx, 10) : OLLAMA_NUM_CTX;
 
-  const isStreaming = !!anthropicReq.stream;
+  // Force non-streaming for local models. The XML tool call parser needs the
+  // full response to detect and convert text-formatted tool calls to native
+  // tool_use blocks. The SDK handles non-streaming responses fine.
+  const isStreaming = false;
+  anthropicReq.stream = false;
 
   // Log the incoming request
   logger.info(
@@ -205,6 +277,7 @@ async function handleMessages(
       numCtx,
       messageCount: anthropicReq.messages.length,
       hasTools: !!(anthropicReq.tools && anthropicReq.tools.length > 0),
+      toolNames: (anthropicReq.tools || []).map((t: any) => t.name).join(', '),
       streaming: isStreaming,
     },
     'shim: incoming request',
@@ -213,24 +286,42 @@ async function handleMessages(
   // Translate Anthropic request to OpenAI/Ollama format
   const openaiReq = translateRequest(anthropicReq, ollamaModel, numCtx);
 
-  // Inject local model steering: prevent text-formatted tool calls
-  if (openaiReq.messages && openaiReq.tools && openaiReq.tools.length > 0) {
-    const localSteering = {
-      role: 'system' as const,
-      content:
-        'IMPORTANT: You have tools available via native function calling. ' +
-        'When you need to use a tool, emit a tool_calls response — NEVER output tool calls as text, XML, or formatted markup. ' +
-        'Never write <function=...> or <tool_call> tags. Use the structured tool calling mechanism only. ' +
-        'When responding to the user with text, use the send_message tool.',
-    };
-    // Add after the first system message (or as the first message)
-    const firstSystemIdx = openaiReq.messages.findIndex(
-      (m) => m.role === 'system',
-    );
-    if (firstSystemIdx >= 0) {
-      openaiReq.messages.splice(firstSystemIdx + 1, 0, localSteering);
-    } else {
-      openaiReq.messages.unshift(localSteering);
+  // Inject tool awareness and steering for local models
+  if (openaiReq.messages) {
+    // Replace Claude identity references
+    for (const msg of openaiReq.messages) {
+      if (msg.role === 'system' && typeof msg.content === 'string') {
+        msg.content = msg.content
+          .replace(/You are a Claude agent[^.]*\./g, 'You are a helpful assistant.')
+          .replace(/Claude Agent SDK/g, 'Agent SDK');
+      }
+    }
+
+    // Build a tool list summary so the model knows what tools exist
+    if (openaiReq.tools && openaiReq.tools.length > 0) {
+      const toolList = openaiReq.tools.map((t: any) => {
+        const fn = t.function || t;
+        const params = fn.parameters?.properties
+          ? Object.keys(fn.parameters.properties).join(', ')
+          : '';
+        return `- ${fn.name}(${params}): ${(fn.description || '').slice(0, 100)}`;
+      }).join('\n');
+
+      const toolSteering = {
+        role: 'system' as const,
+        content:
+          'Available tools (use ONLY these exact names with function calling):\n' +
+          toolList + '\n\n' +
+          'To use a tool, output it as: <function=ToolName><parameter=paramName>value</parameter></function>\n' +
+          'ONLY use tools from the list above. Do NOT invent tool names like TaskList, SearchWeb, etc.',
+      };
+
+      const sysIdx = openaiReq.messages.findIndex((m) => m.role === 'system');
+      if (sysIdx >= 0) {
+        openaiReq.messages.splice(sysIdx + 1, 0, toolSteering);
+      } else {
+        openaiReq.messages.unshift(toolSteering);
+      }
     }
   }
 
@@ -288,14 +379,39 @@ async function handleMessages(
         };
 
         const ollamaReq = http.request(opts, (ollamaRes) => {
-          logger.info({ ollamaStatus: ollamaRes.statusCode }, 'shim: Ollama stream response status');
+          logger.info(
+            { ollamaStatus: ollamaRes.statusCode },
+            'shim: Ollama stream response status',
+          );
           if (ollamaRes.statusCode !== 200) {
             let errBody = '';
-            ollamaRes.on('data', (c: Buffer) => { errBody += c.toString(); });
+            ollamaRes.on('data', (c: Buffer) => {
+              errBody += c.toString();
+            });
             ollamaRes.on('end', () => {
-              logger.error({ status: ollamaRes.statusCode, body: errBody.substring(0, 500) }, 'shim: Ollama error response');
+              logger.error(
+                {
+                  status: ollamaRes.statusCode,
+                  body: errBody.substring(0, 500),
+                },
+                'shim: Ollama error response',
+              );
               if (!res.headersSent) {
-                json(res, { type: 'error', error: { type: 'api_error', message: 'Ollama returned ' + ollamaRes.statusCode + ': ' + errBody.substring(0, 200) } }, 502);
+                json(
+                  res,
+                  {
+                    type: 'error',
+                    error: {
+                      type: 'api_error',
+                      message:
+                        'Ollama returned ' +
+                        ollamaRes.statusCode +
+                        ': ' +
+                        errBody.substring(0, 200),
+                    },
+                  },
+                  502,
+                );
               } else {
                 res.end();
               }
@@ -304,7 +420,10 @@ async function handleMessages(
           }
           ollamaRes.on('data', (chunk: Buffer) => {
             const raw = chunk.toString();
-            logger.debug({ chunkLen: raw.length, chunk: raw.substring(0, 300) }, 'shim: Ollama stream chunk');
+            logger.debug(
+              { chunkLen: raw.length, chunk: raw.substring(0, 300) },
+              'shim: Ollama stream chunk',
+            );
             try {
               translator.processChunk(raw);
             } catch (err) {
@@ -354,7 +473,9 @@ async function handleMessages(
         if (openaiReq.messages) {
           for (const msg of openaiReq.messages) {
             if (Array.isArray(msg.content)) {
-              msg.content = (msg.content as Array<{ type?: string; text?: string }>)
+              msg.content = (
+                msg.content as Array<{ type?: string; text?: string }>
+              )
                 .filter((b) => b.type === 'text' || !b.type)
                 .map((b) => b.text || '')
                 .join('');
@@ -364,7 +485,13 @@ async function handleMessages(
             }
           }
         }
-        logger.debug({ messageCount: openaiReq.messages?.length, firstContent: typeof openaiReq.messages?.[0]?.content }, 'shim: sending to Ollama');
+        logger.debug(
+          {
+            messageCount: openaiReq.messages?.length,
+            firstContent: typeof openaiReq.messages?.[0]?.content,
+          },
+          'shim: sending to Ollama',
+        );
         ollamaReq.write(JSON.stringify(openaiReq));
         ollamaReq.end();
       });
@@ -520,6 +647,11 @@ async function handleMessages(
 
   // Translate OpenAI response to Anthropic format
   const anthropicResp = translateResponse(openaiResponse, anthropicReq.model);
+
+  // Post-process: detect XML tool calls in text output and convert to tool_use blocks.
+  // Local models sometimes output <function=Name><parameter=key>value</parameter></function>
+  // as text instead of using native tool calling.
+  parseXmlToolCalls(anthropicResp as unknown as Record<string, unknown>);
 
   const latencyMs = Date.now() - requestStart;
   logger.info(

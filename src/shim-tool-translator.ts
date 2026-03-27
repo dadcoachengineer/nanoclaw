@@ -261,9 +261,14 @@ export function translateResponse(
         input = cleanFn.arguments as Record<string, unknown>;
       }
 
+      // Always use Anthropic-format tool IDs (toolu_ prefix)
+      const toolId = tc.id?.startsWith('toolu_')
+        ? tc.id
+        : `toolu_${randomBytes(12).toString('hex')}`;
+
       contentBlocks.push({
         type: 'tool_use',
-        id: tc.id,
+        id: toolId,
         name: cleanFn.name,
         input,
       } satisfies ToolUseBlock);

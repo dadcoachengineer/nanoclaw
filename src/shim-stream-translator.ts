@@ -264,7 +264,8 @@ export class StreamTranslator {
         continue;
       }
 
-      const toolId = tc.id || generateToolUseId();
+      // Always use Anthropic-format IDs (toolu_ prefix) — SDK validates this
+      const toolId = generateToolUseId();
 
       // Serialize arguments
       let argsJson: string;
