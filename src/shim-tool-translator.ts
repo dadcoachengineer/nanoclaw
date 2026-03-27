@@ -6,7 +6,7 @@
  * by the shim HTTP server to translate requests to Ollama and responses back.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes } from 'node:crypto';
 
 import type {
   AnthropicMessage,
@@ -25,7 +25,7 @@ import type {
   TextBlock,
   ToolResultBlock,
   ToolUseBlock,
-} from "./shim-types.js";
+} from './shim-types.js';
 
 // ---------------------------------------------------------------------------
 // Tool definition translation (Anthropic → OpenAI)
@@ -40,7 +40,7 @@ import type {
  */
 export function translateToolDefs(tools: AnthropicToolDef[]): OpenAIToolDef[] {
   return tools.map((tool) => ({
-    type: "function" as const,
+    type: 'function' as const,
     function: {
       name: tool.name,
       description: tool.description,
@@ -64,11 +64,11 @@ export function translateToolDefs(tools: AnthropicToolDef[]): OpenAIToolDef[] {
 export function translateToolChoice(
   choice: AnthropicToolChoice,
 ): OpenAIToolChoice {
-  if (choice === "auto") return "auto";
-  if (choice === "any") return "required";
+  if (choice === 'auto') return 'auto';
+  if (choice === 'any') return 'required';
   // Specific tool forced
   return {
-    type: "function" as const,
+    type: 'function' as const,
     function: { name: choice.name },
   };
 }
@@ -99,12 +99,12 @@ export function translateRequestMessages(
 
   // Prepend system message if present
   if (system) {
-    result.push({ role: "system", content: system });
+    result.push({ role: 'system', content: system });
   }
 
   for (const msg of messages) {
     // Simple string content — pass through
-    if (typeof msg.content === "string") {
+    if (typeof msg.content === 'string') {
       result.push({ role: msg.role, content: msg.content });
       continue;
     }
@@ -112,32 +112,30 @@ export function translateRequestMessages(
     // Content is an array of blocks — need to decompose
     const blocks = msg.content;
 
-    if (msg.role === "assistant") {
+    if (msg.role === 'assistant') {
       // Assistant messages may contain text + tool_use blocks
       const textParts: string[] = [];
       const toolCalls: OpenAIToolCall[] = [];
 
       for (const block of blocks) {
-        if (block.type === "text") {
+        if (block.type === 'text') {
           textParts.push(block.text);
-        } else if (block.type === "tool_use") {
+        } else if (block.type === 'tool_use') {
           toolCalls.push({
             id: block.id,
-            type: "function",
+            type: 'function',
             function: {
               name: block.name,
-              arguments:
-                typeof block.input === "string"
-                  ? block.input
-                  : JSON.stringify(block.input),
+              // Ollama expects arguments as an object, not stringified JSON
+              arguments: block.input as unknown as string,
             },
           });
         }
       }
 
       const assistantMsg: OpenAIMessage = {
-        role: "assistant",
-        content: textParts.join("") || null,
+        role: 'assistant',
+        content: textParts.join('') || null,
       };
       if (toolCalls.length > 0) {
         assistantMsg.tool_calls = toolCalls;
@@ -149,9 +147,9 @@ export function translateRequestMessages(
       const toolResults: { tool_call_id: string; content: string }[] = [];
 
       for (const block of blocks) {
-        if (block.type === "text") {
+        if (block.type === 'text') {
           textParts.push(block.text);
-        } else if (block.type === "tool_result") {
+        } else if (block.type === 'tool_result') {
           const resultContent = serializeToolResultContent(block.content);
           toolResults.push({
             tool_call_id: block.tool_use_id,
@@ -162,13 +160,13 @@ export function translateRequestMessages(
 
       // Emit the text part as a user message (if any)
       if (textParts.length > 0) {
-        result.push({ role: "user", content: textParts.join("") });
+        result.push({ role: 'user', content: textParts.join('') });
       }
 
       // Emit each tool result as a separate tool message
       for (const tr of toolResults) {
         result.push({
-          role: "tool",
+          role: 'tool',
           content: tr.content,
           tool_call_id: tr.tool_call_id,
         });
@@ -185,13 +183,13 @@ export function translateRequestMessages(
  * ContentBlocks, concatenate the text blocks.
  */
 function serializeToolResultContent(
-  content: ToolResultBlock["content"],
+  content: ToolResultBlock['content'],
 ): string {
-  if (typeof content === "string") return content;
+  if (typeof content === 'string') return content;
   return content
-    .filter((b): b is TextBlock => b.type === "text")
+    .filter((b): b is TextBlock => b.type === 'text')
     .map((b) => b.text)
-    .join("");
+    .join('');
 }
 
 // ---------------------------------------------------------------------------
@@ -202,7 +200,7 @@ function serializeToolResultContent(
  * Generate a unique message ID with the `msg_` prefix used by the Anthropic API.
  */
 function generateMessageId(): string {
-  return `msg_${randomBytes(12).toString("hex")}`;
+  return `msg_${randomBytes(12).toString('hex')}`;
 }
 
 /**
@@ -232,20 +230,20 @@ export function translateResponse(
     Array.isArray(message?.tool_calls) && message.tool_calls.length > 0;
 
   // Text content
-  const textContent = message?.content ?? "";
-  const hasText = typeof textContent === "string" && textContent.length > 0;
+  const textContent = message?.content ?? '';
+  const hasText = typeof textContent === 'string' && textContent.length > 0;
 
   if (hasText) {
-    contentBlocks.push({ type: "text", text: textContent });
+    contentBlocks.push({ type: 'text', text: textContent });
   } else if (hasToolCalls) {
     // Emit empty text block before tool_use blocks (Anthropic SDK may expect it)
-    contentBlocks.push({ type: "text", text: "" });
+    contentBlocks.push({ type: 'text', text: '' });
   }
 
   // Tool use blocks
   if (hasToolCalls) {
     for (const tc of message.tool_calls!) {
-      const fn = tc.function as OpenAIToolCall["function"] & {
+      const fn = tc.function as OpenAIToolCall['function'] & {
         index?: number;
       };
       // Strip the non-standard `index` field
@@ -253,7 +251,7 @@ export function translateResponse(
 
       // Parse arguments: may be string (spec) or object (Ollama)
       let input: Record<string, unknown>;
-      if (typeof cleanFn.arguments === "string") {
+      if (typeof cleanFn.arguments === 'string') {
         try {
           input = JSON.parse(cleanFn.arguments) as Record<string, unknown>;
         } catch {
@@ -264,7 +262,7 @@ export function translateResponse(
       }
 
       contentBlocks.push({
-        type: "tool_use",
+        type: 'tool_use',
         id: tc.id,
         name: cleanFn.name,
         input,
@@ -273,16 +271,16 @@ export function translateResponse(
   }
 
   // Determine stop_reason: tool_calls presence wins over finish_reason
-  let stopReason: AnthropicResponse["stop_reason"];
+  let stopReason: AnthropicResponse['stop_reason'];
   if (hasToolCalls) {
-    stopReason = "tool_use";
+    stopReason = 'tool_use';
   } else {
     const fr = choice?.finish_reason;
-    if (fr === "length") {
-      stopReason = "max_tokens";
+    if (fr === 'length') {
+      stopReason = 'max_tokens';
     } else {
       // "stop" and anything else maps to "end_turn"
-      stopReason = "end_turn";
+      stopReason = 'end_turn';
     }
   }
 
@@ -294,8 +292,8 @@ export function translateResponse(
 
   return {
     id: generateMessageId(),
-    type: "message",
-    role: "assistant",
+    type: 'message',
+    role: 'assistant',
     content: contentBlocks,
     model: requestModel,
     stop_reason: stopReason,
@@ -328,7 +326,10 @@ export function translateRequest(
 ): OpenAIRequest {
   const req: OpenAIRequest = {
     model: ollamaModel,
-    messages: translateRequestMessages(anthropicReq.messages, anthropicReq.system),
+    messages: translateRequestMessages(
+      anthropicReq.messages,
+      anthropicReq.system,
+    ),
     stream: anthropicReq.stream ?? false,
     options: { num_ctx: numCtx },
   };
