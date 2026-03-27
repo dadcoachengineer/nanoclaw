@@ -36,4 +36,7 @@ certs/
 # Skills system (local per-installation state)
 .nanoclaw/
 
+# Per-group model routing config (local/API backend selection)
+groups/*/model.json
+
 agents-sdk-docs

@@ -14,6 +14,8 @@ import {
   GROUPS_DIR,
   IDLE_TIMEOUT,
   ONECLI_URL,
+  OLLAMA_DEFAULT_MODEL,
+  SHIM_PORT,
   TIMEZONE,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
@@ -29,6 +31,39 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
+
+interface GroupModelConfig {
+  backend: 'local' | 'api';
+  local?: {
+    base_url?: string;
+    model?: string;
+    temperature?: number;
+    max_tokens?: number;
+    timeout_ms?: number;
+    num_ctx?: number;
+  };
+  api?: {
+    model?: string;
+    max_tokens?: number;
+  };
+}
+
+function readGroupModelConfig(groupFolder: string): GroupModelConfig {
+  const configPath = path.join(groupFolder, 'model.json');
+  try {
+    if (fs.existsSync(configPath)) {
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      const config = JSON.parse(raw);
+      if (config.backend === 'local' || config.backend === 'api') {
+        return config;
+      }
+      logger.warn({ configPath }, 'Invalid backend in model.json, defaulting to api');
+    }
+  } catch (err) {
+    logger.warn({ err, configPath }, 'Failed to read model.json, defaulting to api');
+  }
+  return { backend: 'api' };
+}
 
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -217,6 +252,7 @@ async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   agentIdentifier?: string,
+  groupFolder?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -240,6 +276,25 @@ async function buildContainerArgs(
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
+
+  // Read per-group model routing config
+  if (groupFolder) {
+    const modelConfig = readGroupModelConfig(path.join(GROUPS_DIR, groupFolder));
+
+    if (modelConfig.backend === 'local') {
+      const shimPort = SHIM_PORT;
+      // Point the container at the local shim instead of Anthropic
+      args.push('-e', `ANTHROPIC_BASE_URL=http://host.docker.internal:${shimPort}`);
+      args.push('-e', 'ANTHROPIC_API_KEY=sk-local-placeholder');
+      // Pass model preference to shim via header (shim reads X-Ollama-Model)
+      if (modelConfig.local?.model) {
+        args.push('-e', `OLLAMA_MODEL=${modelConfig.local.model}`);
+      }
+      logger.info({ group: groupFolder, model: modelConfig.local?.model || OLLAMA_DEFAULT_MODEL }, 'Using local Ollama backend');
+    } else {
+      logger.info({ group: groupFolder }, 'Using Anthropic API backend');
+    }
+  }
 
   // Run as host user so bind-mounted files are accessible.
   // Skip when running as root (uid 0), as the container's node user (uid 1000),
@@ -286,6 +341,7 @@ export async function runContainerAgent(
     mounts,
     containerName,
     agentIdentifier,
+    group.folder,
   );
 
   logger.debug(

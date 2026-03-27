@@ -90,3 +90,10 @@ export const DASHBOARD_PORT = parseInt(
 );
 export const DASHBOARD_ENABLED =
   (process.env.DASHBOARD_ENABLED || 'true') !== 'false';
+
+// Local model routing
+export const SHIM_PORT = parseInt(process.env.SHIM_PORT || '8089', 10);
+export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://studio.shearer.live:11434';
+export const OLLAMA_DEFAULT_MODEL = process.env.OLLAMA_DEFAULT_MODEL || 'qwen3-coder:30b';
+export const OLLAMA_TIMEOUT_MS = parseInt(process.env.OLLAMA_TIMEOUT_MS || '120000', 10);
+export const OLLAMA_NUM_CTX = parseInt(process.env.OLLAMA_NUM_CTX || '16384', 10);
