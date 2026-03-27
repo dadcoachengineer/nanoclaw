@@ -187,7 +187,7 @@ async function indexWebexPeople(index: PersonIndex): Promise<void> {
 async function indexWebexRooms(index: PersonIndex, topicIndex: TopicIndex): Promise<void> {
   console.log("Indexing Webex rooms...");
   const data = (await webexGet(
-    "/rooms?sortBy=lastactivity&max=50"
+    "/rooms?sortBy=lastactivity&max=200"
   )) as { items?: { id: string; title: string; type: string }[] };
 
   for (const room of data.items || []) {
@@ -212,11 +212,11 @@ async function indexWebexRooms(index: PersonIndex, topicIndex: TopicIndex): Prom
 async function indexWebexDirectMessages(index: PersonIndex): Promise<void> {
   console.log("Indexing Webex direct messages...");
   const data = (await webexGet(
-    "/rooms?type=direct&sortBy=lastactivity&max=20"
+    "/rooms?type=direct&sortBy=lastactivity&max=100"
   )) as { items?: { id: string; title: string }[] };
 
   let totalMsgs = 0;
-  for (const room of (data.items || []).slice(0, 15)) {
+  for (const room of (data.items || []).slice(0, 50)) {
     const entry = getOrCreate(index, room.title);
     const msgs = (await webexGet(
       `/messages?roomId=${room.id}&max=20`
