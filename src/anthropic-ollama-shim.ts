@@ -213,13 +213,37 @@ async function handleMessages(
   // Translate Anthropic request to OpenAI/Ollama format
   const openaiReq = translateRequest(anthropicReq, ollamaModel, numCtx);
 
+  // Inject local model steering: prevent text-formatted tool calls
+  if (openaiReq.messages && openaiReq.tools && openaiReq.tools.length > 0) {
+    const localSteering = {
+      role: 'system' as const,
+      content:
+        'IMPORTANT: You have tools available via native function calling. ' +
+        'When you need to use a tool, emit a tool_calls response — NEVER output tool calls as text, XML, or formatted markup. ' +
+        'Never write <function=...> or <tool_call> tags. Use the structured tool calling mechanism only. ' +
+        'When responding to the user with text, use the send_message tool.',
+    };
+    // Add after the first system message (or as the first message)
+    const firstSystemIdx = openaiReq.messages.findIndex(
+      (m) => m.role === 'system',
+    );
+    if (firstSystemIdx >= 0) {
+      openaiReq.messages.splice(firstSystemIdx + 1, 0, localSteering);
+    } else {
+      openaiReq.messages.unshift(localSteering);
+    }
+  }
+
   if (isStreaming) {
     // -----------------------------------------------------------------------
     // Streaming path: pipe Ollama chunks through StreamTranslator as SSE
     // -----------------------------------------------------------------------
     openaiReq.stream = true;
 
-    logger.debug({ openaiReq }, 'shim: translated streaming request to Ollama format');
+    logger.debug(
+      { openaiReq },
+      'shim: translated streaming request to Ollama format',
+    );
 
     // Set SSE response headers
     res.writeHead(200, {
@@ -264,9 +288,25 @@ async function handleMessages(
         };
 
         const ollamaReq = http.request(opts, (ollamaRes) => {
+          logger.info({ ollamaStatus: ollamaRes.statusCode }, 'shim: Ollama stream response status');
+          if (ollamaRes.statusCode !== 200) {
+            let errBody = '';
+            ollamaRes.on('data', (c: Buffer) => { errBody += c.toString(); });
+            ollamaRes.on('end', () => {
+              logger.error({ status: ollamaRes.statusCode, body: errBody.substring(0, 500) }, 'shim: Ollama error response');
+              if (!res.headersSent) {
+                json(res, { type: 'error', error: { type: 'api_error', message: 'Ollama returned ' + ollamaRes.statusCode + ': ' + errBody.substring(0, 200) } }, 502);
+              } else {
+                res.end();
+              }
+            });
+            return;
+          }
           ollamaRes.on('data', (chunk: Buffer) => {
+            const raw = chunk.toString();
+            logger.debug({ chunkLen: raw.length, chunk: raw.substring(0, 300) }, 'shim: Ollama stream chunk');
             try {
-              translator.processChunk(chunk.toString());
+              translator.processChunk(raw);
             } catch (err) {
               logger.error(
                 { err },
@@ -279,10 +319,7 @@ async function handleMessages(
             try {
               translator.finalize();
             } catch (err) {
-              logger.error(
-                { err },
-                'shim: error finalizing Ollama stream',
-              );
+              logger.error({ err }, 'shim: error finalizing Ollama stream');
             }
             res.end();
             const latencyMs = Date.now() - requestStart;
@@ -313,6 +350,21 @@ async function handleMessages(
           ollamaReq.destroy();
         });
 
+        // Ensure all message content fields are strings (Ollama rejects arrays)
+        if (openaiReq.messages) {
+          for (const msg of openaiReq.messages) {
+            if (Array.isArray(msg.content)) {
+              msg.content = (msg.content as Array<{ type?: string; text?: string }>)
+                .filter((b) => b.type === 'text' || !b.type)
+                .map((b) => b.text || '')
+                .join('');
+            }
+            if (msg.content === null || msg.content === undefined) {
+              msg.content = '';
+            }
+          }
+        }
+        logger.debug({ messageCount: openaiReq.messages?.length, firstContent: typeof openaiReq.messages?.[0]?.content }, 'shim: sending to Ollama');
         ollamaReq.write(JSON.stringify(openaiReq));
         ollamaReq.end();
       });
@@ -323,7 +375,10 @@ async function handleMessages(
       if (errMsg.startsWith('TIMEOUT:')) {
         logger.warn({ latencyMs }, 'shim: Ollama streaming request timed out');
       } else {
-        logger.error({ err, latencyMs }, 'shim: Ollama streaming connection error');
+        logger.error(
+          { err, latencyMs },
+          'shim: Ollama streaming connection error',
+        );
       }
 
       // If headers already sent, just end the response
@@ -345,6 +400,21 @@ async function handleMessages(
   // Non-streaming path (unchanged)
   // -------------------------------------------------------------------------
   openaiReq.stream = false;
+
+  // Ensure all message content fields are strings (Ollama rejects arrays)
+  if (openaiReq.messages) {
+    for (const msg of openaiReq.messages) {
+      if (Array.isArray(msg.content)) {
+        msg.content = (msg.content as Array<{ type?: string; text?: string }>)
+          .filter((b) => b.type === 'text' || !b.type)
+          .map((b) => b.text || '')
+          .join('');
+      }
+      if (msg.content === null || msg.content === undefined) {
+        msg.content = '';
+      }
+    }
+  }
 
   logger.debug({ openaiReq }, 'shim: translated request to Ollama format');
 

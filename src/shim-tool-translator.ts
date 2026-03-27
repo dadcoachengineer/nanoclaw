@@ -135,7 +135,7 @@ export function translateRequestMessages(
 
       const assistantMsg: OpenAIMessage = {
         role: 'assistant',
-        content: textParts.join('') || null,
+        content: textParts.join('') || '',
       };
       if (toolCalls.length > 0) {
         assistantMsg.tool_calls = toolCalls;
