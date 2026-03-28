@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useRef } from "react";
 import { NotionPage, prop } from "@/lib/notion";
 import EditableBadge from "@/components/EditableBadge";
 
@@ -39,6 +40,31 @@ export default function TaskItem({
   const project = prop(page, "Project");
   const notes = prop(page, "Notes");
 
+  const [editing, setEditing] = useState(false);
+  const [titleDraft, setTitleDraft] = useState(title);
+  const [saving, setSaving] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  async function handleSaveTitle() {
+    const trimmed = titleDraft.trim();
+    if (!trimmed || trimmed === title) { setEditing(false); setTitleDraft(title); return; }
+    setSaving(true);
+    try {
+      await fetch("/api/corrections", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId: page.id, oldTitle: title, newTitle: trimmed }),
+      });
+      // The title will update on next data refresh
+      setFlash(true);
+      setTimeout(() => setFlash(false), 1200);
+    } finally {
+      setSaving(false);
+      setEditing(false);
+    }
+  }
+
   return (
     <div
       className={`flex items-start gap-3 px-4 py-3 border-b border-[var(--border)] hover:bg-[rgba(88,166,255,0.03)] ${
@@ -67,7 +93,37 @@ export default function TaskItem({
         </div>
       )}
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-[var(--text-bright)]">{title}</div>
+        {editing ? (
+          <input
+            ref={inputRef}
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleSaveTitle();
+              if (e.key === "Escape") { setEditing(false); setTitleDraft(title); }
+            }}
+            onBlur={handleSaveTitle}
+            onClick={(e) => e.stopPropagation()}
+            disabled={saving}
+            className="text-sm w-full bg-[var(--bg)] border border-[var(--accent)] rounded px-2 py-0.5 text-[var(--text)] focus:outline-none"
+            autoFocus
+          />
+        ) : (
+          <div
+            onClick={(e) => {
+              if (selectable) return;
+              e.stopPropagation();
+              setTitleDraft(title);
+              setEditing(true);
+            }}
+            className={`text-sm text-[var(--text-bright)] ${
+              !selectable ? "cursor-text hover:underline hover:decoration-dotted hover:decoration-[var(--text-dim)]" : ""
+            } ${flash ? "text-[var(--green)]" : ""} ${saving ? "opacity-50" : ""}`}
+            title={!selectable ? "Click to edit" : undefined}
+          >
+            {title}{flash && " \u2713"}
+          </div>
+        )}
         <div className="flex flex-wrap items-center gap-2 mt-1">
           {priority && (
             <EditableBadge pageId={page.id} field="Priority" value={priority} displayValue={priority.split(" ")[0]} />
