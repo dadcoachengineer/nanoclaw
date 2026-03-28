@@ -324,7 +324,7 @@ async function handleMessages(
           'To use a tool, output it as: <function=ToolName><parameter=paramName>value</parameter></function>\n' +
           'ONLY use tools from the list above. Do NOT invent tool names like TaskList, SearchWeb, etc.\n\n' +
           'CRITICAL RULES:\n' +
-          '1. NEVER make up or hallucinate information. If you don\'t know something, use a tool to find out.\n' +
+          "1. NEVER make up or hallucinate information. If you don't know something, use a tool to find out.\n" +
           '2. For questions about tasks, schedule, or to-do items: use Bash to query the Notion API or read workspace files.\n' +
           '3. For sending replies to the user: use mcp__nanoclaw__send_message with the text parameter.\n' +
           '4. You are "Claw", a personal assistant. Not a "Meeting Prep Agent" or any other role.\n' +

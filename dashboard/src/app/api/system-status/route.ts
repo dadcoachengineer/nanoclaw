@@ -10,6 +10,16 @@ const OLLAMA_URL =
   process.env.OLLAMA_BASE_URL || "http://studio.shearer.live:11434";
 const SHIM_PORT = parseInt(process.env.SHIM_PORT || "8089", 10);
 
+const DEFAULT_MODEL = "claude-sonnet-4-20250514";
+
+// --- Model cost table ---
+// Pricing per million tokens
+const MODEL_COSTS: Record<string, { inputPerM: number; outputPerM: number; label: string }> = {
+  "claude-sonnet-4-20250514": { inputPerM: 3, outputPerM: 15, label: "Sonnet" },
+  "claude-haiku-4-5-20251001": { inputPerM: 0.25, outputPerM: 1.25, label: "Haiku" },
+  "local:qwen3-coder:30b": { inputPerM: 0, outputPerM: 0, label: "Local" },
+};
+
 // --- Helpers ---
 
 function fetchWithTimeout(
@@ -116,6 +126,73 @@ function pipelineName(id: string): string {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/** Estimate cost per run based on avg duration and model pricing */
+function estimateCostPerRun(avgDurationMs: number, model: string): number {
+  const costs = MODEL_COSTS[model] || MODEL_COSTS[DEFAULT_MODEL];
+  // Estimate: ~10K input tokens per 30s turn, ~30 tokens/sec output
+  const turns = Math.max(1, avgDurationMs / 30000);
+  const inputTokens = turns * 10000;
+  const outputTokens = turns * 30 * 30; // 30 tokens/sec * 30s
+  return (inputTokens / 1_000_000) * costs.inputPerM +
+    (outputTokens / 1_000_000) * costs.outputPerM;
+}
+
+/** Compute runs per day from cron/interval schedule */
+function runsPerDay(scheduleType: string, scheduleValue: string): number {
+  if (scheduleType === "interval") {
+    const ms = parseInt(scheduleValue, 10);
+    if (!ms || ms <= 0) return 1;
+    return (24 * 60 * 60 * 1000) / ms;
+  }
+  if (scheduleType === "cron") {
+    const parts = scheduleValue.trim().split(/\s+/);
+    if (parts.length < 5) return 1;
+    const [minute, hour, _dom, _month, dow] = parts;
+
+    // "*/N * * * *" -> every N minutes
+    if (minute.startsWith("*/") && hour === "*") {
+      const n = parseInt(minute.slice(2), 10);
+      return (24 * 60) / n;
+    }
+
+    // Hourly range: "M H1-H2 * * DOW"
+    if (hour.includes("-")) {
+      const [hStart, hEnd] = hour.split("-").map((h) => parseInt(h, 10));
+      const hoursPerDay = hEnd - hStart + 1;
+      let daysPerWeek = 7;
+      if (dow === "1-5") daysPerWeek = 5;
+      else if (/^\d$/.test(dow)) daysPerWeek = 1;
+      return (hoursPerDay * daysPerWeek) / 7;
+    }
+
+    // Weekly: specific DOW
+    if (dow !== "*" && /^\d$/.test(dow)) return 1 / 7;
+
+    // Daily
+    return 1;
+  }
+  return 0; // once
+}
+
+/** Recommend model based on pipeline name and avg duration */
+function recommendModel(id: string, avgDurationMs: number): string {
+  const lower = id.toLowerCase();
+  // Keep Sonnet for complex reasoning tasks
+  if (/briefing|prep|review|checkin/.test(lower)) return "KEEP SONNET";
+  // Haiku is vision-capable, good for OCR/image tasks
+  if (/vision|ocr|boox|plaud/.test(lower)) return "HAIKU";
+  // Message/transcript processing doesn't need deep reasoning
+  if (/messages|transcripts/.test(lower)) return "HAIKU";
+  // Very short runs might be better as scripts
+  if (avgDurationMs > 0 && avgDurationMs < 60000) return "HAIKU or SCRIPT";
+  return "KEEP SONNET";
+}
+
+function modelLabel(model: string | null): string {
+  if (!model) return "Sonnet";
+  return MODEL_COSTS[model]?.label || model.split("-")[0] || "Unknown";
+}
+
 // --- Database access ---
 
 function openDb(): Database.Database | null {
@@ -125,6 +202,25 @@ function openDb(): Database.Database | null {
     return new Database(dbPath, { readonly: true });
   } catch {
     return null;
+  }
+}
+
+function openWritableDb(): Database.Database | null {
+  try {
+    const dbPath = path.join(STORE_DIR, "messages.db");
+    if (!fs.existsSync(dbPath)) return null;
+    return new Database(dbPath);
+  } catch {
+    return null;
+  }
+}
+
+/** Ensure the model column exists (migration for dashboard-side reads) */
+function ensureModelColumn(db: Database.Database): void {
+  try {
+    db.exec("ALTER TABLE scheduled_tasks ADD COLUMN model TEXT DEFAULT NULL");
+  } catch {
+    /* column already exists */
   }
 }
 
@@ -228,7 +324,7 @@ export async function GET() {
   // LLM
   const llm = {
     backend: "api",
-    model: "claude-sonnet-4-20250514",
+    model: DEFAULT_MODEL,
     localAvailable: !!ollamaData,
   };
 
@@ -242,6 +338,7 @@ export async function GET() {
     last_run: string | null;
     last_result: string | null;
     next_run: string | null;
+    model: string | null;
   }
 
   let pipelines: {
@@ -252,14 +349,28 @@ export async function GET() {
     lastStatus: string;
     nextRun: string | null;
     status: string;
+    model: string | null;
+    modelLabel: string;
+    estimatedCostPerRun: number;
+    totalEstimatedCost: number;
+    avgDurationMs: number;
+    runsPerDay: number;
+    recommendation: string;
   }[] = [];
 
   const db = openDb();
   if (db) {
+    // Run migration if needed (uses writable connection)
+    const wdb = openWritableDb();
+    if (wdb) {
+      ensureModelColumn(wdb);
+      wdb.close();
+    }
+
     try {
       const rows = db
         .prepare(
-          "SELECT id, prompt, schedule_type, schedule_value, status, last_run, last_result, next_run FROM scheduled_tasks WHERE status = 'active' OR status = 'paused' ORDER BY next_run"
+          "SELECT id, prompt, schedule_type, schedule_value, status, last_run, last_result, next_run, model FROM scheduled_tasks WHERE status = 'active' OR status = 'paused' ORDER BY next_run"
         )
         .all() as PipelineRow[];
 
@@ -268,16 +379,40 @@ export async function GET() {
         "SELECT status FROM task_run_logs WHERE task_id = ? ORDER BY run_at DESC LIMIT 1"
       );
 
+      // Get average duration from last 10 runs
+      const avgDurationStmt = db.prepare(
+        "SELECT AVG(duration_ms) as avg_ms FROM (SELECT duration_ms FROM task_run_logs WHERE task_id = ? AND status = 'success' ORDER BY run_at DESC LIMIT 10)"
+      );
+
+      // Get total runs count for cost estimation
+      const totalRunsStmt = db.prepare(
+        "SELECT COUNT(*) as cnt FROM task_run_logs WHERE task_id = ? AND status = 'success'"
+      );
+
       pipelines = rows.map((row) => {
         const lastRunLog = lastStatusStmt.get(row.id) as
           | { status: string }
           | undefined;
+        const avgRow = avgDurationStmt.get(row.id) as
+          | { avg_ms: number | null }
+          | undefined;
+        const totalRow = totalRunsStmt.get(row.id) as
+          | { cnt: number }
+          | undefined;
+
         const schedule =
           row.schedule_type === "cron"
             ? cronToHuman(row.schedule_value)
             : row.schedule_type === "interval"
               ? `Every ${Math.round(parseInt(row.schedule_value, 10) / 60000)}m`
               : row.schedule_value;
+
+        const effectiveModel = row.model || DEFAULT_MODEL;
+        const avgMs = avgRow?.avg_ms ?? 120000; // default 2 min if no data
+        const costPerRun = estimateCostPerRun(avgMs, effectiveModel);
+        const totalRuns = totalRow?.cnt ?? 0;
+        const totalCost = costPerRun * totalRuns;
+        const rpd = runsPerDay(row.schedule_type, row.schedule_value);
 
         return {
           id: row.id,
@@ -287,10 +422,46 @@ export async function GET() {
           lastStatus: lastRunLog?.status || "never",
           nextRun: row.next_run,
           status: row.status,
+          model: row.model,
+          modelLabel: modelLabel(row.model),
+          estimatedCostPerRun: Math.round(costPerRun * 1000) / 1000,
+          totalEstimatedCost: Math.round(totalCost * 100) / 100,
+          avgDurationMs: Math.round(avgMs),
+          runsPerDay: Math.round(rpd * 100) / 100,
+          recommendation: recommendModel(row.id, avgMs),
         };
       });
     } catch {}
   }
+
+  // Cost summary
+  let costPerDay = 0;
+  let optimizedCostPerDay = 0;
+  for (const p of pipelines) {
+    if (p.status !== "active") continue;
+    costPerDay += p.estimatedCostPerRun * p.runsPerDay;
+    // Calculate optimized cost: if recommendation says HAIKU, use haiku pricing
+    const optimizedModel = p.recommendation.includes("HAIKU")
+      ? "claude-haiku-4-5-20251001"
+      : (p.model || DEFAULT_MODEL);
+    optimizedCostPerDay += estimateCostPerRun(p.avgDurationMs, optimizedModel) * p.runsPerDay;
+  }
+  const costSummary = {
+    estimatedPerDay: Math.round(costPerDay * 100) / 100,
+    optimizedPerDay: Math.round(optimizedCostPerDay * 100) / 100,
+    potentialSavingsPercent: costPerDay > 0
+      ? Math.round(((costPerDay - optimizedCostPerDay) / costPerDay) * 100)
+      : 0,
+  };
+
+  // Available models for the UI selector
+  const availableModels = Object.entries(MODEL_COSTS).map(([id, info]) => ({
+    id,
+    label: info.label,
+    inputPerM: info.inputPerM,
+    outputPerM: info.outputPerM,
+    active: id !== "local:qwen3-coder:30b", // local model not active yet
+  }));
 
   // Recent runs
   const recentRuns = (Array.isArray(recentRunsRaw) ? recentRunsRaw : []).map(
@@ -397,6 +568,8 @@ export async function GET() {
     recentRuns,
     indexes,
     containers,
+    costSummary,
+    availableModels,
   });
 }
 
@@ -427,6 +600,63 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, message: `Triggered ${id}` });
     } catch (err) {
       db.close();
+      return NextResponse.json({ error: String(err) }, { status: 500 });
+    }
+  }
+
+  return NextResponse.json({ error: "Unknown action" }, { status: 400 });
+}
+
+// --- PATCH handler: update pipeline model ---
+
+export async function PATCH(req: NextRequest) {
+  let body: { action?: string; id?: string; model?: string | null };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  if (body.action === "setModel" && body.id) {
+    // Validate model value
+    const validModels = Object.keys(MODEL_COSTS);
+    if (body.model !== null && body.model !== undefined && !validModels.includes(body.model)) {
+      return NextResponse.json(
+        { error: `Invalid model. Valid options: ${validModels.join(", ")}` },
+        { status: 400 }
+      );
+    }
+
+    const writableDb = openWritableDb();
+    if (!writableDb) {
+      return NextResponse.json(
+        { error: "Database not available" },
+        { status: 503 }
+      );
+    }
+
+    try {
+      ensureModelColumn(writableDb);
+      // null means "use default" (Sonnet)
+      const modelValue = body.model || null;
+      const result = writableDb
+        .prepare("UPDATE scheduled_tasks SET model = ? WHERE id = ?")
+        .run(modelValue, body.id);
+      writableDb.close();
+
+      if (result.changes === 0) {
+        return NextResponse.json(
+          { error: `Pipeline not found: ${body.id}` },
+          { status: 404 }
+        );
+      }
+
+      return NextResponse.json({
+        ok: true,
+        message: `Updated ${body.id} model to ${modelValue || DEFAULT_MODEL}`,
+      });
+    } catch (err) {
+      writableDb.close();
       return NextResponse.json({ error: String(err) }, { status: 500 });
     }
   }

@@ -42,6 +42,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  modelOverride?: string; // Per-pipeline LLM model override (e.g. claude-haiku-4-5-20251001)
 }
 
 export interface ContainerOutput {
@@ -217,11 +218,18 @@ async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
   agentIdentifier?: string,
+  modelOverride?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Per-pipeline LLM model override — the agent-runner reads this env var
+  // and passes it to the Claude Agent SDK's model option
+  if (modelOverride) {
+    args.push('-e', `CLAUDE_MODEL=${modelOverride}`);
+  }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
@@ -286,6 +294,7 @@ export async function runContainerAgent(
     mounts,
     containerName,
     agentIdentifier,
+    input.modelOverride,
   );
 
   logger.debug(

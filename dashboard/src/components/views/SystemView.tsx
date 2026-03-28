@@ -20,6 +20,13 @@ interface Pipeline {
   lastStatus: string;
   nextRun: string | null;
   status: string;
+  model: string | null;
+  modelLabel: string;
+  estimatedCostPerRun: number;
+  totalEstimatedCost: number;
+  avgDurationMs: number;
+  runsPerDay: number;
+  recommendation: string;
 }
 
 interface RecentRun {
@@ -37,6 +44,20 @@ interface IndexInfo {
   chunks?: number;
   lastBuilt: string | null;
   sizeKb: number;
+}
+
+interface AvailableModel {
+  id: string;
+  label: string;
+  inputPerM: number;
+  outputPerM: number;
+  active: boolean;
+}
+
+interface CostSummary {
+  estimatedPerDay: number;
+  optimizedPerDay: number;
+  potentialSavingsPercent: number;
 }
 
 interface SystemData {
@@ -65,6 +86,8 @@ interface SystemData {
     waiting: number;
     imageSize: string;
   };
+  costSummary: CostSummary;
+  availableModels: AvailableModel[];
 }
 
 // --- Formatting helpers ---
@@ -116,6 +139,12 @@ function formatSize(kb: number): string {
   return `${(kb / 1024).toFixed(1)} MB`;
 }
 
+function formatCost(cost: number): string {
+  if (cost === 0) return "$0";
+  if (cost < 0.01) return "<$0.01";
+  return `$${cost.toFixed(2)}`;
+}
+
 function statusColor(status: string): string {
   switch (status) {
     case "running":
@@ -132,6 +161,19 @@ function statusColor(status: string): string {
   }
 }
 
+function modelIndicatorColor(modelLabel: string): string {
+  switch (modelLabel) {
+    case "Sonnet":
+      return "var(--accent)";
+    case "Haiku":
+      return "var(--green)";
+    case "Local":
+      return "var(--text-dim)";
+    default:
+      return "var(--text-dim)";
+  }
+}
+
 // --- Component ---
 
 export default function SystemView() {
@@ -139,6 +181,7 @@ export default function SystemView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [triggeringId, setTriggeringId] = useState<string | null>(null);
+  const [updatingModelId, setUpdatingModelId] = useState<string | null>(null);
   const runsRef = useRef<HTMLDivElement>(null);
 
   const fetchData = useCallback(async () => {
@@ -178,6 +221,32 @@ export default function SystemView() {
       setTimeout(fetchData, 2000);
     } catch {}
     setTriggeringId(null);
+  }
+
+  async function updateModel(id: string, model: string | null) {
+    setUpdatingModelId(id);
+    try {
+      const resp = await fetch("/api/system-status", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "setModel", id, model }),
+      });
+      if (resp.ok) {
+        // Optimistically update the local state
+        setData((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            pipelines: prev.pipelines.map((p) =>
+              p.id === id ? { ...p, model, modelLabel: model ? (prev.availableModels.find(m => m.id === model)?.label || model) : "Sonnet" } : p
+            ),
+          };
+        });
+        // Full refresh for cost recalculation
+        setTimeout(fetchData, 500);
+      }
+    } catch {}
+    setUpdatingModelId(null);
   }
 
   if (loading && !data) {
@@ -266,6 +335,8 @@ export default function SystemView() {
     },
   ];
 
+  const costSummary = data?.costSummary;
+
   return (
     <div className="max-w-[1400px] mx-auto px-8 py-6">
       {error && (
@@ -352,7 +423,7 @@ export default function SystemView() {
           </div>
           <div>
             <div className="text-[11px] text-[var(--text-dim)] uppercase tracking-wider mb-1">
-              Model
+              Default Model
             </div>
             <div className="text-[13px] text-[var(--text-bright)] font-mono">
               {data?.llm.model}
@@ -405,7 +476,57 @@ export default function SystemView() {
         </div>
       </Card>
 
-      {/* Section 4: Ingestion Pipelines */}
+      {/* Section 4: Cost Summary */}
+      {costSummary && (costSummary.estimatedPerDay > 0 || sortedPipelines.length > 0) && (
+        <Card className="mb-6">
+          <CardHeader title="Cost Estimates" />
+          <div className="px-4 py-3">
+            <div className="grid grid-cols-3 gap-6">
+              <div>
+                <div className="text-[11px] text-[var(--text-dim)] uppercase tracking-wider mb-1">
+                  Current Cost / Day
+                </div>
+                <div className="text-[20px] font-bold text-[var(--text-bright)]">
+                  {formatCost(costSummary.estimatedPerDay)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-[var(--text-dim)] uppercase tracking-wider mb-1">
+                  If Optimized
+                </div>
+                <div className="text-[20px] font-bold" style={{ color: "var(--green)" }}>
+                  {formatCost(costSummary.optimizedPerDay)}
+                </div>
+              </div>
+              <div>
+                <div className="text-[11px] text-[var(--text-dim)] uppercase tracking-wider mb-1">
+                  Potential Savings
+                </div>
+                <div
+                  className="text-[20px] font-bold"
+                  style={{
+                    color: costSummary.potentialSavingsPercent > 0
+                      ? "var(--green)"
+                      : "var(--text-dim)",
+                  }}
+                >
+                  {costSummary.potentialSavingsPercent > 0
+                    ? `${costSummary.potentialSavingsPercent}%`
+                    : "---"}
+                </div>
+              </div>
+            </div>
+            {costSummary.potentialSavingsPercent > 0 && (
+              <div className="mt-3 text-[11px] text-[var(--text-dim)]">
+                Savings based on switching recommended pipelines to Haiku.
+                Estimates use avg run duration as a proxy for token usage.
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Section 5: Ingestion Pipelines */}
       <Card className="mb-6">
         <CardHeader
           title="Ingestion Pipelines"
@@ -420,9 +541,11 @@ export default function SystemView() {
             <thead>
               <tr className="text-[11px] text-[var(--text-dim)] uppercase tracking-wider bg-[var(--bg)]">
                 <th className="text-left px-4 py-2 font-medium">Pipeline</th>
+                <th className="text-left px-4 py-2 font-medium">Model</th>
                 <th className="text-left px-4 py-2 font-medium">Schedule</th>
                 <th className="text-left px-4 py-2 font-medium">Last Run</th>
                 <th className="text-left px-4 py-2 font-medium">Status</th>
+                <th className="text-right px-4 py-2 font-medium">Est. Cost</th>
                 <th className="text-left px-4 py-2 font-medium">Next Run</th>
                 <th className="text-right px-4 py-2 font-medium"></th>
               </tr>
@@ -431,7 +554,7 @@ export default function SystemView() {
               {sortedPipelines.length === 0 && (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={8}
                     className="px-4 py-6 text-center text-[var(--text-dim)] italic"
                   >
                     No pipelines configured
@@ -451,6 +574,17 @@ export default function SystemView() {
                       {p.id}
                     </div>
                   </td>
+                  <td className="px-4 py-2.5">
+                    <ModelSelector
+                      pipelineId={p.id}
+                      currentModel={p.model}
+                      currentLabel={p.modelLabel}
+                      recommendation={p.recommendation}
+                      availableModels={data?.availableModels || []}
+                      isUpdating={updatingModelId === p.id}
+                      onUpdate={updateModel}
+                    />
+                  </td>
                   <td className="px-4 py-2.5 text-[var(--text)]">
                     {p.schedule}
                   </td>
@@ -459,6 +593,14 @@ export default function SystemView() {
                   </td>
                   <td className="px-4 py-2.5">
                     <StatusBadge status={p.lastStatus} />
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <div className="text-[var(--text)]">
+                      {formatCost(p.estimatedCostPerRun)}
+                    </div>
+                    <div className="text-[10px] text-[var(--text-dim)]">
+                      per run
+                    </div>
                   </td>
                   <td className="px-4 py-2.5 text-[var(--text-dim)]">
                     {p.status === "paused" ? (
@@ -483,7 +625,7 @@ export default function SystemView() {
         </div>
       </Card>
 
-      {/* Section 5: Data Indexes */}
+      {/* Section 6: Data Indexes */}
       <Card className="mb-6">
         <CardHeader title="Data Indexes" />
         <div className="grid grid-cols-4 gap-3 p-4">
@@ -510,7 +652,7 @@ export default function SystemView() {
         </div>
       </Card>
 
-      {/* Section 6: Recent Agent Runs */}
+      {/* Section 7: Recent Agent Runs */}
       <Card>
         <CardHeader
           title="Recent Agent Runs"
@@ -584,5 +726,73 @@ function StatusBadge({ status }: { status: string }) {
     >
       {label}
     </span>
+  );
+}
+
+function ModelSelector({
+  pipelineId,
+  currentModel,
+  currentLabel,
+  recommendation,
+  availableModels,
+  isUpdating,
+  onUpdate,
+}: {
+  pipelineId: string;
+  currentModel: string | null;
+  currentLabel: string;
+  recommendation: string;
+  availableModels: AvailableModel[];
+  isUpdating: boolean;
+  onUpdate: (id: string, model: string | null) => void;
+}) {
+  const indicatorColor = modelIndicatorColor(currentLabel);
+  const showRecommendation =
+    recommendation.includes("HAIKU") && currentLabel !== "Haiku";
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <div
+          className="w-2 h-2 rounded-full shrink-0"
+          style={{ background: indicatorColor }}
+        />
+        <select
+          value={currentModel || ""}
+          onChange={(e) => {
+            const val = e.target.value || null;
+            onUpdate(pipelineId, val);
+          }}
+          disabled={isUpdating}
+          className="text-[12px] bg-[var(--bg)] border border-[var(--border)] rounded px-1.5 py-0.5 text-[var(--text-bright)] cursor-pointer disabled:opacity-50 disabled:cursor-wait appearance-none pr-5"
+          style={{
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8' viewBox='0 0 8 8'%3E%3Cpath fill='%238b949e' d='M0 2l4 4 4-4z'/%3E%3C/svg%3E")`,
+            backgroundRepeat: "no-repeat",
+            backgroundPosition: "right 6px center",
+          }}
+        >
+          <option value="">Sonnet (default)</option>
+          {availableModels
+            .filter((m) => m.id !== "claude-sonnet-4-20250514")
+            .map((m) => (
+              <option key={m.id} value={m.id} disabled={!m.active}>
+                {m.label}
+                {!m.active ? " (not active)" : ""}
+              </option>
+            ))}
+        </select>
+      </div>
+      {showRecommendation && (
+        <span
+          className="text-[10px] px-1.5 py-0.5 rounded-full w-fit"
+          style={{
+            background: "rgba(63,185,80,0.12)",
+            color: "var(--green)",
+          }}
+        >
+          {recommendation.includes("SCRIPT") ? "try Haiku" : "try Haiku"}
+        </span>
+      )}
+    </div>
   );
 }

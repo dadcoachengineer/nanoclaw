@@ -62,6 +62,7 @@ describe('task scheduler', () => {
       schedule_type: 'interval' as const,
       schedule_value: '60000', // 1 minute
       context_mode: 'isolated' as const,
+      model: null,
       next_run: scheduledTime,
       last_run: null,
       last_result: null,
@@ -86,6 +87,7 @@ describe('task scheduler', () => {
       schedule_type: 'once' as const,
       schedule_value: '2026-01-01T00:00:00.000Z',
       context_mode: 'isolated' as const,
+      model: null,
       next_run: new Date(Date.now() - 1000).toISOString(),
       last_run: null,
       last_result: null,
@@ -110,6 +112,7 @@ describe('task scheduler', () => {
       schedule_type: 'interval' as const,
       schedule_value: String(ms),
       context_mode: 'isolated' as const,
+      model: null,
       next_run: scheduledTime,
       last_run: null,
       last_result: null,
