@@ -4,7 +4,7 @@ import path from "path";
 import { proxiedFetch } from "@/lib/onecli";
 
 const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const PROJECTS_PATH = path.join(STORE_DIR, "projects.json");
+const PROJECTS_PATH = path.join(STORE_DIR, "initiatives.json");
 const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
 const TOPIC_INDEX_PATH = path.join(STORE_DIR, "topic-index.json");
 const SUMMARIES_PATH = path.join(STORE_DIR, "webex-summaries.json");
@@ -37,7 +37,7 @@ function matchesKeywords(text: string, keywords: string[]): boolean {
 // Auto-linking helpers (list view counts)
 // ---------------------------------------------------------------------------
 
-interface ProjectEntry {
+interface InitiativeEntry {
   name: string;
   description: string;
   status: string;
@@ -52,7 +52,7 @@ interface ProjectEntry {
 
 function countLinkedPeople(
   personIndex: Record<string, any>,
-  project: ProjectEntry
+  project: InitiativeEntry
 ): { count: number; latestDate: string | null } {
   let count = 0;
   let latest: string | null = null;
@@ -86,7 +86,7 @@ function countLinkedPeople(
 function countLinkedMeetings(
   personIndex: Record<string, any>,
   summaries: Record<string, any>,
-  project: ProjectEntry
+  project: InitiativeEntry
 ): { count: number; latestDate: string | null } {
   const seen = new Set<string>();
   let latest: string | null = null;
@@ -199,7 +199,7 @@ async function fetchNotionTasks(
 
 function findLinkedPeople(
   personIndex: Record<string, any>,
-  project: ProjectEntry
+  project: InitiativeEntry
 ): any[] {
   const people: any[] = [];
   const seen = new Set<string>();
@@ -254,7 +254,7 @@ function findLinkedPeople(
 function findLinkedMeetings(
   personIndex: Record<string, any>,
   summaries: Record<string, any>,
-  project: ProjectEntry
+  project: InitiativeEntry
 ): any[] {
   const meetings: any[] = [];
   const seen = new Set<string>();
@@ -330,7 +330,7 @@ function findLinkedMeetings(
 
 function findLinkedSummaries(
   summaries: Record<string, any>,
-  project: ProjectEntry
+  project: InitiativeEntry
 ): any[] {
   const result: any[] = [];
 
@@ -403,13 +403,13 @@ function buildActivityFeed(
 export async function GET(req: NextRequest) {
   const { searchParams } = req.nextUrl;
   const slug = searchParams.get("slug");
-  const projects = loadJson(PROJECTS_PATH) as Record<string, ProjectEntry>;
+  const projects = loadJson(PROJECTS_PATH) as Record<string, InitiativeEntry>;
 
   if (slug) {
     // --- Detail view ---
     const project = projects[slug];
     if (!project) {
-      return NextResponse.json({ error: "Project not found" }, { status: 404 });
+      return NextResponse.json({ error: "Initiative not found" }, { status: 404 });
     }
 
     const personIndex = loadJson(INDEX_PATH);
@@ -480,7 +480,7 @@ export async function GET(req: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// POST handler — create project
+// POST handler — create initiative
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
@@ -494,14 +494,14 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const projects = loadJson(PROJECTS_PATH) as Record<string, ProjectEntry>;
+  const projects = loadJson(PROJECTS_PATH) as Record<string, InitiativeEntry>;
   const slug = slugify(name);
 
   if (projects[slug]) {
-    return NextResponse.json({ error: "Project with this slug already exists" }, { status: 409 });
+    return NextResponse.json({ error: "Initiative with this slug already exists" }, { status: 409 });
   }
 
-  const newProject: ProjectEntry = {
+  const newProject: InitiativeEntry = {
     name,
     description,
     status: "active",
@@ -521,7 +521,7 @@ export async function POST(req: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// PATCH handler — update project (fields + pin/unpin)
+// PATCH handler — update initiative (fields + pin/unpin)
 // ---------------------------------------------------------------------------
 
 export async function PATCH(req: NextRequest) {
@@ -532,11 +532,11 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: "slug is required" }, { status: 400 });
   }
 
-  const projects = loadJson(PROJECTS_PATH) as Record<string, ProjectEntry>;
+  const projects = loadJson(PROJECTS_PATH) as Record<string, InitiativeEntry>;
   const project = projects[slug];
 
   if (!project) {
-    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    return NextResponse.json({ error: "Initiative not found" }, { status: 404 });
   }
 
   // Pin / unpin operations

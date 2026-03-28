@@ -91,7 +91,7 @@ export const DASHBOARD_PORT = parseInt(
 export const DASHBOARD_ENABLED =
   (process.env.DASHBOARD_ENABLED || 'true') !== 'false';
 
-// Local model routing
+// Local model routing (shim server)
 export const SHIM_PORT = parseInt(process.env.SHIM_PORT || '8089', 10);
 export const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://studio.shearer.live:11434';
 export const OLLAMA_DEFAULT_MODEL = process.env.OLLAMA_DEFAULT_MODEL || 'qwen3-coder:30b';

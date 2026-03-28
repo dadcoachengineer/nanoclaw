@@ -42,7 +42,18 @@ Notion API: `https://api.notion.com/v1/` (credentials injected automatically —
 
 Database ID: `5b4e1d2d7259496ea237ef0525c3ce78`
 
-To create a task, POST to `https://api.notion.com/v1/pages` with the database as parent and these properties:
+**To query tasks** (when Jason asks "what's on my list", "what do I have today", "show my tasks", etc.):
+Use Bash to POST to the Notion API:
+```bash
+curl -s -X POST "https://api.notion.com/v1/databases/5b4e1d2d7259496ea237ef0525c3ce78/query" \
+  -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
+  -H "Notion-Version: 2022-06-28" \
+  -H "Content-Type: application/json" \
+  -d '{"filter":{"and":[{"property":"Status","status":{"does_not_equal":"Done"}},{"or":[{"property":"Priority","select":{"equals":"P0 — Today"}},{"property":"Priority","select":{"equals":"P1 — This Week"}}]}]},"sorts":[{"property":"Priority","direction":"ascending"}]}'
+```
+The Notion credentials are injected automatically by the proxy. Parse the JSON response and summarize the tasks by priority group (P0, P1). Include the task title and project for each item.
+
+**To create a task**, POST to `https://api.notion.com/v1/pages` with the database as parent and these properties:
 - *Task* (title): Actionable verb phrase ("Refresh team VSEM and charter")
 - *Priority*: "P0 — Today", "P1 — This Week", "P2 — This Month", "P3 — Backlog". Default "P2 — This Month".
 - *Status*: "Not started"

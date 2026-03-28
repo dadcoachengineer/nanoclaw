@@ -30,13 +30,13 @@ export interface JSONSchema {
 
 /** Text content block. */
 export interface TextBlock {
-  type: "text";
+  type: 'text';
   text: string;
 }
 
 /** Tool use content block (appears in assistant responses). */
 export interface ToolUseBlock {
-  type: "tool_use";
+  type: 'tool_use';
   id: string;
   name: string;
   input: Record<string, unknown>;
@@ -44,7 +44,7 @@ export interface ToolUseBlock {
 
 /** Tool result content block (appears in user messages). */
 export interface ToolResultBlock {
-  type: "tool_result";
+  type: 'tool_result';
   tool_use_id: string;
   content: string | ContentBlock[];
 }
@@ -54,7 +54,7 @@ export type ContentBlock = TextBlock | ToolUseBlock | ToolResultBlock;
 
 /** A single message in the Anthropic Messages API. */
 export interface AnthropicMessage {
-  role: "user" | "assistant";
+  role: 'user' | 'assistant';
   content: string | ContentBlock[];
 }
 
@@ -72,9 +72,9 @@ export interface AnthropicToolDef {
  * - `{ type: "tool", name: "X" }` — force a specific tool
  */
 export type AnthropicToolChoice =
-  | "auto"
-  | "any"
-  | { type: "tool"; name: string };
+  | 'auto'
+  | 'any'
+  | { type: 'tool'; name: string };
 
 /** Token usage reported by the Anthropic API. */
 export interface AnthropicUsage {
@@ -99,11 +99,11 @@ export interface AnthropicRequest {
 /** Full Anthropic Messages API response body. */
 export interface AnthropicResponse {
   id: string;
-  type: "message";
-  role: "assistant";
+  type: 'message';
+  role: 'assistant';
   content: ContentBlock[];
   model: string;
-  stop_reason: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence" | null;
+  stop_reason: 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | null;
   stop_sequence: string | null;
   usage: AnthropicUsage;
 }
@@ -127,7 +127,7 @@ export interface OpenAIFunctionCall {
  */
 export interface OpenAIToolCall {
   id: string;
-  type: "function";
+  type: 'function';
   function: OpenAIFunctionCall;
 }
 
@@ -137,7 +137,7 @@ export interface OpenAIToolCall {
  */
 export interface RawOllamaToolCall {
   id?: string;
-  type?: "function";
+  type?: 'function';
   function?: {
     index?: number;
     name?: string;
@@ -147,7 +147,7 @@ export interface RawOllamaToolCall {
 
 /** A message in the OpenAI Chat Completions format. */
 export interface OpenAIMessage {
-  role: "system" | "user" | "assistant" | "tool";
+  role: 'system' | 'user' | 'assistant' | 'tool';
   content: string | null;
   tool_calls?: OpenAIToolCall[];
   /** Present when role is "tool" — references the tool call this responds to. */
@@ -156,7 +156,7 @@ export interface OpenAIMessage {
 
 /** Tool definition in the OpenAI format. */
 export interface OpenAIToolDef {
-  type: "function";
+  type: 'function';
   function: {
     name: string;
     description: string;
@@ -172,16 +172,16 @@ export interface OpenAIToolDef {
  * - `{ type: "function", function: { name: "X" } }` — force a specific tool
  */
 export type OpenAIToolChoice =
-  | "auto"
-  | "none"
-  | "required"
-  | { type: "function"; function: { name: string } };
+  | 'auto'
+  | 'none'
+  | 'required'
+  | { type: 'function'; function: { name: string } };
 
 /** A single choice in the OpenAI response. */
 export interface OpenAIChoice {
   index: number;
   message: OpenAIMessage;
-  finish_reason: "stop" | "length" | "tool_calls" | null;
+  finish_reason: 'stop' | 'length' | 'tool_calls' | null;
 }
 
 /** Token usage reported by the OpenAI API / Ollama. */

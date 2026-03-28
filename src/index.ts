@@ -59,9 +59,8 @@ import {
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
-import { DASHBOARD_ENABLED, OLLAMA_BASE_URL } from './config.js';
+import { DASHBOARD_ENABLED } from './config.js';
 import { startDashboard, stopDashboard } from './dashboard.js';
-import { startShimServer } from './anthropic-ollama-shim.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -631,16 +630,6 @@ async function main(): Promise<void> {
       queue,
       startedAt: new Date(),
     });
-  }
-
-  // Start the local model translation shim (if Ollama URL is configured)
-  if (OLLAMA_BASE_URL && OLLAMA_BASE_URL !== 'disabled') {
-    try {
-      const shim = await startShimServer();
-      logger.info({ port: shim.port }, 'Local model shim started');
-    } catch (err) {
-      logger.warn({ err }, 'Local model shim failed to start — local-backend groups will not work');
-    }
   }
 
   // Start subsystems (independently of connection handler)

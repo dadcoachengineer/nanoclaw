@@ -8,10 +8,10 @@
  * Uses only Node.js built-ins. No external dependencies.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes } from 'node:crypto';
 
-import { logger } from "./logger.js";
-import type { OpenAIToolCall } from "./shim-types.js";
+import { logger } from './logger.js';
+import type { OpenAIToolCall } from './shim-types.js';
 
 /** Toggle repair processing. When false, tool calls pass through unmodified. */
 export let repairEnabled = true;
@@ -26,7 +26,7 @@ export function setRepairEnabled(enabled: boolean): void {
  * Format: `call_` followed by 8 random hex characters.
  */
 function generateCallId(): string {
-  return `call_${randomBytes(4).toString("hex")}`;
+  return `call_${randomBytes(4).toString('hex')}`;
 }
 
 /**
@@ -37,7 +37,7 @@ function generateCallId(): string {
  * or brackets.
  */
 function stripTrailingCommas(str: string): string {
-  return str.replace(/,\s*([\]}])/g, "$1");
+  return str.replace(/,\s*([\]}])/g, '$1');
 }
 
 /**
@@ -48,10 +48,7 @@ function stripTrailingCommas(str: string): string {
  */
 function fixUnquotedKeys(str: string): string {
   // Match `{ key:` or `, key:` patterns where key is not already quoted
-  return str.replace(
-    /([{,]\s*)([a-zA-Z_]\w*)\s*:/g,
-    '$1"$2":',
-  );
+  return str.replace(/([{,]\s*)([a-zA-Z_]\w*)\s*:/g, '$1"$2":');
 }
 
 /**
@@ -91,15 +88,19 @@ function parseArguments(raw: string): Record<string, unknown> {
 
   // Attempt 4: both fixes
   try {
-    return JSON.parse(
-      stripTrailingCommas(fixUnquotedKeys(raw)),
-    ) as Record<string, unknown>;
+    return JSON.parse(stripTrailingCommas(fixUnquotedKeys(raw))) as Record<
+      string,
+      unknown
+    >;
   } catch {
     // continue
   }
 
   // Give up — wrap raw string so downstream can at least see what the model said
-  logger.warn({ raw }, "shim-repair: could not parse tool call arguments, wrapping as raw");
+  logger.warn(
+    { raw },
+    'shim-repair: could not parse tool call arguments, wrapping as raw',
+  );
   return { raw };
 }
 
@@ -122,8 +123,11 @@ export function repairToolCall(toolCall: unknown): OpenAIToolCall | null {
   }
 
   // Must be an object at minimum
-  if (toolCall == null || typeof toolCall !== "object") {
-    logger.warn({ toolCall }, "shim-repair: tool call is not an object, skipping");
+  if (toolCall == null || typeof toolCall !== 'object') {
+    logger.warn(
+      { toolCall },
+      'shim-repair: tool call is not an object, skipping',
+    );
     return null;
   }
 
@@ -131,14 +135,20 @@ export function repairToolCall(toolCall: unknown): OpenAIToolCall | null {
   const fn = raw.function as Record<string, unknown> | undefined;
 
   // Missing function entirely
-  if (!fn || typeof fn !== "object") {
-    logger.warn({ toolCall }, "shim-repair: tool call missing function field, skipping");
+  if (!fn || typeof fn !== 'object') {
+    logger.warn(
+      { toolCall },
+      'shim-repair: tool call missing function field, skipping',
+    );
     return null;
   }
 
   // Missing function.name is unrecoverable
-  if (!fn.name || typeof fn.name !== "string") {
-    logger.warn({ toolCall }, "shim-repair: tool call missing function.name, skipping");
+  if (!fn.name || typeof fn.name !== 'string') {
+    logger.warn(
+      { toolCall },
+      'shim-repair: tool call missing function.name, skipping',
+    );
     return null;
   }
 
@@ -146,13 +156,13 @@ export function repairToolCall(toolCall: unknown): OpenAIToolCall | null {
 
   // Repair: generate missing ID
   let id = raw.id as string | undefined;
-  if (!id || typeof id !== "string") {
+  if (!id || typeof id !== 'string') {
     id = generateCallId();
     repairs.push(`generated id ${id}`);
   }
 
   // Repair: strip function.index (Ollama-specific non-standard field)
-  if ("index" in fn) {
+  if ('index' in fn) {
     repairs.push(`stripped function.index=${fn.index}`);
   }
 
@@ -160,16 +170,16 @@ export function repairToolCall(toolCall: unknown): OpenAIToolCall | null {
   let args: string;
   const rawArgs = fn.arguments;
   if (rawArgs == null) {
-    args = "{}";
-    repairs.push("defaulted missing arguments to {}");
-  } else if (typeof rawArgs === "string") {
+    args = '{}';
+    repairs.push('defaulted missing arguments to {}');
+  } else if (typeof rawArgs === 'string') {
     // Parse it — may need repair
     const parsed = parseArguments(rawArgs);
     args = JSON.stringify(parsed);
     if (rawArgs !== args) {
-      repairs.push("parsed/repaired string arguments");
+      repairs.push('parsed/repaired string arguments');
     }
-  } else if (typeof rawArgs === "object") {
+  } else if (typeof rawArgs === 'object') {
     // Already an object (Ollama's typical behavior) — stringify for spec compliance
     args = JSON.stringify(rawArgs);
   } else {
@@ -180,13 +190,13 @@ export function repairToolCall(toolCall: unknown): OpenAIToolCall | null {
   if (repairs.length > 0) {
     logger.info(
       { toolName: fn.name, repairs },
-      "shim-repair: repaired tool call",
+      'shim-repair: repaired tool call',
     );
   }
 
   return {
     id,
-    type: "function",
+    type: 'function',
     function: {
       name: fn.name as string,
       arguments: args,
@@ -220,7 +230,7 @@ export function repairToolCalls(toolCalls: unknown[]): OpenAIToolCall[] {
   if (droppedCount > 0) {
     logger.warn(
       { droppedCount, totalReceived: toolCalls.length },
-      "shim-repair: dropped unrecoverable tool calls",
+      'shim-repair: dropped unrecoverable tool calls',
     );
   }
 

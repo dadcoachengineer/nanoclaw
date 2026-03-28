@@ -90,7 +90,10 @@ function parseXmlToolCalls(resp: Record<string, unknown>): void {
     }
 
     if (calls.length > 0) {
-      const after = text.slice(lastIndex).replace(/<\/tool_call>/g, '').trim();
+      const after = text
+        .slice(lastIndex)
+        .replace(/<\/tool_call>/g, '')
+        .trim();
       if (after) newContent.push({ type: 'text', text: after });
       for (const call of calls) newContent.push(call);
     } else {
@@ -292,28 +295,40 @@ async function handleMessages(
     for (const msg of openaiReq.messages) {
       if (msg.role === 'system' && typeof msg.content === 'string') {
         msg.content = msg.content
-          .replace(/You are a Claude agent[^.]*\./g, 'You are a helpful assistant.')
+          .replace(
+            /You are a Claude agent[^.]*\./g,
+            'You are a helpful assistant.',
+          )
           .replace(/Claude Agent SDK/g, 'Agent SDK');
       }
     }
 
     // Build a tool list summary so the model knows what tools exist
     if (openaiReq.tools && openaiReq.tools.length > 0) {
-      const toolList = openaiReq.tools.map((t: any) => {
-        const fn = t.function || t;
-        const params = fn.parameters?.properties
-          ? Object.keys(fn.parameters.properties).join(', ')
-          : '';
-        return `- ${fn.name}(${params}): ${(fn.description || '').slice(0, 100)}`;
-      }).join('\n');
+      const toolList = openaiReq.tools
+        .map((t: any) => {
+          const fn = t.function || t;
+          const params = fn.parameters?.properties
+            ? Object.keys(fn.parameters.properties).join(', ')
+            : '';
+          return `- ${fn.name}(${params}): ${(fn.description || '').slice(0, 100)}`;
+        })
+        .join('\n');
 
       const toolSteering = {
         role: 'system' as const,
         content:
           'Available tools (use ONLY these exact names with function calling):\n' +
-          toolList + '\n\n' +
+          toolList +
+          '\n\n' +
           'To use a tool, output it as: <function=ToolName><parameter=paramName>value</parameter></function>\n' +
-          'ONLY use tools from the list above. Do NOT invent tool names like TaskList, SearchWeb, etc.',
+          'ONLY use tools from the list above. Do NOT invent tool names like TaskList, SearchWeb, etc.\n\n' +
+          'CRITICAL RULES:\n' +
+          '1. NEVER make up or hallucinate information. If you don\'t know something, use a tool to find out.\n' +
+          '2. For questions about tasks, schedule, or to-do items: use Bash to query the Notion API or read workspace files.\n' +
+          '3. For sending replies to the user: use mcp__nanoclaw__send_message with the text parameter.\n' +
+          '4. You are "Claw", a personal assistant. Not a "Meeting Prep Agent" or any other role.\n' +
+          '5. Always verify information with tools before responding. Never guess.',
       };
 
       const sysIdx = openaiReq.messages.findIndex((m) => m.role === 'system');
