@@ -215,6 +215,8 @@ export default function SystemView() {
   const [dedupExpanded, setDedupExpanded] = useState(true);
   const [bulkMergeProgress, setBulkMergeProgress] = useState<{ current: number; total: number } | null>(null);
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
+  const [dedupSelected, setDedupSelected] = useState<Set<string>>(new Set());
+  const [dedupBulkProgress, setDedupBulkProgress] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -379,6 +381,74 @@ export default function SystemView() {
       });
     } catch {}
     setActionInFlight(null);
+  }
+
+  function dedupToggleSelect(pair: DedupPair) {
+    const key = `${pair.taskA.id}:${pair.taskB.id}`;
+    setDedupSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }
+
+  function dedupSelectAll() {
+    if (!dedupData) return;
+    if (dedupSelected.size === dedupData.pairs.length) {
+      setDedupSelected(new Set());
+    } else {
+      setDedupSelected(new Set(dedupData.pairs.map((p) => `${p.taskA.id}:${p.taskB.id}`)));
+    }
+  }
+
+  async function dedupBulkAction(action: "merge" | "dismiss") {
+    if (!dedupData || dedupSelected.size === 0) return;
+    const selected = dedupData.pairs.filter((p) => dedupSelected.has(`${p.taskA.id}:${p.taskB.id}`));
+    setDedupBulkProgress(`${action === "merge" ? "Merging" : "Dismissing"} 0 of ${selected.length}...`);
+
+    let done = 0;
+    for (const pair of selected) {
+      try {
+        if (action === "merge") {
+          const aRank = (pair.taskA.priority.match(/P(\d)/) || [, "3"])[1];
+          const bRank = (pair.taskB.priority.match(/P(\d)/) || [, "3"])[1];
+          const keepA = parseInt(aRank as string) <= parseInt(bRank as string);
+          const keepId = keepA ? pair.taskA.id : pair.taskB.id;
+          const removeId = keepA ? pair.taskB.id : pair.taskA.id;
+          const removedTitle = keepA ? pair.taskB.title : pair.taskA.title;
+          await fetch("/api/dedup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "merge", keepId, removeId, note: `[Merged] "${removedTitle}"` }),
+          });
+        } else {
+          await fetch("/api/dedup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "dismiss", idA: pair.taskA.id, idB: pair.taskB.id }),
+          });
+        }
+      } catch {}
+      done++;
+      setDedupBulkProgress(`${action === "merge" ? "Merging" : "Dismissing"} ${done} of ${selected.length}...`);
+    }
+
+    // Remove processed pairs from state
+    setDedupData((prev) => {
+      if (!prev) return prev;
+      const remaining = prev.pairs.filter((p) => !dedupSelected.has(`${p.taskA.id}:${p.taskB.id}`));
+      return {
+        ...prev,
+        pairs: remaining,
+        summary: {
+          skip: remaining.filter((p) => p.action === "skip").length,
+          merge: remaining.filter((p) => p.action === "merge").length,
+          review: remaining.filter((p) => p.action === "review").length,
+        },
+      };
+    });
+    setDedupSelected(new Set());
+    setDedupBulkProgress(null);
   }
 
   async function dedupMergeAllSkips() {
@@ -975,6 +1045,40 @@ export default function SystemView() {
                   )}
                 </div>
 
+                {/* Select all + bulk actions */}
+                {dedupData.pairs.length > 0 && (
+                  <div className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)] bg-[var(--bg)]">
+                    <label className="flex items-center gap-2 text-xs text-[var(--text-dim)] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={dedupSelected.size === dedupData.pairs.length && dedupData.pairs.length > 0}
+                        onChange={dedupSelectAll}
+                        className="w-3.5 h-3.5 rounded accent-[var(--accent)]"
+                      />
+                      {dedupSelected.size > 0 ? `${dedupSelected.size} selected` : "Select all"}
+                    </label>
+                    {dedupSelected.size > 0 && !dedupBulkProgress && (
+                      <div className="flex items-center gap-2 ml-auto">
+                        <button
+                          onClick={() => dedupBulkAction("merge")}
+                          className="text-[11px] px-2.5 py-1 rounded border border-[var(--green)] text-[var(--green)] hover:bg-[rgba(63,185,80,0.08)] font-medium transition-colors"
+                        >
+                          Merge ({dedupSelected.size})
+                        </button>
+                        <button
+                          onClick={() => dedupBulkAction("dismiss")}
+                          className="text-[11px] px-2.5 py-1 rounded border border-[var(--text-dim)] text-[var(--text-dim)] hover:bg-[rgba(139,148,158,0.08)] transition-colors"
+                        >
+                          Dismiss ({dedupSelected.size})
+                        </button>
+                      </div>
+                    )}
+                    {dedupBulkProgress && (
+                      <span className="text-[11px] text-[var(--text-dim)] ml-auto">{dedupBulkProgress}</span>
+                    )}
+                  </div>
+                )}
+
                 {/* Pair list */}
                 <div className="max-h-[60vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   {dedupData.pairs.length === 0 && (
@@ -982,15 +1086,29 @@ export default function SystemView() {
                       No duplicate pairs found
                     </div>
                   )}
-                  {dedupData.pairs.map((pair) => (
-                    <DedupPairCard
-                      key={`${pair.taskA.id}:${pair.taskB.id}`}
-                      pair={pair}
-                      isActioning={actionInFlight === `${pair.taskA.id}:${pair.taskB.id}`}
-                      onMerge={() => dedupMerge(pair)}
-                      onDismiss={() => dedupDismiss(pair)}
-                    />
-                  ))}
+                  {dedupData.pairs.map((pair) => {
+                    const pairKey = `${pair.taskA.id}:${pair.taskB.id}`;
+                    return (
+                      <div key={pairKey} className="flex items-start gap-2 border-b border-[var(--border)]">
+                        <div className="pt-4 pl-3 shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={dedupSelected.has(pairKey)}
+                            onChange={() => dedupToggleSelect(pair)}
+                            className="w-3.5 h-3.5 rounded accent-[var(--accent)] cursor-pointer"
+                          />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <DedupPairCard
+                            pair={pair}
+                            isActioning={actionInFlight === pairKey}
+                            onMerge={() => dedupMerge(pair)}
+                            onDismiss={() => dedupDismiss(pair)}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </>
             )}
