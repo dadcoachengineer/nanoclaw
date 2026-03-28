@@ -87,6 +87,24 @@ export default function TodayView() {
   const [bulkDropdown, setBulkDropdown] = useState<"priority" | "status" | null>(null);
   const bulkDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Search and filter state
+  const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [activeSourceFilters, setActiveSourceFilters] = useState<Set<string>>(new Set());
+  const [activeProjectFilters, setActiveProjectFilters] = useState<Set<string>>(new Set());
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounce search input
+  useEffect(() => {
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    searchTimeoutRef.current = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+    }, 300);
+    return () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    };
+  }, [searchQuery]);
+
   // Close bulk dropdown on outside click
   useEffect(() => {
     if (!bulkDropdown) return;
@@ -153,6 +171,84 @@ export default function TodayView() {
     },
     [selectedIds, exitBulkMode],
   );
+
+  const handleBulkMerge = useCallback(async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length < 2) return;
+
+    const currentTasks = tasks.filter((t) => !isBriefingPage(t));
+    const selectedTasks = currentTasks.filter((t) => ids.includes(t.id));
+    if (selectedTasks.length < 2) return;
+
+    if (!confirm(`Merge ${selectedTasks.length} tasks into one? The task with the highest priority will be kept.`)) return;
+
+    setBulkDropdown(null);
+
+    // Determine keeper: highest priority, then longest notes as tiebreaker
+    const sorted = [...selectedTasks].sort((a, b) => {
+      const rankDiff = priorityRank(prop(a, "Priority")) - priorityRank(prop(b, "Priority"));
+      if (rankDiff !== 0) return rankDiff;
+      return (prop(b, "Notes") || "").length - (prop(a, "Notes") || "").length;
+    });
+    const keeper = sorted[0];
+    const mergeTargets = sorted.slice(1);
+
+    let done = 0;
+    const total = mergeTargets.length;
+    setBulkProgress(`Merging 0 of ${total}...`);
+
+    // Build the text to append to the keeper's notes
+    const mergeLines = mergeTargets.map((t) => {
+      const title = prop(t, "Task") || prop(t, "Name") || "Untitled";
+      const source = prop(t, "Source") || "unknown";
+      return `[Merged] "${title}" (Source: ${source})`;
+    }).join("\n\n");
+
+    // Update keeper notes via appendNote
+    try {
+      await fetch("/api/notion/update", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          page_id: keeper.id,
+          properties: {},
+          appendNote: mergeLines,
+        }),
+      });
+    } catch {
+      // continue even if note append fails
+    }
+
+    // Mark non-keepers as Done
+    let failed = 0;
+    for (const target of mergeTargets) {
+      try {
+        const resp = await fetch("/api/notion/update", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            page_id: target.id,
+            properties: { Status: { status: { name: "Done" } } },
+          }),
+        });
+        if (!resp.ok) failed++;
+      } catch {
+        failed++;
+      }
+      done++;
+      setBulkProgress(`Merging ${done} of ${total}...`);
+    }
+
+    // Remove merged tasks from the list, keep the survivor
+    const mergedIds = new Set(mergeTargets.map((t) => t.id));
+    setTasks((prev) => prev.filter((t) => !mergedIds.has(t.id)));
+
+    const msg = failed > 0
+      ? `Merged ${done - failed} tasks (${failed} failed)`
+      : `Merged ${done} tasks into keeper`;
+    setBulkProgress(msg);
+    setTimeout(() => exitBulkMode(), 1500);
+  }, [selectedIds, tasks, exitBulkMode]);
 
   useEffect(() => {
     async function load() {
@@ -233,9 +329,45 @@ export default function TodayView() {
 
   // Filter out briefing/prep pages from actionable tasks
   const actionableTasks = tasks.filter((t) => !isBriefingPage(t));
-  const p0 = actionableTasks.filter((t) => prop(t, "Priority").includes("P0"));
-  const p1 = actionableTasks.filter((t) => prop(t, "Priority").includes("P1"));
-  const p2 = actionableTasks.filter((t) => prop(t, "Priority").includes("P2"));
+
+  // Extract unique sources and projects for filter pills
+  const uniqueSources = Array.from(new Set(actionableTasks.map((t) => prop(t, "Source")).filter(Boolean))).sort();
+  const uniqueProjects = Array.from(new Set(actionableTasks.map((t) => prop(t, "Project")).filter(Boolean))).sort();
+
+  // Apply search + source + project filters
+  const filteredTasks = actionableTasks.filter((t) => {
+    // Text search
+    if (debouncedSearch) {
+      const q = debouncedSearch.toLowerCase();
+      const title = (prop(t, "Task") || prop(t, "Name") || "").toLowerCase();
+      const notes = (prop(t, "Notes") || "").toLowerCase();
+      const source = (prop(t, "Source") || "").toLowerCase();
+      const project = (prop(t, "Project") || "").toLowerCase();
+      if (!title.includes(q) && !notes.includes(q) && !source.includes(q) && !project.includes(q)) {
+        return false;
+      }
+    }
+    // Source filter
+    if (activeSourceFilters.size > 0) {
+      const source = prop(t, "Source") || "";
+      if (!activeSourceFilters.has(source)) return false;
+    }
+    // Project filter
+    if (activeProjectFilters.size > 0) {
+      const project = prop(t, "Project") || "";
+      if (!activeProjectFilters.has(project)) return false;
+    }
+    return true;
+  });
+
+  // Unfiltered counts for the briefing header
+  const allP0 = actionableTasks.filter((t) => prop(t, "Priority").includes("P0"));
+  const allP1 = actionableTasks.filter((t) => prop(t, "Priority").includes("P1"));
+
+  // Filtered groups for the task list
+  const p0 = filteredTasks.filter((t) => prop(t, "Priority").includes("P0"));
+  const p1 = filteredTasks.filter((t) => prop(t, "Priority").includes("P1"));
+  const p2 = filteredTasks.filter((t) => prop(t, "Priority").includes("P2"));
   const activeMeetings = meetings.filter((m) => m.state !== "missed");
 
   return (
@@ -252,8 +384,8 @@ export default function TodayView() {
           <div className="flex items-center gap-6 mb-3">
             <span className="text-sm font-semibold text-[var(--text-bright)]">Daily Briefing</span>
             <div className="flex items-center gap-4 text-xs">
-              <span><span className="font-bold text-[var(--red)]">{p0.length}</span> <span className="text-[var(--text-dim)]">P0</span></span>
-              <span><span className="font-bold text-[var(--orange)]">{p1.length}</span> <span className="text-[var(--text-dim)]">P1</span></span>
+              <span><span className="font-bold text-[var(--red)]">{allP0.length}</span> <span className="text-[var(--text-dim)]">P0</span></span>
+              <span><span className="font-bold text-[var(--orange)]">{allP1.length}</span> <span className="text-[var(--text-dim)]">P1</span></span>
               <span><span className="font-bold text-[var(--accent)]">{activeMeetings.length}</span> <span className="text-[var(--text-dim)]">meetings</span></span>
               <span><span className="font-bold text-[var(--text-dim)]">{actionableTasks.length}</span> <span className="text-[var(--text-dim)]">open</span></span>
             </div>
@@ -342,6 +474,77 @@ export default function TodayView() {
                 </div>
               }
             />
+            {/* Search and filter bar */}
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] flex-wrap">
+              <input
+                type="text"
+                placeholder="Search tasks..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="h-7 px-2.5 text-xs bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)] min-w-[140px] max-w-[200px]"
+              />
+              {uniqueSources.length > 0 && (
+                <div className="flex items-center gap-1 flex-wrap">
+                  {uniqueSources.map((src) => (
+                    <button
+                      key={src}
+                      onClick={() => {
+                        setActiveSourceFilters((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(src)) next.delete(src);
+                          else next.add(src);
+                          return next;
+                        });
+                      }}
+                      className={`px-2 py-0.5 rounded-full text-[11px] transition-colors ${
+                        activeSourceFilters.has(src)
+                          ? "bg-[rgba(88,166,255,0.15)] text-[var(--accent)] font-medium"
+                          : "bg-[var(--bg)] text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[rgba(88,166,255,0.06)]"
+                      }`}
+                    >
+                      {src}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {uniqueProjects.length > 0 && (
+                <div className="flex items-center gap-1 flex-wrap">
+                  {uniqueProjects.map((proj) => (
+                    <button
+                      key={proj}
+                      onClick={() => {
+                        setActiveProjectFilters((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(proj)) next.delete(proj);
+                          else next.add(proj);
+                          return next;
+                        });
+                      }}
+                      className={`px-2 py-0.5 rounded-full text-[11px] transition-colors ${
+                        activeProjectFilters.has(proj)
+                          ? "bg-[rgba(210,153,34,0.15)] text-[var(--yellow)] font-medium"
+                          : "bg-[var(--bg)] text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[rgba(210,153,34,0.06)]"
+                      }`}
+                    >
+                      {proj}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {(debouncedSearch || activeSourceFilters.size > 0 || activeProjectFilters.size > 0) && (
+                <button
+                  onClick={() => {
+                    setSearchQuery("");
+                    setDebouncedSearch("");
+                    setActiveSourceFilters(new Set());
+                    setActiveProjectFilters(new Set());
+                  }}
+                  className="px-2 py-0.5 text-[11px] text-[var(--text-dim)] hover:text-[var(--text)] rounded-full hover:bg-[rgba(248,81,73,0.06)] transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
             {/* Bulk action bar */}
             {bulkMode && selectedIds.size > 0 && (
               <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-2.5 bg-[var(--surface2)] border-b border-[var(--border)]">
@@ -436,6 +639,19 @@ export default function TodayView() {
                           </div>
                         )}
                       </div>
+
+                      {/* Merge */}
+                      <button
+                        onClick={handleBulkMerge}
+                        disabled={selectedIds.size < 2}
+                        className={`px-3 py-1 text-xs font-medium rounded-md transition-opacity ${
+                          selectedIds.size >= 2
+                            ? "bg-[rgb(139,92,246)] text-white hover:opacity-90"
+                            : "bg-[rgba(139,92,246,0.3)] text-[rgba(139,92,246,0.5)] cursor-not-allowed"
+                        }`}
+                      >
+                        Merge ({selectedIds.size})
+                      </button>
                     </>
                   )}
                 </div>
@@ -446,10 +662,10 @@ export default function TodayView() {
               <div className="flex items-center gap-3 px-4 py-1.5 border-b border-[var(--border)] bg-[var(--bg)]">
                 <input
                   type="checkbox"
-                  checked={actionableTasks.length > 0 && selectedIds.size === actionableTasks.length}
+                  checked={filteredTasks.length > 0 && selectedIds.size === filteredTasks.length}
                   onChange={(e) => {
                     if (e.target.checked) {
-                      setSelectedIds(new Set(actionableTasks.map((t) => t.id)));
+                      setSelectedIds(new Set(filteredTasks.map((t) => t.id)));
                     } else {
                       setSelectedIds(new Set());
                     }
@@ -473,6 +689,11 @@ export default function TodayView() {
               {!loading && !error && actionableTasks.length === 0 && (
                 <div className="p-6 text-center text-[var(--text-dim)] italic">
                   No open tasks
+                </div>
+              )}
+              {!loading && !error && actionableTasks.length > 0 && filteredTasks.length === 0 && (
+                <div className="p-6 text-center text-[var(--text-dim)] italic">
+                  No tasks match current filters
                 </div>
               )}
               {p0.length > 0 && (
