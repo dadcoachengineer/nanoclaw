@@ -85,6 +85,11 @@ export default function TodayView() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkProgress, setBulkProgress] = useState<string | null>(null);
   const [bulkDropdown, setBulkDropdown] = useState<"priority" | "status" | null>(null);
+  const [showAddTask, setShowAddTask] = useState(false);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [newTaskPriority, setNewTaskPriority] = useState("P1 \u2014 This Week");
+  const [addingTask, setAddingTask] = useState(false);
+  const addTaskRef = useRef<HTMLInputElement>(null);
   const bulkDropdownRef = useRef<HTMLDivElement>(null);
   const [filterOpen, setFilterOpen] = useState(false);
   const filterDropdownRef = useRef<HTMLDivElement>(null);
@@ -121,6 +126,50 @@ export default function TodayView() {
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, [bulkDropdown, filterOpen]);
+
+  const handleAddTask = useCallback(async () => {
+    const title = newTaskTitle.trim();
+    if (!title) return;
+    setAddingTask(true);
+    try {
+      const resp = await fetch("/api/notion/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          database_id: NOTION_DB,
+          properties: {
+            Task: { title: [{ text: { content: title } }] },
+            Priority: { select: { name: newTaskPriority } },
+            Status: { status: { name: "Not started" } },
+            Context: { select: { name: "Quick Win" } },
+            Source: { select: { name: "Manual" } },
+            "Delegated To": { select: { name: "Jason" } },
+          },
+        }),
+      });
+      if (resp.ok) {
+        setNewTaskTitle("");
+        setShowAddTask(false);
+        // Refresh task list
+        const now = new Date();
+        const localStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+        const localEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+        const freshTasks = await queryNotion({
+          and: [
+            { property: "Status", status: { does_not_equal: "Done" } },
+            { or: [
+              { property: "Priority", select: { equals: "P0 \u2014 Today" } },
+              { property: "Priority", select: { equals: "P1 \u2014 This Week" } },
+              { property: "Priority", select: { equals: "P2 \u2014 This Month" } },
+            ]},
+          ],
+        });
+        setTasks(freshTasks.sort((a: NotionPage, b: NotionPage) => priorityRank(prop(a, "Priority")) - priorityRank(prop(b, "Priority"))));
+      }
+    } finally {
+      setAddingTask(false);
+    }
+  }, [newTaskTitle, newTaskPriority]);
 
   const toggleSelect = useCallback((page: NotionPage, selected: boolean) => {
     setSelectedIds((prev) => {
@@ -462,12 +511,21 @@ export default function TodayView() {
                     {actionableTasks.length} open
                   </span>
                   {!bulkMode ? (
-                    <button
-                      onClick={() => setBulkMode(true)}
-                      className="text-xs text-[var(--text-dim)] hover:text-[var(--text)] px-2 py-0.5 rounded hover:bg-[rgba(88,166,255,0.06)] transition-colors"
-                    >
-                      Edit
-                    </button>
+                    <>
+                      <button
+                        onClick={() => { setShowAddTask(true); setTimeout(() => addTaskRef.current?.focus(), 50); }}
+                        className="text-xs text-[var(--accent)] hover:text-[var(--text-bright)] px-1.5 py-0.5 rounded hover:bg-[rgba(88,166,255,0.08)] transition-colors font-medium"
+                        title="Add task"
+                      >
+                        +
+                      </button>
+                      <button
+                        onClick={() => setBulkMode(true)}
+                        className="text-xs text-[var(--text-dim)] hover:text-[var(--text)] px-2 py-0.5 rounded hover:bg-[rgba(88,166,255,0.06)] transition-colors"
+                      >
+                        Edit
+                      </button>
+                    </>
                   ) : (
                     <button
                       onClick={exitBulkMode}
@@ -567,6 +625,46 @@ export default function TodayView() {
                 </div>
               );
             })()}
+            {/* Quick add task */}
+            {showAddTask && (
+              <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[rgba(63,185,80,0.04)]">
+                <input
+                  ref={addTaskRef}
+                  type="text"
+                  placeholder="Task title..."
+                  value={newTaskTitle}
+                  onChange={(e) => setNewTaskTitle(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleAddTask();
+                    if (e.key === "Escape") { setShowAddTask(false); setNewTaskTitle(""); }
+                  }}
+                  disabled={addingTask}
+                  className="flex-1 h-7 px-2.5 text-sm bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--green)]"
+                />
+                <select
+                  value={newTaskPriority}
+                  onChange={(e) => setNewTaskPriority(e.target.value)}
+                  className="h-7 px-1.5 text-[11px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] appearance-none"
+                >
+                  {PRIORITY_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleAddTask}
+                  disabled={addingTask || !newTaskTitle.trim()}
+                  className="h-7 px-3 text-xs font-medium bg-[var(--green)] text-[var(--bg)] rounded hover:opacity-90 disabled:opacity-40 transition-opacity"
+                >
+                  {addingTask ? "..." : "Add"}
+                </button>
+                <button
+                  onClick={() => { setShowAddTask(false); setNewTaskTitle(""); }}
+                  className="h-7 px-1.5 text-xs text-[var(--text-dim)] hover:text-[var(--text)]"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
             {/* Bulk action bar */}
             {bulkMode && selectedIds.size > 0 && (
               <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-2.5 bg-[var(--surface2)] border-b border-[var(--border)]">

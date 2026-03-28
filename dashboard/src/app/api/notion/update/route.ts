@@ -78,3 +78,31 @@ export async function PATCH(req: NextRequest) {
     return NextResponse.json({ error: String(err) }, { status: 502 });
   }
 }
+
+/** POST — create a new task in the Notion database */
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    const { database_id, properties } = body;
+
+    const resp = await proxiedFetch(
+      "https://api.notion.com/v1/pages",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Notion-Version": "2022-06-28",
+        },
+        body: JSON.stringify({
+          parent: { database_id },
+          properties,
+        }),
+      }
+    );
+
+    const data = await resp.json();
+    return NextResponse.json(data, { status: resp.ok ? 201 : 400 });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 502 });
+  }
+}
