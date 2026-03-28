@@ -644,6 +644,8 @@ export async function PATCH(req: NextRequest) {
       // Mapping of pipelines that have local script replacements
       const localScripts: Record<string, string> = {
         "mc-webex-transcripts": "com.nanoclaw.transcripts-local",
+        "mc-webex-messages": "com.nanoclaw.messages-local",
+        "mc-plaud-processor": "com.nanoclaw.plaud-local",
       };
 
       const hasLocalScript = body.id in localScripts;
