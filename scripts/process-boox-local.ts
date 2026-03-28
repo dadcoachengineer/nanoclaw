@@ -1,0 +1,998 @@
+/**
+ * Process Boox NoteAir2P handwritten notes locally using Ollama (gemma3:27b vision).
+ *
+ * Downloads PDF notebooks from Nextcloud WebDAV, converts pages to images with
+ * pdftoppm, sends each page to Gemma 3 27B for OCR and action item extraction,
+ * applies corrections, and creates Notion tasks.
+ *
+ * Replaces the mc-boox-processor scheduled agent for cost savings.
+ *
+ * Usage: NODE_EXTRA_CA_CERTS=<onecli-ca> npx tsx scripts/process-boox-local.ts
+ */
+import fs from "fs";
+import path from "path";
+import { execSync } from "child_process";
+import { HttpsProxyAgent } from "https-proxy-agent";
+
+const STORE_DIR = path.join(process.cwd(), "store");
+const STATE_PATH = path.join(STORE_DIR, "boox-local-state.json");
+const CORRECTIONS_PATH = path.join(STORE_DIR, "corrections.json");
+const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
+const MAX_PAGES_PER_PDF = 10;
+const OLLAMA_URL = "http://studio.shearer.live:11434";
+const OLLAMA_MODEL = "gemma3:27b";
+const OLLAMA_TIMEOUT_MS = 120_000;
+
+// Nextcloud WebDAV settings
+const NEXTCLOUD_BASE = "https://drive.shearer.live";
+const NEXTCLOUD_DAV_PATH =
+  "/remote.php/dav/files/jason/BooxSync/Notes/onyx/NoteAir2P/Notebooks/";
+
+// OneCLI proxy — injects credentials based on host patterns
+const AGENT_TOKEN =
+  "aoc_181429a83379e2122e9e0b6cde6eefd6b897809b92c08cc4bc788816e26e399a";
+const proxyAgent = new HttpsProxyAgent(
+  `http://x:${AGENT_TOKEN}@localhost:10255`
+);
+
+// Temp directory for PDF and page images
+const TMP_DIR = "/tmp/boox-processing";
+
+// --- State types ---
+
+interface BooxLocalState {
+  lastCheck: string;
+  etags: Record<string, string>; // filename -> etag
+  processedPages: Record<string, boolean>; // "filename:page" -> true
+  metrics: {
+    totalRuns: number;
+    totalPages: number;
+    totalTasks: number;
+    avgLatencyMs: number;
+    errors: number;
+  };
+}
+
+interface ActionItem {
+  task: string;
+  priority: string;
+  context: string;
+}
+
+interface RunMetrics {
+  pdfsChecked: number;
+  pdfsChanged: number;
+  pagesProcessed: number;
+  pagesBlank: number;
+  tasksExtracted: number;
+  tasksCreated: number;
+  correctionsApplied: number;
+  ollamaLatencies: number[];
+  ollamaTokensIn: number;
+  ollamaTokensOut: number;
+  parseErrors: number;
+  notionErrors: number;
+}
+
+// --- Fetch helpers ---
+
+async function nextcloudRequest(
+  urlPath: string,
+  options: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+  } = {}
+): Promise<{ status: number; text: string; headers: Record<string, string> }> {
+  const nodeFetch = (await import("node-fetch")).default;
+  const resp = await nodeFetch(`${NEXTCLOUD_BASE}${urlPath}`, {
+    method: options.method || "GET",
+    agent: proxyAgent,
+    headers: options.headers || {},
+    body: options.body,
+  });
+  const text = await resp.text();
+  const respHeaders: Record<string, string> = {};
+  resp.headers.forEach((value, key) => {
+    respHeaders[key] = value;
+  });
+  return { status: resp.status, text, headers: respHeaders };
+}
+
+async function notionPost(
+  endpoint: string,
+  body: unknown
+): Promise<unknown> {
+  const nodeFetch = (await import("node-fetch")).default;
+  const resp = await nodeFetch(`https://api.notion.com/v1${endpoint}`, {
+    method: "POST",
+    agent: proxyAgent,
+    headers: {
+      "Content-Type": "application/json",
+      "Notion-Version": "2022-06-28",
+    },
+    body: JSON.stringify(body),
+  });
+  return resp.json();
+}
+
+// --- WebDAV helpers ---
+
+interface DavEntry {
+  href: string;
+  filename: string;
+  etag: string;
+  lastModified: string;
+}
+
+function parsePropfindResponse(xml: string): DavEntry[] {
+  const entries: DavEntry[] = [];
+
+  // Match each <d:response> block
+  const responseRegex = /<d:response>([\s\S]*?)<\/d:response>/gi;
+  let match;
+
+  while ((match = responseRegex.exec(xml)) !== null) {
+    const block = match[1];
+
+    // Extract href
+    const hrefMatch = block.match(/<d:href>([^<]+)<\/d:href>/);
+    if (!hrefMatch) continue;
+    const href = decodeURIComponent(hrefMatch[1]);
+
+    // Skip the directory itself (no .pdf extension)
+    if (!href.toLowerCase().endsWith(".pdf")) continue;
+
+    // Extract etag
+    const etagMatch = block.match(/<d:getetag>"?([^"<]+)"?<\/d:getetag>/);
+    const etag = etagMatch ? etagMatch[1] : "";
+
+    // Extract last modified
+    const modMatch = block.match(
+      /<d:getlastmodified>([^<]+)<\/d:getlastmodified>/
+    );
+    const lastModified = modMatch ? modMatch[1] : "";
+
+    // Extract filename from href
+    const filename = href.split("/").filter(Boolean).pop() || "";
+
+    entries.push({ href, filename, etag, lastModified });
+  }
+
+  return entries;
+}
+
+async function listNotebookPdfs(): Promise<DavEntry[]> {
+  const resp = await nextcloudRequest(NEXTCLOUD_DAV_PATH, {
+    method: "PROPFIND",
+    headers: {
+      Depth: "1",
+      "Content-Type": "application/xml",
+    },
+    body: `<?xml version="1.0" encoding="utf-8" ?>
+<d:propfind xmlns:d="DAV:">
+  <d:prop>
+    <d:getetag/>
+    <d:getlastmodified/>
+    <d:getcontentlength/>
+  </d:prop>
+</d:propfind>`,
+  });
+
+  if (resp.status !== 207) {
+    throw new Error(
+      `WebDAV PROPFIND failed with status ${resp.status}: ${resp.text.slice(0, 200)}`
+    );
+  }
+
+  return parsePropfindResponse(resp.text);
+}
+
+async function downloadPdf(
+  davPath: string,
+  localPath: string
+): Promise<void> {
+  const nodeFetch = (await import("node-fetch")).default;
+  const resp = await nodeFetch(`${NEXTCLOUD_BASE}${davPath}`, {
+    agent: proxyAgent,
+  });
+
+  if (!resp.ok) {
+    throw new Error(`Download failed: ${resp.status} ${resp.statusText}`);
+  }
+
+  const buffer = await resp.buffer();
+  fs.writeFileSync(localPath, buffer);
+}
+
+// --- PDF helpers ---
+
+function getPdfPageCount(pdfPath: string): number {
+  // Try pdfinfo first (from poppler)
+  try {
+    const output = execSync(`pdfinfo "${pdfPath}" 2>/dev/null`, {
+      encoding: "utf-8",
+    });
+    const pagesMatch = output.match(/Pages:\s+(\d+)/);
+    if (pagesMatch) return parseInt(pagesMatch[1], 10);
+  } catch {
+    // pdfinfo not available
+  }
+
+  // Fallback: try pdftoppm with just page 1 to verify it works, then
+  // binary search for page count
+  try {
+    // Try a high page number; pdftoppm exits gracefully if page doesn't exist
+    for (const testCount of [500, 200, 100, 50, 20, 10, 5]) {
+      try {
+        execSync(
+          `pdftoppm -png -r 72 -f ${testCount} -l ${testCount} "${pdfPath}" /dev/null 2>/dev/null`,
+          { encoding: "utf-8" }
+        );
+        return testCount; // at minimum this many pages
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    // pdftoppm not available either
+  }
+
+  // Last resort: assume 1 page
+  return 1;
+}
+
+function hasPdftoppm(): boolean {
+  try {
+    execSync("which pdftoppm 2>/dev/null", { encoding: "utf-8" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function hasConvert(): boolean {
+  try {
+    execSync("which convert 2>/dev/null", { encoding: "utf-8" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function convertPdfPageToImage(
+  pdfPath: string,
+  page: number,
+  outputPrefix: string
+): string | null {
+  const outputPath = `${outputPrefix}-${String(page).padStart(6, "0")}.png`;
+
+  if (hasPdftoppm()) {
+    try {
+      execSync(
+        `pdftoppm -png -r 150 -f ${page} -l ${page} "${pdfPath}" "${outputPrefix}"`,
+        { encoding: "utf-8", timeout: 30_000 }
+      );
+      // pdftoppm names output as prefix-NNNNNN.png
+      if (fs.existsSync(outputPath)) return outputPath;
+
+      // Try alternate naming (some versions use different padding)
+      const altPath = `${outputPrefix}-${page}.png`;
+      if (fs.existsSync(altPath)) return altPath;
+
+      // Check for single-page output (no page number suffix)
+      const singlePath = `${outputPrefix}.png`;
+      if (fs.existsSync(singlePath)) return singlePath;
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (hasConvert()) {
+    try {
+      // ImageMagick: 0-indexed pages
+      execSync(
+        `convert -density 150 "${pdfPath}[${page - 1}]" "${outputPath}"`,
+        { encoding: "utf-8", timeout: 30_000 }
+      );
+      if (fs.existsSync(outputPath)) return outputPath;
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  throw new Error(
+    "Neither pdftoppm nor ImageMagick convert found. Install poppler: brew install poppler"
+  );
+}
+
+// --- Utility helpers ---
+
+function loadCorrections(): Record<string, string> {
+  if (fs.existsSync(CORRECTIONS_PATH)) {
+    return JSON.parse(fs.readFileSync(CORRECTIONS_PATH, "utf-8"));
+  }
+  return {};
+}
+
+function applyCorrections(
+  text: string,
+  corrections: Record<string, string>
+): { text: string; applied: number } {
+  let result = text;
+  let applied = 0;
+  for (const [wrong, right] of Object.entries(corrections)) {
+    const pattern = new RegExp(
+      `\\b${wrong.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`,
+      "gi"
+    );
+    const before = result;
+    result = result.replace(pattern, right);
+    if (result !== before) applied++;
+  }
+  return { text: result, applied };
+}
+
+function inferProject(content: string): string {
+  const lower = content.toLowerCase();
+  if (
+    lower.includes("cisco") ||
+    lower.includes("spaces") ||
+    lower.includes("fpw") ||
+    lower.includes("webex") ||
+    lower.includes("splunk") ||
+    lower.includes("cadenas") ||
+    lower.includes("cross arch")
+  ) {
+    return "Cisco";
+  }
+  if (lower.includes("momentumeq") || lower.includes("coaching")) {
+    return "MomentumEQ";
+  }
+  if (lower.includes("ordinary epics") || lower.includes("adventure")) {
+    return "Ordinary Epics";
+  }
+  if (lower.includes("real estate") || lower.includes("accelerator")) {
+    return "Real Estate Accelerator";
+  }
+  return "Cisco";
+}
+
+function mapPriority(raw: string): string {
+  const normalized = raw.toUpperCase().trim();
+  if (normalized === "P0") return "P0 \u2014 Today";
+  if (normalized === "P1") return "P1 \u2014 This Week";
+  if (normalized === "P2") return "P2 \u2014 This Month";
+  if (normalized === "P3") return "P3 \u2014 This Quarter";
+  return "P2 \u2014 This Month";
+}
+
+function mapContext(raw: string): string {
+  const lower = raw.toLowerCase().trim();
+  if (lower === "quick win") return "Quick Win";
+  if (lower === "deep work") return "Deep Work";
+  if (lower === "research") return "Research";
+  return "Quick Win";
+}
+
+// --- State management ---
+
+function loadState(): BooxLocalState {
+  if (fs.existsSync(STATE_PATH)) {
+    return JSON.parse(fs.readFileSync(STATE_PATH, "utf-8"));
+  }
+  return {
+    lastCheck: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+    etags: {},
+    processedPages: {},
+    metrics: {
+      totalRuns: 0,
+      totalPages: 0,
+      totalTasks: 0,
+      avgLatencyMs: 0,
+      errors: 0,
+    },
+  };
+}
+
+function saveState(state: BooxLocalState): void {
+  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+}
+
+// --- Ollama vision interaction ---
+
+function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
+async function ocrAndExtractPage(
+  imageBase64: string
+): Promise<{
+  text: string;
+  items: ActionItem[];
+  latencyMs: number;
+  tokensIn: number;
+  tokensOut: number;
+  parseErrors: number;
+  rawResponse?: string;
+}> {
+  const prompt = `Read this handwritten note carefully. Extract ALL text you can see, then identify action items.
+
+CRITICAL RULES:
+- Read ONLY what is visible in the image
+- Do NOT add text that is not in the image
+- If the page is blank or has no legible text, output ONLY: {"type": "blank"}
+- If text is illegible, mark it as [illegible]
+
+Jason's notation conventions:
+- Boxed text (text inside a rectangle/box drawn around it) = action item
+- Circled text = P1 (high priority) action item
+- Regular unboxed text = notes/context (do NOT create tasks for these)
+
+Output your findings as JSON lines (one JSON object per line):
+{"type": "text", "content": "the extracted text from the page"}
+{"type": "action", "task": "the action item text", "priority": "P1", "context": "Quick Win"}
+{"type": "action", "task": "another action item", "priority": "P2", "context": "Deep Work"}
+
+Priority rules:
+- Circled items = P1
+- Boxed but not circled = P2
+Context rules:
+- Short/simple tasks = "Quick Win"
+- Complex/multi-step tasks = "Deep Work"
+
+Output ONLY JSON lines. Base analysis ONLY on what you see in the image.`;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+
+  const startMs = Date.now();
+
+  try {
+    const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        messages: [
+          {
+            role: "user",
+            content: prompt,
+            images: [imageBase64],
+          },
+        ],
+        stream: false,
+        options: { num_ctx: 8192 },
+      }),
+      signal: controller.signal,
+    });
+
+    const latencyMs = Date.now() - startMs;
+    clearTimeout(timeout);
+
+    if (!resp.ok) {
+      throw new Error(`Ollama ${resp.status}: ${resp.statusText}`);
+    }
+
+    const data = (await resp.json()) as {
+      message?: { content?: string };
+      prompt_eval_count?: number;
+      eval_count?: number;
+    };
+
+    const rawContent = data.message?.content || "";
+    const tokensIn = data.prompt_eval_count || 0;
+    const tokensOut = data.eval_count || 0;
+
+    // Strip <think> tags if present
+    const cleaned = stripThinkTags(rawContent);
+
+    // Parse JSON lines
+    let fullText = "";
+    const items: ActionItem[] = [];
+    let parseErrors = 0;
+    let isBlank = false;
+
+    const jsonLines = cleaned.split("\n").filter((l) => l.trim());
+
+    for (const line of jsonLines) {
+      try {
+        let jsonStr = line.trim();
+        // Skip markdown code fence markers
+        if (jsonStr.startsWith("```")) continue;
+        // Strip leading list markers
+        jsonStr = jsonStr.replace(/^[\d]+\.\s*/, "").replace(/^-\s*/, "");
+
+        const parsed = JSON.parse(jsonStr);
+
+        if (parsed.type === "blank") {
+          isBlank = true;
+          continue;
+        }
+
+        if (parsed.type === "text" && parsed.content) {
+          fullText += (fullText ? "\n" : "") + parsed.content;
+        }
+
+        if (parsed.type === "action" && parsed.task && parsed.task.length >= 5) {
+          items.push({
+            task: parsed.task,
+            priority: parsed.priority || "P2",
+            context: parsed.context || "Quick Win",
+          });
+        }
+      } catch {
+        parseErrors++;
+      }
+    }
+
+    // If the model said blank, return empty
+    if (isBlank && items.length === 0) {
+      return {
+        text: "",
+        items: [],
+        latencyMs,
+        tokensIn,
+        tokensOut,
+        parseErrors: 0,
+      };
+    }
+
+    return {
+      text: fullText,
+      items,
+      latencyMs,
+      tokensIn,
+      tokensOut,
+      parseErrors,
+      rawResponse: rawContent,
+    };
+  } catch (err: unknown) {
+    clearTimeout(timeout);
+    const msg = err instanceof Error ? err.message : String(err);
+
+    if (msg.includes("abort")) {
+      throw new Error(`Ollama timeout after ${OLLAMA_TIMEOUT_MS / 1000}s`);
+    }
+    throw err;
+  }
+}
+
+// --- Notion task creation ---
+
+async function createNotionTask(
+  item: ActionItem,
+  filename: string,
+  page: number,
+  ocrText: string
+): Promise<string | null> {
+  const project = inferProject(ocrText);
+  const priority = mapPriority(item.priority);
+  const context = mapContext(item.context);
+  const notes =
+    `From Boox notebook: ${filename} page ${page}. Processed locally via ${OLLAMA_MODEL}`;
+
+  const body = {
+    parent: { database_id: NOTION_DB },
+    properties: {
+      Task: {
+        title: [{ text: { content: item.task } }],
+      },
+      Priority: {
+        select: { name: priority },
+      },
+      Status: {
+        status: { name: "Not started" },
+      },
+      Context: {
+        select: { name: context },
+      },
+      Zone: {
+        select: { name: "Open" },
+      },
+      Source: {
+        select: { name: "Boox Note (Local)" },
+      },
+      Project: {
+        select: { name: project },
+      },
+      Notes: {
+        rich_text: [{ text: { content: notes } }],
+      },
+    },
+  };
+
+  const result = (await notionPost("/pages", body)) as {
+    id?: string;
+    object?: string;
+    status?: number;
+    message?: string;
+  };
+
+  if (result.id) {
+    return result.id;
+  }
+  console.error(
+    `  Failed to create Notion task: ${result.message || JSON.stringify(result)}`
+  );
+  return null;
+}
+
+// --- Cost estimation ---
+
+function estimateCost(
+  tokensIn: number,
+  tokensOut: number
+): {
+  haiku: string;
+  sonnet: string;
+} {
+  // Haiku: $0.25/1M input, $1.25/1M output
+  const haikuCost =
+    (tokensIn / 1_000_000) * 0.25 + (tokensOut / 1_000_000) * 1.25;
+  // Sonnet: $3/1M input, $15/1M output
+  const sonnetCost =
+    (tokensIn / 1_000_000) * 3 + (tokensOut / 1_000_000) * 15;
+  return {
+    haiku: `~$${haikuCost.toFixed(2)}`,
+    sonnet: `~$${sonnetCost.toFixed(2)}`,
+  };
+}
+
+// --- Cleanup ---
+
+function cleanupTmpDir(): void {
+  if (fs.existsSync(TMP_DIR)) {
+    const files = fs.readdirSync(TMP_DIR);
+    for (const f of files) {
+      try {
+        fs.unlinkSync(path.join(TMP_DIR, f));
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
+}
+
+// --- Main ---
+
+async function main() {
+  console.log("Processing Boox handwritten notes locally...\n");
+
+  // Check Ollama connectivity first
+  try {
+    const healthResp = await fetch(`${OLLAMA_URL}/api/tags`, {
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!healthResp.ok) {
+      console.warn(
+        `WARNING: Ollama returned ${healthResp.status}. Exiting gracefully.`
+      );
+      return;
+    }
+    // Verify the model is available
+    const tags = (await healthResp.json()) as {
+      models?: { name: string }[];
+    };
+    const modelNames = (tags.models || []).map((m) => m.name);
+    const hasModel = modelNames.some(
+      (n) => n.startsWith("gemma3:27b") || n === "gemma3:27b"
+    );
+    if (!hasModel) {
+      console.warn(
+        `WARNING: Model ${OLLAMA_MODEL} not found on Ollama. Available: ${modelNames.join(", ")}`
+      );
+      console.warn("Pull it with: ollama pull gemma3:27b");
+      return;
+    }
+  } catch (err) {
+    console.warn(
+      `WARNING: Ollama unreachable at ${OLLAMA_URL}. Exiting gracefully.`
+    );
+    console.warn(`  ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  // Check PDF conversion tools
+  if (!hasPdftoppm() && !hasConvert()) {
+    console.error(
+      "ERROR: Neither pdftoppm nor ImageMagick convert found."
+    );
+    console.error("Install poppler: brew install poppler");
+    return;
+  }
+  console.log(
+    `PDF converter: ${hasPdftoppm() ? "pdftoppm (poppler)" : "convert (ImageMagick)"}`
+  );
+
+  const state = loadState();
+  const corrections = loadCorrections();
+
+  const metrics: RunMetrics = {
+    pdfsChecked: 0,
+    pdfsChanged: 0,
+    pagesProcessed: 0,
+    pagesBlank: 0,
+    tasksExtracted: 0,
+    tasksCreated: 0,
+    correctionsApplied: 0,
+    ollamaLatencies: [],
+    ollamaTokensIn: 0,
+    ollamaTokensOut: 0,
+    parseErrors: 0,
+    notionErrors: 0,
+  };
+
+  // Ensure temp directory exists
+  if (!fs.existsSync(TMP_DIR)) {
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+  }
+
+  // 1. Fetch PDF list from Nextcloud WebDAV
+  let davEntries: DavEntry[];
+  try {
+    davEntries = await listNotebookPdfs();
+  } catch (err) {
+    console.error(`WebDAV error: ${err instanceof Error ? err.message : String(err)}`);
+    console.error("Exiting gracefully.");
+    return;
+  }
+
+  console.log(`Found ${davEntries.length} PDFs in Nextcloud\n`);
+  metrics.pdfsChecked = davEntries.length;
+
+  // 2. Process each PDF with changed etag
+  for (const entry of davEntries) {
+    const prevEtag = state.etags[entry.filename];
+    const isChanged = !prevEtag || prevEtag !== entry.etag;
+
+    if (!isChanged) {
+      console.log(`Skipping ${entry.filename} (unchanged)`);
+      continue;
+    }
+
+    console.log(
+      `Processing: ${entry.filename} (${prevEtag ? "changed" : "new"}, modified: ${entry.lastModified})`
+    );
+    metrics.pdfsChanged++;
+
+    // 3. Download PDF
+    const localPdfPath = path.join(TMP_DIR, `boox-${entry.filename}`);
+    try {
+      await downloadPdf(entry.href, localPdfPath);
+      console.log(`  Downloaded to ${localPdfPath}`);
+    } catch (err) {
+      console.error(
+        `  Download error: ${err instanceof Error ? err.message : String(err)}`
+      );
+      continue;
+    }
+
+    // 4. Get page count
+    const totalPages = getPdfPageCount(localPdfPath);
+    console.log(`  Total pages: ${totalPages}`);
+
+    // Find NEW pages (not in processedPages state)
+    const pagesToProcess: number[] = [];
+    for (let p = 1; p <= totalPages; p++) {
+      const pageKey = `${entry.filename}:${p}`;
+      if (!state.processedPages[pageKey]) {
+        pagesToProcess.push(p);
+      }
+    }
+
+    // Safety limit: only process up to MAX_PAGES_PER_PDF new pages per run
+    const pageBatch = pagesToProcess.slice(0, MAX_PAGES_PER_PDF);
+    const skipped = pagesToProcess.length - pageBatch.length;
+
+    console.log(
+      `  New pages: ${pagesToProcess.length}, processing: ${pageBatch.length}${skipped > 0 ? ` (${skipped} deferred to next run)` : ""}`
+    );
+
+    if (pageBatch.length === 0) {
+      // All pages processed, just update etag
+      state.etags[entry.filename] = entry.etag;
+      console.log("  All pages already processed, updating etag");
+      continue;
+    }
+
+    // 5. Process each new page
+    for (const page of pageBatch) {
+      const pageKey = `${entry.filename}:${page}`;
+      console.log(`  Page ${page}:`);
+
+      // Convert PDF page to PNG
+      const outputPrefix = path.join(
+        TMP_DIR,
+        `boox-page-${entry.filename.replace(/\.pdf$/i, "")}`
+      );
+      const imagePath = convertPdfPageToImage(localPdfPath, page, outputPrefix);
+
+      if (!imagePath) {
+        console.log("    Could not convert page to image, skipping");
+        state.processedPages[pageKey] = true;
+        continue;
+      }
+
+      // Read and base64 encode the image
+      const imageBuffer = fs.readFileSync(imagePath);
+      const base64Image = imageBuffer.toString("base64");
+
+      // Clean up image file immediately
+      try {
+        fs.unlinkSync(imagePath);
+      } catch {
+        // ignore
+      }
+
+      // 6. Send to Gemma 3 27B vision for OCR + action extraction
+      let ocrResult: Awaited<ReturnType<typeof ocrAndExtractPage>>;
+      try {
+        ocrResult = await ocrAndExtractPage(base64Image);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`    Ollama error: ${msg}`);
+        metrics.parseErrors++;
+        // Don't mark as processed so we can retry
+        continue;
+      }
+
+      metrics.ollamaLatencies.push(ocrResult.latencyMs);
+      metrics.ollamaTokensIn += ocrResult.tokensIn;
+      metrics.ollamaTokensOut += ocrResult.tokensOut;
+      metrics.parseErrors += ocrResult.parseErrors;
+
+      // Handle blank pages
+      if (!ocrResult.text && ocrResult.items.length === 0) {
+        console.log(
+          `    Blank page (${(ocrResult.latencyMs / 1000).toFixed(1)}s)`
+        );
+        metrics.pagesBlank++;
+        state.processedPages[pageKey] = true;
+        metrics.pagesProcessed++;
+        continue;
+      }
+
+      console.log(
+        `    OCR: ${ocrResult.text.length} chars, ${ocrResult.items.length} action items in ${(ocrResult.latencyMs / 1000).toFixed(1)}s`
+      );
+
+      if (ocrResult.items.length === 0 && ocrResult.parseErrors > 0) {
+        console.warn("    WARNING: No action items parsed. Raw response:");
+        console.warn(
+          `    ${(ocrResult.rawResponse || "").slice(0, 300)}`
+        );
+      }
+
+      metrics.tasksExtracted += ocrResult.items.length;
+
+      // 7. Apply corrections and create Notion tasks
+      for (const item of ocrResult.items) {
+        // Apply corrections glossary
+        const { text: correctedTask, applied } = applyCorrections(
+          item.task,
+          corrections
+        );
+        if (applied > 0) {
+          console.log(
+            `    Corrected: "${item.task}" -> "${correctedTask}"`
+          );
+          metrics.correctionsApplied += applied;
+        }
+        item.task = correctedTask;
+
+        // Create Notion task
+        try {
+          const taskId = await createNotionTask(
+            item,
+            entry.filename,
+            page,
+            ocrResult.text
+          );
+          if (taskId) {
+            metrics.tasksCreated++;
+            console.log(
+              `    Created task: ${item.task.slice(0, 80)}${item.task.length > 80 ? "..." : ""}`
+            );
+          } else {
+            metrics.notionErrors++;
+          }
+        } catch (err) {
+          console.error(
+            `    Notion error: ${err instanceof Error ? err.message : String(err)}`
+          );
+          metrics.notionErrors++;
+        }
+
+        // Rate limit protection
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
+      // Mark page as processed
+      state.processedPages[pageKey] = true;
+      metrics.pagesProcessed++;
+    }
+
+    // Update etag only if all new pages were processed (no deferred)
+    if (skipped === 0) {
+      state.etags[entry.filename] = entry.etag;
+    }
+
+    // Clean up the downloaded PDF
+    try {
+      fs.unlinkSync(localPdfPath);
+    } catch {
+      // ignore
+    }
+  }
+
+  // 8. Update cumulative metrics
+  state.metrics.totalRuns++;
+  state.metrics.totalPages += metrics.pagesProcessed;
+  state.metrics.totalTasks += metrics.tasksCreated;
+  state.metrics.errors += metrics.parseErrors + metrics.notionErrors;
+
+  // Rolling average latency
+  if (metrics.ollamaLatencies.length > 0) {
+    const runAvg =
+      metrics.ollamaLatencies.reduce((a, b) => a + b, 0) /
+      metrics.ollamaLatencies.length;
+    if (state.metrics.avgLatencyMs === 0) {
+      state.metrics.avgLatencyMs = Math.round(runAvg);
+    } else {
+      // Weighted average: 70% historical, 30% current run
+      state.metrics.avgLatencyMs = Math.round(
+        state.metrics.avgLatencyMs * 0.7 + runAvg * 0.3
+      );
+    }
+  }
+
+  // 9. Save state
+  state.lastCheck = new Date().toISOString();
+  saveState(state);
+
+  // 10. Cleanup temp files
+  cleanupTmpDir();
+
+  // 11. Print instrumentation report
+  const avgLatency =
+    metrics.ollamaLatencies.length > 0
+      ? metrics.ollamaLatencies.reduce((a, b) => a + b, 0) /
+        metrics.ollamaLatencies.length
+      : 0;
+  const totalLatency = metrics.ollamaLatencies.reduce((a, b) => a + b, 0);
+  const costs = estimateCost(metrics.ollamaTokensIn, metrics.ollamaTokensOut);
+  const processedPageCount = Object.keys(state.processedPages).length;
+
+  console.log("\n=== Boox Handwriting Processing (Local) ===");
+  console.log(`Model: ${OLLAMA_MODEL}`);
+  console.log(`PDFs checked: ${metrics.pdfsChecked}`);
+  console.log(`PDFs changed: ${metrics.pdfsChanged}`);
+  console.log(`Pages processed: ${metrics.pagesProcessed}`);
+  console.log(`Pages blank: ${metrics.pagesBlank}`);
+  console.log(`Action items extracted: ${metrics.tasksExtracted}`);
+  console.log(`Notion tasks created: ${metrics.tasksCreated}`);
+  if (metrics.ollamaLatencies.length > 0) {
+    console.log(
+      `Ollama latency: avg ${(avgLatency / 1000).toFixed(0)}s, total ${(totalLatency / 1000).toFixed(0)}s`
+    );
+  }
+  console.log(`API cost: $0.00 (local inference)`);
+  console.log(`Equivalent Haiku cost: ${costs.haiku}`);
+  console.log(`Equivalent Sonnet cost: ${costs.sonnet}`);
+  console.log(`Corrections applied: ${metrics.correctionsApplied}`);
+  console.log(`Parse errors: ${metrics.parseErrors}`);
+  console.log(`Notion errors: ${metrics.notionErrors}`);
+  console.log(`State: ${processedPageCount} pages tracked across ${Object.keys(state.etags).length} PDFs`);
+  console.log(
+    `Cumulative: ${state.metrics.totalRuns} runs, ${state.metrics.totalPages} pages, ${state.metrics.totalTasks} tasks, avg latency ${(state.metrics.avgLatencyMs / 1000).toFixed(0)}s`
+  );
+}
+
+main().catch((err) => {
+  console.error("Fatal:", err);
+  process.exit(1);
+});

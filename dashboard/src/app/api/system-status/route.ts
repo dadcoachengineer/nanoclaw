@@ -17,7 +17,8 @@ const DEFAULT_MODEL = "claude-sonnet-4-20250514";
 const MODEL_COSTS: Record<string, { inputPerM: number; outputPerM: number; label: string }> = {
   "claude-sonnet-4-20250514": { inputPerM: 3, outputPerM: 15, label: "Sonnet" },
   "claude-haiku-4-5-20251001": { inputPerM: 0.25, outputPerM: 1.25, label: "Haiku" },
-  "local:deepseek-r1:70b": { inputPerM: 0, outputPerM: 0, label: "Local" },
+  "local:deepseek-r1:70b": { inputPerM: 0, outputPerM: 0, label: "Local (DeepSeek)" },
+  "local:gemma3:27b": { inputPerM: 0, outputPerM: 0, label: "Local (Gemma)" },
 };
 
 // --- Helpers ---
@@ -646,6 +647,7 @@ export async function PATCH(req: NextRequest) {
         "mc-webex-transcripts": "com.nanoclaw.transcripts-local",
         "mc-webex-messages": "com.nanoclaw.messages-local",
         "mc-plaud-processor": "com.nanoclaw.plaud-local",
+        "mc-boox-processor": "com.nanoclaw.boox-local",
       };
 
       const hasLocalScript = body.id in localScripts;
