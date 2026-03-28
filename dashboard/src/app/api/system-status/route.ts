@@ -17,7 +17,7 @@ const DEFAULT_MODEL = "claude-sonnet-4-20250514";
 const MODEL_COSTS: Record<string, { inputPerM: number; outputPerM: number; label: string }> = {
   "claude-sonnet-4-20250514": { inputPerM: 3, outputPerM: 15, label: "Sonnet" },
   "claude-haiku-4-5-20251001": { inputPerM: 0.25, outputPerM: 1.25, label: "Haiku" },
-  "local:qwen3-coder:30b": { inputPerM: 0, outputPerM: 0, label: "Local" },
+  "local:deepseek-r1:70b": { inputPerM: 0, outputPerM: 0, label: "Local" },
 };
 
 // --- Helpers ---
@@ -421,7 +421,7 @@ export async function GET() {
           lastRun: row.last_run,
           lastStatus: lastRunLog?.status || "never",
           nextRun: row.next_run,
-          status: row.status,
+          status: row.status === "paused" && row.model?.startsWith("local:") ? "local" : row.status,
           model: row.model,
           modelLabel: modelLabel(row.model),
           estimatedCostPerRun: Math.round(costPerRun * 1000) / 1000,
@@ -455,12 +455,13 @@ export async function GET() {
   };
 
   // Available models for the UI selector
+  const ollamaReachable = !!ollamaData;
   const availableModels = Object.entries(MODEL_COSTS).map(([id, info]) => ({
     id,
     label: info.label,
     inputPerM: info.inputPerM,
     outputPerM: info.outputPerM,
-    active: id !== "local:qwen3-coder:30b", // local model not active yet
+    active: id.startsWith("local:") ? ollamaReachable : true,
   }));
 
   // Recent runs
@@ -637,23 +638,60 @@ export async function PATCH(req: NextRequest) {
 
     try {
       ensureModelColumn(writableDb);
-      // null means "use default" (Sonnet)
       const modelValue = body.model || null;
-      const result = writableDb
-        .prepare("UPDATE scheduled_tasks SET model = ? WHERE id = ?")
-        .run(modelValue, body.id);
+      const isLocal = typeof modelValue === "string" && modelValue.startsWith("local:");
+
+      // Mapping of pipelines that have local script replacements
+      const localScripts: Record<string, string> = {
+        "mc-webex-transcripts": "com.nanoclaw.transcripts-local",
+      };
+
+      const hasLocalScript = body.id in localScripts;
+
+      if (isLocal && hasLocalScript) {
+        // Pause the scheduled agent, activate local launchd job
+        writableDb
+          .prepare("UPDATE scheduled_tasks SET model = ?, status = 'paused' WHERE id = ?")
+          .run(modelValue, body.id);
+        // Activate launchd job
+        const { execSync } = await import("child_process");
+        try {
+          execSync(`launchctl load ~/Library/LaunchAgents/${localScripts[body.id]}.plist 2>/dev/null || true`);
+        } catch { /* may already be loaded */ }
+      } else if (!isLocal) {
+        // Resume the scheduled agent, deactivate local launchd job if exists
+        writableDb
+          .prepare("UPDATE scheduled_tasks SET model = ?, status = 'active' WHERE id = ?")
+          .run(modelValue, body.id);
+        if (hasLocalScript) {
+          const { execSync } = await import("child_process");
+          try {
+            execSync(`launchctl unload ~/Library/LaunchAgents/${localScripts[body.id]}.plist 2>/dev/null || true`);
+          } catch { /* may not be loaded */ }
+        }
+      } else {
+        // Local selected but no script available — just update the model
+        const result = writableDb
+          .prepare("UPDATE scheduled_tasks SET model = ? WHERE id = ?")
+          .run(modelValue, body.id);
+        if (result.changes === 0) {
+          writableDb.close();
+          return NextResponse.json(
+            { error: `Pipeline not found: ${body.id}` },
+            { status: 404 }
+          );
+        }
+      }
+
       writableDb.close();
 
-      if (result.changes === 0) {
-        return NextResponse.json(
-          { error: `Pipeline not found: ${body.id}` },
-          { status: 404 }
-        );
-      }
+      const action = isLocal && hasLocalScript ? "Switched to local script" :
+                     !isLocal && hasLocalScript ? "Resumed on API, stopped local script" :
+                     `Updated model to ${modelValue || DEFAULT_MODEL}`;
 
       return NextResponse.json({
         ok: true,
-        message: `Updated ${body.id} model to ${modelValue || DEFAULT_MODEL}`,
+        message: `${body.id}: ${action}`,
       });
     } catch (err) {
       writableDb.close();

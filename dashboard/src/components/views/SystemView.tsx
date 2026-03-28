@@ -233,12 +233,18 @@ export default function SystemView() {
       });
       if (resp.ok) {
         // Optimistically update the local state
+        const isLocal = typeof model === "string" && model.startsWith("local:");
         setData((prev) => {
           if (!prev) return prev;
           return {
             ...prev,
             pipelines: prev.pipelines.map((p) =>
-              p.id === id ? { ...p, model, modelLabel: model ? (prev.availableModels.find(m => m.id === model)?.label || model) : "Sonnet" } : p
+              p.id === id ? {
+                ...p,
+                model,
+                modelLabel: model ? (prev.availableModels.find(m => m.id === model)?.label || model) : "Sonnet",
+                status: isLocal ? "local" : "active",
+              } : p
             ),
           };
         });
@@ -603,7 +609,9 @@ export default function SystemView() {
                     </div>
                   </td>
                   <td className="px-4 py-2.5 text-[var(--text-dim)]">
-                    {p.status === "paused" ? (
+                    {p.status === "local" ? (
+                      <span className="text-[var(--green)]">local script</span>
+                    ) : p.status === "paused" ? (
                       <span className="text-[var(--yellow)]">paused</span>
                     ) : (
                       timeUntil(p.nextRun)
@@ -612,7 +620,7 @@ export default function SystemView() {
                   <td className="px-4 py-2.5 text-right">
                     <button
                       onClick={() => triggerPipeline(p.id)}
-                      disabled={triggeringId === p.id || p.status === "paused"}
+                      disabled={triggeringId === p.id || p.status === "paused" || p.status === "local"}
                       className="text-[11px] px-2.5 py-1 rounded border border-[var(--border)] text-[var(--accent)] hover:bg-[rgba(88,166,255,0.08)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
                       {triggeringId === p.id ? "Triggering..." : "Run Now"}
