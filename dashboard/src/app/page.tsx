@@ -9,6 +9,7 @@ import TopicsView from "@/components/views/TopicsView";
 import PeopleView from "@/components/views/PeopleView";
 import InitiativesView from "@/components/views/ProjectsView";
 import WeeklyCheckinView from "@/components/views/WeeklyCheckinView";
+import SystemView from "@/components/views/SystemView";
 import SearchBar from "@/components/SearchBar";
 
 const TABS = [
@@ -19,6 +20,7 @@ const TABS = [
   { id: "initiatives", label: "Initiatives" },
   { id: "people", label: "People" },
   { id: "topics", label: "Topics" },
+  { id: "system", label: "System" },
 ] as const;
 
 type Tab = (typeof TABS)[number]["id"];
@@ -52,12 +54,6 @@ export default function Home() {
           <span className="text-sm text-[var(--text-dim)]">
             {fmtDate(new Date())}
           </span>
-          <a
-            href="/system"
-            className="text-xs text-[var(--text-dim)] hover:text-[var(--accent)]"
-          >
-            System
-          </a>
         </div>
       </header>
 
@@ -69,6 +65,7 @@ export default function Home() {
         {tab === "initiatives" && <InitiativesView />}
         {tab === "people" && <PeopleView />}
         {tab === "topics" && <TopicsView />}
+        {tab === "system" && <SystemView />}
       </main>
     </>
   );
