@@ -3,6 +3,30 @@
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Card, CardHeader, StatCard } from "@/components/Card";
 
+// --- Dedup types ---
+
+interface DedupTask {
+  id: string;
+  title: string;
+  source: string;
+  priority: string;
+  project: string;
+  url: string;
+}
+
+interface DedupPair {
+  score: number;
+  action: "skip" | "merge" | "review";
+  taskA: DedupTask;
+  taskB: DedupTask;
+}
+
+interface DedupData {
+  totalTasks: number;
+  pairs: DedupPair[];
+  summary: { skip: number; merge: number; review: number };
+}
+
 // --- Types ---
 
 interface Service {
@@ -184,6 +208,14 @@ export default function SystemView() {
   const [updatingModelId, setUpdatingModelId] = useState<string | null>(null);
   const runsRef = useRef<HTMLDivElement>(null);
 
+  // Dedup state
+  const [dedupData, setDedupData] = useState<DedupData | null>(null);
+  const [dedupLoading, setDedupLoading] = useState(false);
+  const [dedupError, setDedupError] = useState<string | null>(null);
+  const [dedupExpanded, setDedupExpanded] = useState(true);
+  const [bulkMergeProgress, setBulkMergeProgress] = useState<{ current: number; total: number } | null>(null);
+  const [actionInFlight, setActionInFlight] = useState<string | null>(null);
+
   const fetchData = useCallback(async () => {
     try {
       const resp = await fetch("/api/system-status");
@@ -253,6 +285,158 @@ export default function SystemView() {
       }
     } catch {}
     setUpdatingModelId(null);
+  }
+
+  // --- Dedup handlers ---
+
+  const scanDedup = useCallback(async () => {
+    setDedupLoading(true);
+    setDedupError(null);
+    try {
+      const resp = await fetch("/api/dedup");
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const json = await resp.json();
+      setDedupData(json);
+    } catch (err) {
+      setDedupError(String(err));
+    } finally {
+      setDedupLoading(false);
+    }
+  }, []);
+
+  async function dedupMerge(pair: DedupPair) {
+    const key = `${pair.taskA.id}:${pair.taskB.id}`;
+    setActionInFlight(key);
+    try {
+      // Keep the task that has more context (longer title as proxy, or higher priority)
+      const priorityRank: Record<string, number> = {
+        "P0 \u2014 Today": 0,
+        "P1 \u2014 This Week": 1,
+        "P2 \u2014 This Month": 2,
+        "P3 \u2014 This Quarter": 3,
+      };
+      const rankA = priorityRank[pair.taskA.priority] ?? 3;
+      const rankB = priorityRank[pair.taskB.priority] ?? 3;
+      const keepA = rankA < rankB || (rankA === rankB && pair.taskA.title.length >= pair.taskB.title.length);
+      const keepId = keepA ? pair.taskA.id : pair.taskB.id;
+      const removeId = keepA ? pair.taskB.id : pair.taskA.id;
+      const removeTitle = keepA ? pair.taskB.title : pair.taskA.title;
+
+      const dateStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      const note = `[Dedup] Merged with: "${removeTitle}" on ${dateStr}`;
+
+      await fetch("/api/dedup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "merge", keepId, removeId, note }),
+      });
+
+      // Remove pair from local state
+      setDedupData((prev) => {
+        if (!prev) return prev;
+        const remaining = prev.pairs.filter(
+          (p) => !(p.taskA.id === pair.taskA.id && p.taskB.id === pair.taskB.id)
+        );
+        return {
+          ...prev,
+          pairs: remaining,
+          summary: {
+            skip: remaining.filter((p) => p.action === "skip").length,
+            merge: remaining.filter((p) => p.action === "merge").length,
+            review: remaining.filter((p) => p.action === "review").length,
+          },
+        };
+      });
+    } catch {}
+    setActionInFlight(null);
+  }
+
+  async function dedupDismiss(pair: DedupPair) {
+    const key = `${pair.taskA.id}:${pair.taskB.id}`;
+    setActionInFlight(key);
+    try {
+      await fetch("/api/dedup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "dismiss", idA: pair.taskA.id, idB: pair.taskB.id }),
+      });
+
+      // Remove pair from local state
+      setDedupData((prev) => {
+        if (!prev) return prev;
+        const remaining = prev.pairs.filter(
+          (p) => !(p.taskA.id === pair.taskA.id && p.taskB.id === pair.taskB.id)
+        );
+        return {
+          ...prev,
+          pairs: remaining,
+          summary: {
+            skip: remaining.filter((p) => p.action === "skip").length,
+            merge: remaining.filter((p) => p.action === "merge").length,
+            review: remaining.filter((p) => p.action === "review").length,
+          },
+        };
+      });
+    } catch {}
+    setActionInFlight(null);
+  }
+
+  async function dedupMergeAllSkips() {
+    if (!dedupData) return;
+    const skipPairs = dedupData.pairs.filter((p) => p.action === "skip");
+    if (skipPairs.length === 0) return;
+
+    const priorityRank: Record<string, number> = {
+      "P0 \u2014 Today": 0,
+      "P1 \u2014 This Week": 1,
+      "P2 \u2014 This Month": 2,
+      "P3 \u2014 This Quarter": 3,
+    };
+
+    const bulkPairs = skipPairs.map((pair) => {
+      const rankA = priorityRank[pair.taskA.priority] ?? 3;
+      const rankB = priorityRank[pair.taskB.priority] ?? 3;
+      const keepA = rankA < rankB || (rankA === rankB && pair.taskA.title.length >= pair.taskB.title.length);
+      const keepId = keepA ? pair.taskA.id : pair.taskB.id;
+      const removeId = keepA ? pair.taskB.id : pair.taskA.id;
+      const removeTitle = keepA ? pair.taskB.title : pair.taskA.title;
+      const dateStr = new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      return { keepId, removeId, note: `[Dedup] Merged with: "${removeTitle}" on ${dateStr}` };
+    });
+
+    setBulkMergeProgress({ current: 0, total: bulkPairs.length });
+
+    // Process in batches of 10 to show progress
+    const BATCH_SIZE = 10;
+    let processed = 0;
+    for (let i = 0; i < bulkPairs.length; i += BATCH_SIZE) {
+      const batch = bulkPairs.slice(i, i + BATCH_SIZE);
+      try {
+        await fetch("/api/dedup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "merge-all-skips", pairs: batch }),
+        });
+      } catch {}
+      processed += batch.length;
+      setBulkMergeProgress({ current: processed, total: bulkPairs.length });
+    }
+
+    // Remove merged pairs from state
+    setDedupData((prev) => {
+      if (!prev) return prev;
+      const remaining = prev.pairs.filter((p) => p.action !== "skip");
+      return {
+        ...prev,
+        pairs: remaining,
+        summary: {
+          skip: 0,
+          merge: remaining.filter((p) => p.action === "merge").length,
+          review: remaining.filter((p) => p.action === "review").length,
+        },
+      };
+    });
+    setBulkMergeProgress(null);
   }
 
   if (loading && !data) {
@@ -661,7 +845,7 @@ export default function SystemView() {
       </Card>
 
       {/* Section 7: Recent Agent Runs */}
-      <Card>
+      <Card className="mb-6">
         <CardHeader
           title="Recent Agent Runs"
           right={
@@ -709,6 +893,109 @@ export default function SystemView() {
             </div>
           ))}
         </div>
+      </Card>
+
+      {/* Section 8: Task Deduplication */}
+      <Card>
+        <CardHeader
+          title="Task Deduplication"
+          right={
+            <div className="flex items-center gap-2">
+              {dedupData && (
+                <span className="text-[11px] text-[var(--text-dim)]">
+                  {dedupData.totalTasks} tasks scanned
+                </span>
+              )}
+              <button
+                onClick={() => setDedupExpanded((v) => !v)}
+                className="text-[11px] px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[rgba(88,166,255,0.05)] transition-colors"
+              >
+                {dedupExpanded ? "Collapse" : "Expand"}
+              </button>
+              <button
+                onClick={scanDedup}
+                disabled={dedupLoading}
+                className="text-[11px] px-2.5 py-1 rounded border border-[var(--border)] text-[var(--accent)] hover:bg-[rgba(88,166,255,0.08)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {dedupLoading ? "Scanning..." : "Scan"}
+              </button>
+            </div>
+          }
+        />
+
+        {dedupExpanded && (
+          <div>
+            {dedupError && (
+              <div className="px-4 py-3 text-[12px] text-[var(--red)] bg-[rgba(248,81,73,0.06)]">
+                {dedupError}
+              </div>
+            )}
+
+            {dedupLoading && !dedupData && (
+              <div className="px-4 py-10 text-center text-[var(--text-dim)] text-[13px]">
+                <div className="inline-block w-4 h-4 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin mr-2 align-middle" />
+                Scanning open tasks for duplicates...
+              </div>
+            )}
+
+            {!dedupData && !dedupLoading && (
+              <div className="px-4 py-8 text-center text-[var(--text-dim)] text-[13px] italic">
+                Click &quot;Scan&quot; to find duplicate tasks
+              </div>
+            )}
+
+            {dedupData && (
+              <>
+                {/* Summary bar */}
+                <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between bg-[var(--bg)]">
+                  <div className="flex items-center gap-4 text-[12px]">
+                    <span>
+                      <span className="font-bold text-[var(--red)]">{dedupData.summary.skip}</span>
+                      <span className="text-[var(--text-dim)] ml-1">exact dupes</span>
+                    </span>
+                    <span>
+                      <span className="font-bold text-[var(--yellow)]">{dedupData.summary.merge}</span>
+                      <span className="text-[var(--text-dim)] ml-1">merge candidates</span>
+                    </span>
+                    <span>
+                      <span className="font-bold text-[var(--text-dim)]">{dedupData.summary.review}</span>
+                      <span className="text-[var(--text-dim)] ml-1">to review</span>
+                    </span>
+                  </div>
+                  {dedupData.summary.skip > 0 && (
+                    <button
+                      onClick={dedupMergeAllSkips}
+                      disabled={bulkMergeProgress !== null}
+                      className="text-[11px] px-2.5 py-1 rounded border border-[var(--red)] text-[var(--red)] hover:bg-[rgba(248,81,73,0.08)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors font-medium"
+                    >
+                      {bulkMergeProgress
+                        ? `Merging ${bulkMergeProgress.current} of ${bulkMergeProgress.total}...`
+                        : `Merge All Exact Dupes (${dedupData.summary.skip})`}
+                    </button>
+                  )}
+                </div>
+
+                {/* Pair list */}
+                <div className="max-h-[60vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  {dedupData.pairs.length === 0 && (
+                    <div className="px-4 py-8 text-center text-[var(--text-dim)] text-[13px] italic">
+                      No duplicate pairs found
+                    </div>
+                  )}
+                  {dedupData.pairs.map((pair) => (
+                    <DedupPairCard
+                      key={`${pair.taskA.id}:${pair.taskB.id}`}
+                      pair={pair}
+                      isActioning={actionInFlight === `${pair.taskA.id}:${pair.taskB.id}`}
+                      onMerge={() => dedupMerge(pair)}
+                      onDismiss={() => dedupDismiss(pair)}
+                    />
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </Card>
     </div>
   );
@@ -801,6 +1088,153 @@ function ModelSelector({
           {recommendation.includes("SCRIPT") ? "try Haiku" : "try Haiku"}
         </span>
       )}
+    </div>
+  );
+}
+
+function DedupScoreBadge({ score, action }: { score: number; action: string }) {
+  const bg =
+    action === "skip"
+      ? "rgba(248,81,73,0.12)"
+      : action === "merge"
+        ? "rgba(227,179,65,0.12)"
+        : "rgba(139,148,158,0.12)";
+  const color =
+    action === "skip"
+      ? "var(--red)"
+      : action === "merge"
+        ? "var(--yellow)"
+        : "var(--text-dim)";
+  const label =
+    action === "skip"
+      ? "EXACT DUPE"
+      : action === "merge"
+        ? "MERGE"
+        : "REVIEW";
+
+  return (
+    <span
+      className="text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider shrink-0"
+      style={{ background: bg, color }}
+    >
+      {label}
+    </span>
+  );
+}
+
+function DedupSourceBadge({ source }: { source: string }) {
+  const sourceColors: Record<string, string> = {
+    "PLAUD Recording": "#a371f7",
+    "PLAUD (Local)": "#a371f7",
+    "Webex Transcript": "#58a6ff",
+    "Webex Messages": "#58a6ff",
+    "Webex (Local)": "#58a6ff",
+    "Gmail": "#f0883e",
+    "Gmail (Local)": "#f0883e",
+    "Boox": "#3fb950",
+    "Boox (Local)": "#3fb950",
+    "Manual": "#8b949e",
+  };
+
+  const color = sourceColors[source] || "var(--text-dim)";
+
+  return (
+    <span
+      className="text-[10px] px-1.5 py-0.5 rounded border shrink-0 whitespace-nowrap"
+      style={{ borderColor: color, color }}
+    >
+      {source || "---"}
+    </span>
+  );
+}
+
+function DedupPriorityBadge({ priority }: { priority: string }) {
+  if (!priority) return null;
+  const short = priority.replace(/ \u2014.*/, "");
+  const color =
+    short === "P0"
+      ? "var(--red)"
+      : short === "P1"
+        ? "var(--yellow)"
+        : "var(--text-dim)";
+  return (
+    <span
+      className="text-[10px] px-1.5 py-0.5 rounded shrink-0 font-mono"
+      style={{ color, background: `color-mix(in srgb, ${color} 12%, transparent)` }}
+    >
+      {short}
+    </span>
+  );
+}
+
+function DedupPairCard({
+  pair,
+  isActioning,
+  onMerge,
+  onDismiss,
+}: {
+  pair: DedupPair;
+  isActioning: boolean;
+  onMerge: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="px-4 py-3 border-b border-[var(--border)] hover:bg-[rgba(88,166,255,0.03)] transition-colors">
+      {/* Header row: score badge + action buttons */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[12px] font-mono text-[var(--text-dim)]">
+            {pair.score.toFixed(2)}
+          </span>
+          <DedupScoreBadge score={pair.score} action={pair.action} />
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onMerge}
+            disabled={isActioning}
+            className="text-[11px] px-2.5 py-1 rounded border border-[var(--green)] text-[var(--green)] hover:bg-[rgba(63,185,80,0.08)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            {isActioning ? "..." : "Merge"}
+          </button>
+          <button
+            onClick={onDismiss}
+            disabled={isActioning}
+            className="text-[11px] px-2.5 py-1 rounded border border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[rgba(88,166,255,0.05)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      </div>
+
+      {/* Task A */}
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="text-[11px] font-bold text-[var(--text-dim)] w-3 shrink-0">A</span>
+        <span className="text-[12px] text-[var(--text-bright)] truncate flex-1" title={pair.taskA.title}>
+          {pair.taskA.title}
+        </span>
+        <DedupSourceBadge source={pair.taskA.source} />
+        <DedupPriorityBadge priority={pair.taskA.priority} />
+        {pair.taskA.project && (
+          <span className="text-[10px] text-[var(--text-dim)] truncate max-w-[120px]" title={pair.taskA.project}>
+            {pair.taskA.project}
+          </span>
+        )}
+      </div>
+
+      {/* Task B */}
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-bold text-[var(--text-dim)] w-3 shrink-0">B</span>
+        <span className="text-[12px] text-[var(--text-bright)] truncate flex-1" title={pair.taskB.title}>
+          {pair.taskB.title}
+        </span>
+        <DedupSourceBadge source={pair.taskB.source} />
+        <DedupPriorityBadge priority={pair.taskB.priority} />
+        {pair.taskB.project && (
+          <span className="text-[10px] text-[var(--text-dim)] truncate max-w-[120px]" title={pair.taskB.project}>
+            {pair.taskB.project}
+          </span>
+        )}
+      </div>
     </div>
   );
 }
