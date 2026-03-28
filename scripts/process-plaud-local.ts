@@ -12,6 +12,7 @@
 import fs from "fs";
 import path from "path";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { findOrCreateTask, clearTaskCache } from './lib/task-dedup.js';
 
 const STORE_DIR = path.join(process.cwd(), "store");
 const STATE_PATH = path.join(STORE_DIR, "plaud-local-state.json");
@@ -68,6 +69,8 @@ interface RunMetrics {
   recordingsProcessed: number;
   tasksExtracted: number;
   tasksCreated: number;
+  tasksMerged: number;
+  tasksSkipped: number;
   summariesCreated: number;
   correctionsApplied: number;
   ollamaLatencies: number[];
@@ -170,6 +173,19 @@ async function notionPost(
     body: JSON.stringify(body),
   });
   return resp.json();
+}
+
+async function notionPatchPages(pageId: string, body: Record<string, unknown>): Promise<void> {
+  const nodeFetch = (await import("node-fetch")).default;
+  await nodeFetch(`https://api.notion.com/v1/pages/${pageId}`, {
+    method: "PATCH",
+    agent: proxyAgent,
+    headers: {
+      "Content-Type": "application/json",
+      "Notion-Version": "2022-06-28",
+    },
+    body: JSON.stringify(body),
+  } as any);
 }
 
 // --- Utility helpers ---
@@ -669,6 +685,8 @@ async function main() {
     return;
   }
 
+  clearTaskCache();
+
   const state = loadState();
   const summaries = loadSummaries();
   const corrections = loadCorrections();
@@ -678,6 +696,8 @@ async function main() {
     recordingsProcessed: 0,
     tasksExtracted: 0,
     tasksCreated: 0,
+    tasksMerged: 0,
+    tasksSkipped: 0,
     summariesCreated: 0,
     correctionsApplied: 0,
     ollamaLatencies: [],
@@ -857,22 +877,68 @@ async function main() {
         item.assignee = correctedAssignee;
       }
 
-      // Create Notion task
+      // Create or deduplicate Notion task
       try {
-        const taskId = await createNotionTask(
-          item,
-          plaudTitle(file),
-          formatISODate(file.start_time),
-          project
+        const priority = mapPriority(item.priority);
+        const context = mapContext(item.context);
+        const dateStr = new Date(formatISODate(file.start_time)).toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+          year: "numeric",
+        });
+        const assigneeNote = item.assignee ? ` Assignee: ${item.assignee}.` : "";
+        const notes = `From recording: ${plaudTitle(file)} on ${dateStr}.${assigneeNote} Processed locally via ${OLLAMA_MODEL}`;
+
+        const dedupResult = await findOrCreateTask(
+          {
+            title: item.task,
+            priority,
+            context,
+            source: "PLAUD Recording (Local)",
+            project,
+            notes,
+            assignee: item.assignee || undefined,
+          },
+          {
+            notionDbId: NOTION_DB,
+            notionPost,
+            notionPatch: async (pageId, properties, appendNote) => {
+              const body: Record<string, unknown> = {};
+              if (Object.keys(properties).length > 0) body.properties = properties;
+              if (appendNote) {
+                try {
+                  const nodeFetch = (await import("node-fetch")).default;
+                  const resp = await nodeFetch(`https://api.notion.com/v1/pages/${pageId}`, {
+                    agent: proxyAgent,
+                    headers: { "Notion-Version": "2022-06-28" },
+                  } as any);
+                  const pageData = (await resp.json()) as any;
+                  const currentNotes = pageData.properties?.Notes?.rich_text?.map((t: any) => t.plain_text).join("") || "";
+                  body.properties = {
+                    ...(body.properties as Record<string, unknown> || {}),
+                    Notes: { rich_text: [{ type: "text", text: { content: (currentNotes + "\n\n" + appendNote).slice(0, 2000) } }] },
+                  };
+                } catch (err) {
+                  console.error(`  Note append error: ${err}`);
+                }
+              }
+              await notionPatchPages(pageId, body);
+            },
+          }
         );
-        if (taskId) {
-          notionTaskIds.push(taskId);
+
+        if (dedupResult.action === 'created') {
+          notionTaskIds.push(dedupResult.taskId);
           metrics.tasksCreated++;
           console.log(
             `  Created task: ${item.task.slice(0, 80)}${item.task.length > 80 ? "..." : ""}`
           );
+        } else if (dedupResult.action === 'merged') {
+          metrics.tasksMerged++;
+          console.log(`  Merged with: ${dedupResult.mergedWith?.slice(0, 60)}`);
         } else {
-          metrics.notionErrors++;
+          metrics.tasksSkipped++;
+          console.log(`  Skipped (duplicate)`);
         }
       } catch (err) {
         console.error(
@@ -968,6 +1034,8 @@ async function main() {
   console.log(`Recordings processed: ${metrics.recordingsProcessed}`);
   console.log(`Action items extracted: ${metrics.tasksExtracted}`);
   console.log(`Notion tasks created: ${metrics.tasksCreated}`);
+  console.log(`Tasks merged (dedup): ${metrics.tasksMerged}`);
+  console.log(`Tasks skipped (dedup): ${metrics.tasksSkipped}`);
   console.log(`Notion summaries created: ${metrics.summariesCreated}`);
   if (metrics.ollamaLatencies.length > 0) {
     console.log(

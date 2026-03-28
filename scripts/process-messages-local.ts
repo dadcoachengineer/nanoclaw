@@ -12,6 +12,7 @@
 import fs from "fs";
 import path from "path";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { findOrCreateTask, clearTaskCache } from './lib/task-dedup.js';
 
 const STORE_DIR = path.join(process.cwd(), "store");
 const STATE_PATH = path.join(STORE_DIR, "messages-local-state.json");
@@ -63,6 +64,8 @@ interface RunMetrics {
   roomsProcessed: number;
   tasksExtracted: number;
   tasksCreated: number;
+  tasksMerged: number;
+  tasksSkipped: number;
   correctionsApplied: number;
   ollamaLatencies: number[];
   ollamaTokensIn: number;
@@ -98,6 +101,19 @@ async function notionPost(
     body: JSON.stringify(body),
   });
   return resp.json();
+}
+
+async function notionPatchPages(pageId: string, body: Record<string, unknown>): Promise<void> {
+  const nodeFetch = (await import("node-fetch")).default;
+  await nodeFetch(`https://api.notion.com/v1/pages/${pageId}`, {
+    method: "PATCH",
+    agent: proxyAgent,
+    headers: {
+      "Content-Type": "application/json",
+      "Notion-Version": "2022-06-28",
+    },
+    body: JSON.stringify(body),
+  } as any);
 }
 
 // --- Utility helpers ---
@@ -455,6 +471,8 @@ async function main() {
     );
   }
 
+  clearTaskCache();
+
   const state = loadState();
   const corrections = loadCorrections();
   const lastCheckTime = new Date(state.lastCheck).getTime();
@@ -463,6 +481,8 @@ async function main() {
     roomsProcessed: 0,
     tasksExtracted: 0,
     tasksCreated: 0,
+    tasksMerged: 0,
+    tasksSkipped: 0,
     correctionsApplied: 0,
     ollamaLatencies: [],
     ollamaTokensIn: 0,
@@ -653,14 +673,62 @@ async function main() {
       item.person = correctedPerson;
 
       try {
-        const taskId = await createNotionTask(item, roomLabel, room.id);
-        if (taskId) {
+        const priority = mapPriority(item.priority);
+        const context = mapContext(item.context);
+        const personInfo = item.email
+          ? `${item.person} (${item.email})`
+          : item.person;
+        const notes = `From: ${personInfo} in ${roomLabel}. ${item.reason}. webex_room:${room.id}. Processed locally via ${OLLAMA_MODEL}`;
+
+        const dedupResult = await findOrCreateTask(
+          {
+            title: item.task,
+            priority,
+            context,
+            source: "Webex Message (Local)",
+            project: "Cisco",
+            notes,
+            assignee: item.person || undefined,
+          },
+          {
+            notionDbId: NOTION_DB,
+            notionPost,
+            notionPatch: async (pageId, properties, appendNote) => {
+              const body: Record<string, unknown> = {};
+              if (Object.keys(properties).length > 0) body.properties = properties;
+              if (appendNote) {
+                try {
+                  const nodeFetch = (await import("node-fetch")).default;
+                  const resp = await nodeFetch(`https://api.notion.com/v1/pages/${pageId}`, {
+                    agent: proxyAgent,
+                    headers: { "Notion-Version": "2022-06-28" },
+                  } as any);
+                  const pageData = (await resp.json()) as any;
+                  const currentNotes = pageData.properties?.Notes?.rich_text?.map((t: any) => t.plain_text).join("") || "";
+                  body.properties = {
+                    ...(body.properties as Record<string, unknown> || {}),
+                    Notes: { rich_text: [{ type: "text", text: { content: (currentNotes + "\n\n" + appendNote).slice(0, 2000) } }] },
+                  };
+                } catch (err) {
+                  console.error(`  Note append error: ${err}`);
+                }
+              }
+              await notionPatchPages(pageId, body);
+            },
+          }
+        );
+
+        if (dedupResult.action === 'created') {
           metrics.tasksCreated++;
           console.log(
             `  Created task: ${item.task.slice(0, 80)}${item.task.length > 80 ? "..." : ""}`
           );
+        } else if (dedupResult.action === 'merged') {
+          metrics.tasksMerged++;
+          console.log(`  Merged with: ${dedupResult.mergedWith?.slice(0, 60)}`);
         } else {
-          metrics.notionErrors++;
+          metrics.tasksSkipped++;
+          console.log(`  Skipped (duplicate)`);
         }
       } catch (err) {
         console.error(
@@ -816,14 +884,62 @@ async function main() {
       item.person = correctedPerson;
 
       try {
-        const taskId = await createNotionTask(item, roomLabel, room.id);
-        if (taskId) {
+        const priority = mapPriority(item.priority);
+        const context = mapContext(item.context);
+        const personInfo = item.email
+          ? `${item.person} (${item.email})`
+          : item.person;
+        const notes = `From: ${personInfo} in ${roomLabel}. ${item.reason}. webex_room:${room.id}. Processed locally via ${OLLAMA_MODEL}`;
+
+        const dedupResult = await findOrCreateTask(
+          {
+            title: item.task,
+            priority,
+            context,
+            source: "Webex Message (Local)",
+            project: "Cisco",
+            notes,
+            assignee: item.person || undefined,
+          },
+          {
+            notionDbId: NOTION_DB,
+            notionPost,
+            notionPatch: async (pageId, properties, appendNote) => {
+              const body: Record<string, unknown> = {};
+              if (Object.keys(properties).length > 0) body.properties = properties;
+              if (appendNote) {
+                try {
+                  const nodeFetch = (await import("node-fetch")).default;
+                  const resp = await nodeFetch(`https://api.notion.com/v1/pages/${pageId}`, {
+                    agent: proxyAgent,
+                    headers: { "Notion-Version": "2022-06-28" },
+                  } as any);
+                  const pageData = (await resp.json()) as any;
+                  const currentNotes = pageData.properties?.Notes?.rich_text?.map((t: any) => t.plain_text).join("") || "";
+                  body.properties = {
+                    ...(body.properties as Record<string, unknown> || {}),
+                    Notes: { rich_text: [{ type: "text", text: { content: (currentNotes + "\n\n" + appendNote).slice(0, 2000) } }] },
+                  };
+                } catch (err) {
+                  console.error(`  Note append error: ${err}`);
+                }
+              }
+              await notionPatchPages(pageId, body);
+            },
+          }
+        );
+
+        if (dedupResult.action === 'created') {
           metrics.tasksCreated++;
           console.log(
             `  Created task: ${item.task.slice(0, 80)}${item.task.length > 80 ? "..." : ""}`
           );
+        } else if (dedupResult.action === 'merged') {
+          metrics.tasksMerged++;
+          console.log(`  Merged with: ${dedupResult.mergedWith?.slice(0, 60)}`);
         } else {
-          metrics.notionErrors++;
+          metrics.tasksSkipped++;
+          console.log(`  Skipped (duplicate)`);
         }
       } catch (err) {
         console.error(
@@ -888,6 +1004,8 @@ async function main() {
   console.log(`Rooms processed: ${metrics.roomsProcessed}`);
   console.log(`Action items extracted: ${metrics.tasksExtracted}`);
   console.log(`Notion tasks created: ${metrics.tasksCreated}`);
+  console.log(`Tasks merged (dedup): ${metrics.tasksMerged}`);
+  console.log(`Tasks skipped (dedup): ${metrics.tasksSkipped}`);
   if (metrics.ollamaLatencies.length > 0) {
     console.log(
       `Ollama latency: avg ${(avgLatency / 1000).toFixed(0)}s, total ${(totalLatency / 1000).toFixed(0)}s`
