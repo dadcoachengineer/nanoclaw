@@ -86,6 +86,8 @@ export default function TodayView() {
   const [bulkProgress, setBulkProgress] = useState<string | null>(null);
   const [bulkDropdown, setBulkDropdown] = useState<"priority" | "status" | null>(null);
   const bulkDropdownRef = useRef<HTMLDivElement>(null);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const filterDropdownRef = useRef<HTMLDivElement>(null);
 
   // Search and filter state
   const [searchQuery, setSearchQuery] = useState("");
@@ -105,17 +107,20 @@ export default function TodayView() {
     };
   }, [searchQuery]);
 
-  // Close bulk dropdown on outside click
+  // Close dropdowns on outside click
   useEffect(() => {
-    if (!bulkDropdown) return;
+    if (!bulkDropdown && !filterOpen) return;
     function handleClick(e: MouseEvent) {
-      if (bulkDropdownRef.current && !bulkDropdownRef.current.contains(e.target as Node)) {
+      if (bulkDropdown && bulkDropdownRef.current && !bulkDropdownRef.current.contains(e.target as Node)) {
         setBulkDropdown(null);
+      }
+      if (filterOpen && filterDropdownRef.current && !filterDropdownRef.current.contains(e.target as Node)) {
+        setFilterOpen(false);
       }
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
-  }, [bulkDropdown]);
+  }, [bulkDropdown, filterOpen]);
 
   const toggleSelect = useCallback((page: NotionPage, selected: boolean) => {
     setSelectedIds((prev) => {
@@ -474,77 +479,94 @@ export default function TodayView() {
                 </div>
               }
             />
-            {/* Search and filter bar */}
-            <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] flex-wrap">
-              <input
-                type="text"
-                placeholder="Search tasks..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="h-7 px-2.5 text-xs bg-[var(--bg)] border border-[var(--border)] rounded-md text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)] min-w-[140px] max-w-[200px]"
-              />
-              {uniqueSources.length > 0 && (
-                <div className="flex items-center gap-1 flex-wrap">
-                  {uniqueSources.map((src) => (
+            {/* Compact filter — single input with filter dropdown */}
+            {(() => {
+              const hasFilters = debouncedSearch || activeSourceFilters.size > 0 || activeProjectFilters.size > 0;
+              const filterCount = activeSourceFilters.size + activeProjectFilters.size;
+              return (
+                <div className="relative flex items-center gap-1.5 px-4 py-1.5 border-b border-[var(--border)]">
+                  <input
+                    type="text"
+                    placeholder={filterCount > 0 ? `Search (${filterCount} filter${filterCount > 1 ? 's' : ''} active)...` : "Search tasks..."}
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="flex-1 h-6 px-2 text-[12px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)]"
+                  />
+                  <div className="relative" ref={filterDropdownRef}>
                     <button
-                      key={src}
-                      onClick={() => {
-                        setActiveSourceFilters((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(src)) next.delete(src);
-                          else next.add(src);
-                          return next;
-                        });
-                      }}
-                      className={`px-2 py-0.5 rounded-full text-[11px] transition-colors ${
-                        activeSourceFilters.has(src)
-                          ? "bg-[rgba(88,166,255,0.15)] text-[var(--accent)] font-medium"
-                          : "bg-[var(--bg)] text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[rgba(88,166,255,0.06)]"
+                      onClick={() => setFilterOpen(!filterOpen)}
+                      className={`h-6 px-1.5 text-[11px] rounded border transition-colors ${
+                        filterCount > 0
+                          ? "border-[var(--accent)] text-[var(--accent)] bg-[rgba(88,166,255,0.08)]"
+                          : "border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--text)]"
                       }`}
                     >
-                      {src}
+                      ▾ {filterCount > 0 && filterCount}
                     </button>
-                  ))}
-                </div>
-              )}
-              {uniqueProjects.length > 0 && (
-                <div className="flex items-center gap-1 flex-wrap">
-                  {uniqueProjects.map((proj) => (
+                    {filterOpen && (
+                      <div className="absolute right-0 top-full mt-1 z-20 w-56 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg py-1 max-h-[300px] overflow-y-auto">
+                        {uniqueSources.length > 0 && (
+                          <>
+                            <div className="px-3 py-1 text-[10px] text-[var(--text-dim)] uppercase tracking-wider">Source</div>
+                            {uniqueSources.map((src) => (
+                              <button
+                                key={src}
+                                onClick={() => setActiveSourceFilters((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(src)) next.delete(src); else next.add(src);
+                                  return next;
+                                })}
+                                className={`w-full text-left px-3 py-1 text-xs transition-colors ${
+                                  activeSourceFilters.has(src)
+                                    ? "text-[var(--accent)] bg-[rgba(88,166,255,0.08)]"
+                                    : "text-[var(--text)] hover:bg-[rgba(88,166,255,0.04)]"
+                                }`}
+                              >
+                                {activeSourceFilters.has(src) ? "✓ " : "  "}{src}
+                              </button>
+                            ))}
+                          </>
+                        )}
+                        {uniqueProjects.length > 0 && (
+                          <>
+                            <div className="px-3 py-1 mt-1 text-[10px] text-[var(--text-dim)] uppercase tracking-wider border-t border-[var(--border)]">Project</div>
+                            {uniqueProjects.map((proj) => (
+                              <button
+                                key={proj}
+                                onClick={() => setActiveProjectFilters((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(proj)) next.delete(proj); else next.add(proj);
+                                  return next;
+                                })}
+                                className={`w-full text-left px-3 py-1 text-xs transition-colors ${
+                                  activeProjectFilters.has(proj)
+                                    ? "text-[var(--yellow)] bg-[rgba(210,153,34,0.08)]"
+                                    : "text-[var(--text)] hover:bg-[rgba(210,153,34,0.04)]"
+                                }`}
+                              >
+                                {activeProjectFilters.has(proj) ? "✓ " : "  "}{proj}
+                              </button>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {hasFilters && (
                     <button
-                      key={proj}
                       onClick={() => {
-                        setActiveProjectFilters((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(proj)) next.delete(proj);
-                          else next.add(proj);
-                          return next;
-                        });
+                        setSearchQuery(""); setDebouncedSearch("");
+                        setActiveSourceFilters(new Set()); setActiveProjectFilters(new Set());
                       }}
-                      className={`px-2 py-0.5 rounded-full text-[11px] transition-colors ${
-                        activeProjectFilters.has(proj)
-                          ? "bg-[rgba(210,153,34,0.15)] text-[var(--yellow)] font-medium"
-                          : "bg-[var(--bg)] text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[rgba(210,153,34,0.06)]"
-                      }`}
+                      className="h-6 px-1.5 text-[11px] text-[var(--text-dim)] hover:text-[var(--red)] rounded transition-colors"
+                      title="Clear all filters"
                     >
-                      {proj}
+                      ✕
                     </button>
-                  ))}
+                  )}
                 </div>
-              )}
-              {(debouncedSearch || activeSourceFilters.size > 0 || activeProjectFilters.size > 0) && (
-                <button
-                  onClick={() => {
-                    setSearchQuery("");
-                    setDebouncedSearch("");
-                    setActiveSourceFilters(new Set());
-                    setActiveProjectFilters(new Set());
-                  }}
-                  className="px-2 py-0.5 text-[11px] text-[var(--text-dim)] hover:text-[var(--text)] rounded-full hover:bg-[rgba(248,81,73,0.06)] transition-colors"
-                >
-                  Clear
-                </button>
-              )}
-            </div>
+              );
+            })()}
             {/* Bulk action bar */}
             {bulkMode && selectedIds.size > 0 && (
               <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-2.5 bg-[var(--surface2)] border-b border-[var(--border)]">
