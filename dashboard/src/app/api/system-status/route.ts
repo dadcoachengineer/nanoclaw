@@ -648,6 +648,7 @@ export async function PATCH(req: NextRequest) {
         "mc-webex-messages": "com.nanoclaw.messages-local",
         "mc-plaud-processor": "com.nanoclaw.plaud-local",
         "mc-boox-processor": "com.nanoclaw.boox-local",
+        "mc-gmail-scanner": "com.nanoclaw.gmail-local",
       };
 
       const hasLocalScript = body.id in localScripts;
