@@ -22,9 +22,15 @@ function priorityBadge(p: string): string {
 export default function TaskItem({
   page,
   onClick,
+  selectable,
+  selected,
+  onSelect,
 }: {
   page: NotionPage;
   onClick?: (page: NotionPage) => void;
+  selectable?: boolean;
+  selected?: boolean;
+  onSelect?: (page: NotionPage, selected: boolean) => void;
 }) {
   const title = prop(page, "Task") || prop(page, "Name") || "Untitled";
   const priority = prop(page, "Priority");
@@ -36,10 +42,30 @@ export default function TaskItem({
   return (
     <div
       className={`flex items-start gap-3 px-4 py-3 border-b border-[var(--border)] hover:bg-[rgba(88,166,255,0.03)] ${
-        onClick ? "cursor-pointer" : ""
-      }`}
-      onClick={() => onClick?.(page)}
+        onClick && !selectable ? "cursor-pointer" : ""
+      } ${selected ? "bg-[rgba(88,166,255,0.06)]" : ""}`}
+      onClick={() => {
+        if (selectable) {
+          onSelect?.(page, !selected);
+        } else {
+          onClick?.(page);
+        }
+      }}
     >
+      {selectable && (
+        <div className="flex items-center pt-0.5 shrink-0">
+          <input
+            type="checkbox"
+            checked={selected || false}
+            onChange={(e) => {
+              e.stopPropagation();
+              onSelect?.(page, e.target.checked);
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-4 h-4 rounded border-[var(--border)] bg-[var(--bg)] accent-[var(--accent)] cursor-pointer"
+          />
+        </div>
+      )}
       <div className="flex-1 min-w-0">
         <div className="text-sm text-[var(--text-bright)]">{title}</div>
         <div className="flex flex-wrap items-center gap-2 mt-1">
@@ -62,7 +88,7 @@ export default function TaskItem({
           </div>
         )}
       </div>
-      {onClick && (
+      {onClick && !selectable && (
         <div className="text-[var(--text-dim)] text-xs mt-1 shrink-0">›</div>
       )}
     </div>

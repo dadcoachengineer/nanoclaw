@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { Card, CardHeader, StatCard, GroupHeader } from "@/components/Card";
 import TaskItem from "@/components/TaskItem";
 import MeetingItem, { findConflicts, findGaps, scheduleInsights, isAllDay } from "@/components/MeetingItem";
@@ -10,6 +10,46 @@ import { NotionPage, prop, priorityRank, queryNotion } from "@/lib/notion";
 import { WebexMeeting, fetchMeetings } from "@/lib/webex";
 import { isoDate, timeAgo } from "@/lib/dates";
 import { NOTION_DB } from "@/lib/notion";
+
+const PRIORITY_OPTIONS = [
+  { label: "P0", value: "P0 \u2014 Today" },
+  { label: "P1", value: "P1 \u2014 This Week" },
+  { label: "P2", value: "P2 \u2014 This Month" },
+  { label: "P3", value: "P3 \u2014 Backlog" },
+];
+
+const STATUS_OPTIONS = [
+  { label: "Not started", value: "Not started" },
+  { label: "In progress", value: "In progress" },
+  { label: "Done", value: "Done" },
+];
+
+async function bulkUpdateTasks(
+  pageIds: string[],
+  properties: Record<string, unknown>,
+  onProgress: (done: number, total: number) => void,
+): Promise<{ succeeded: number; failed: number }> {
+  let succeeded = 0;
+  let failed = 0;
+
+  const results = await Promise.allSettled(
+    pageIds.map(async (pageId, i) => {
+      const resp = await fetch("/api/notion/update", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ page_id: pageId, properties }),
+      });
+      if (resp.ok) {
+        succeeded++;
+      } else {
+        failed++;
+      }
+      onProgress(succeeded + failed, pageIds.length);
+    }),
+  );
+
+  return { succeeded, failed };
+}
 
 /** Check if a task is a briefing/prep page (not an actionable task) */
 function isBriefingPage(page: NotionPage): boolean {
@@ -39,6 +79,80 @@ export default function TodayView() {
   const [selectedTask, setSelectedTask] = useState<NotionPage | null>(null);
   const [briefingBlocks, setBriefingBlocks] = useState<any[] | null>(null);
   const [briefingUrl, setBriefingUrl] = useState<string | null>(null);
+
+  // Bulk edit state
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkProgress, setBulkProgress] = useState<string | null>(null);
+  const [bulkDropdown, setBulkDropdown] = useState<"priority" | "status" | null>(null);
+  const bulkDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close bulk dropdown on outside click
+  useEffect(() => {
+    if (!bulkDropdown) return;
+    function handleClick(e: MouseEvent) {
+      if (bulkDropdownRef.current && !bulkDropdownRef.current.contains(e.target as Node)) {
+        setBulkDropdown(null);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [bulkDropdown]);
+
+  const toggleSelect = useCallback((page: NotionPage, selected: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (selected) next.add(page.id);
+      else next.delete(page.id);
+      return next;
+    });
+  }, []);
+
+  const exitBulkMode = useCallback(() => {
+    setBulkMode(false);
+    setSelectedIds(new Set());
+    setBulkProgress(null);
+    setBulkDropdown(null);
+  }, []);
+
+  const handleBulkAction = useCallback(
+    async (properties: Record<string, unknown>, actionLabel: string) => {
+      const ids = Array.from(selectedIds);
+      if (ids.length === 0) return;
+      setBulkDropdown(null);
+      setBulkProgress(`Updating 0 of ${ids.length}...`);
+
+      const { succeeded, failed } = await bulkUpdateTasks(ids, properties, (done, total) => {
+        setBulkProgress(`Updating ${done} of ${total}...`);
+      });
+
+      const isDoneAction = (properties as { Status?: { status?: { name?: string } } }).Status?.status?.name === "Done";
+
+      if (isDoneAction) {
+        // Remove completed tasks from the list
+        setTasks((prev) => prev.filter((t) => !selectedIds.has(t.id)));
+      } else {
+        // Update tasks in place to reflect new property values
+        setTasks((prev) =>
+          prev.map((t) => {
+            if (!selectedIds.has(t.id)) return t;
+            const updated = { ...t, properties: { ...t.properties } };
+            for (const [key, val] of Object.entries(properties)) {
+              updated.properties[key] = { ...updated.properties[key], ...(val as Record<string, unknown>) };
+            }
+            return updated;
+          }),
+        );
+      }
+
+      const msg = failed > 0
+        ? `Updated ${succeeded} tasks (${failed} failed)`
+        : `Updated ${succeeded} tasks`;
+      setBulkProgress(msg);
+      setTimeout(() => exitBulkMode(), 1500);
+    },
+    [selectedIds, exitBulkMode],
+  );
 
   useEffect(() => {
     async function load() {
@@ -206,11 +320,145 @@ export default function TodayView() {
             <CardHeader
               title="Action Items"
               right={
-                <span className="text-xs text-[var(--accent)] bg-[rgba(88,166,255,0.08)] px-2 py-0.5 rounded-full">
-                  {actionableTasks.length} open
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-[var(--accent)] bg-[rgba(88,166,255,0.08)] px-2 py-0.5 rounded-full">
+                    {actionableTasks.length} open
+                  </span>
+                  {!bulkMode ? (
+                    <button
+                      onClick={() => setBulkMode(true)}
+                      className="text-xs text-[var(--text-dim)] hover:text-[var(--text)] px-2 py-0.5 rounded hover:bg-[rgba(88,166,255,0.06)] transition-colors"
+                    >
+                      Edit
+                    </button>
+                  ) : (
+                    <button
+                      onClick={exitBulkMode}
+                      className="text-xs text-[var(--text-dim)] hover:text-[var(--text)] px-2 py-0.5 rounded hover:bg-[rgba(88,166,255,0.06)] transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
               }
             />
+            {/* Bulk action bar */}
+            {bulkMode && selectedIds.size > 0 && (
+              <div className="sticky top-0 z-10 flex items-center gap-3 px-4 py-2.5 bg-[var(--surface2)] border-b border-[var(--border)]">
+                <span className="text-xs font-medium text-[var(--text-bright)]">
+                  {selectedIds.size} selected
+                </span>
+                <div className="flex items-center gap-2 ml-auto">
+                  {bulkProgress ? (
+                    <span className="text-xs text-[var(--text-dim)]">{bulkProgress}</span>
+                  ) : (
+                    <>
+                      {/* Mark Done */}
+                      <button
+                        onClick={() =>
+                          handleBulkAction(
+                            { Status: { status: { name: "Done" } } },
+                            "Mark Done",
+                          )
+                        }
+                        className="px-3 py-1 text-xs font-medium bg-[var(--green)] text-[var(--bg)] rounded-md hover:opacity-90 transition-opacity"
+                      >
+                        Mark Done
+                      </button>
+
+                      {/* Set Priority dropdown */}
+                      <div ref={bulkDropdown === "priority" ? bulkDropdownRef : undefined} className="relative">
+                        <button
+                          onClick={() => setBulkDropdown(bulkDropdown === "priority" ? null : "priority")}
+                          className="px-3 py-1 text-xs font-medium text-[var(--text)] bg-[var(--bg)] border border-[var(--border)] rounded-md hover:border-[var(--accent)] transition-colors"
+                        >
+                          Set Priority
+                        </button>
+                        {bulkDropdown === "priority" && (
+                          <div className="absolute top-full left-0 mt-1 z-[60] min-w-[180px] bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg py-1 space-y-0.5">
+                            <div className="px-3 py-1 text-[10px] text-[var(--text-dim)] uppercase tracking-wider">
+                              Priority
+                            </div>
+                            {PRIORITY_OPTIONS.map((opt) => (
+                              <button
+                                key={opt.value}
+                                className={`block w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors ${
+                                  opt.label === "P0" ? "text-[var(--red)] hover:bg-[rgba(248,81,73,0.1)]" :
+                                  opt.label === "P1" ? "text-[var(--orange)] hover:bg-[rgba(219,109,40,0.1)]" :
+                                  opt.label === "P2" ? "text-[var(--yellow)] hover:bg-[rgba(210,153,34,0.1)]" :
+                                  "text-[var(--text-dim)] hover:bg-[rgba(139,148,158,0.1)]"
+                                }`}
+                                onClick={() =>
+                                  handleBulkAction(
+                                    { Priority: { select: { name: opt.value } } },
+                                    `Set ${opt.label}`,
+                                  )
+                                }
+                              >
+                                {opt.value}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Set Status dropdown */}
+                      <div ref={bulkDropdown === "status" ? bulkDropdownRef : undefined} className="relative">
+                        <button
+                          onClick={() => setBulkDropdown(bulkDropdown === "status" ? null : "status")}
+                          className="px-3 py-1 text-xs font-medium text-[var(--text)] bg-[var(--bg)] border border-[var(--border)] rounded-md hover:border-[var(--accent)] transition-colors"
+                        >
+                          Set Status
+                        </button>
+                        {bulkDropdown === "status" && (
+                          <div className="absolute top-full right-0 mt-1 z-[60] min-w-[180px] bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg py-1 space-y-0.5">
+                            <div className="px-3 py-1 text-[10px] text-[var(--text-dim)] uppercase tracking-wider">
+                              Status
+                            </div>
+                            {STATUS_OPTIONS.map((opt) => (
+                              <button
+                                key={opt.value}
+                                className={`block w-full text-left px-3 py-1.5 text-xs rounded-md transition-colors ${
+                                  opt.value === "Done" ? "text-[var(--green)] hover:bg-[rgba(63,185,80,0.1)]" :
+                                  opt.value === "In progress" ? "text-[var(--accent)] hover:bg-[rgba(88,166,255,0.1)]" :
+                                  "text-[var(--text-dim)] hover:bg-[rgba(139,148,158,0.1)]"
+                                }`}
+                                onClick={() =>
+                                  handleBulkAction(
+                                    { Status: { status: { name: opt.value } } },
+                                    `Set ${opt.label}`,
+                                  )
+                                }
+                              >
+                                {opt.value}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+            {/* Select All row when in bulk mode with no selection yet */}
+            {bulkMode && (
+              <div className="flex items-center gap-3 px-4 py-1.5 border-b border-[var(--border)] bg-[var(--bg)]">
+                <input
+                  type="checkbox"
+                  checked={actionableTasks.length > 0 && selectedIds.size === actionableTasks.length}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedIds(new Set(actionableTasks.map((t) => t.id)));
+                    } else {
+                      setSelectedIds(new Set());
+                    }
+                  }}
+                  className="w-4 h-4 rounded border-[var(--border)] bg-[var(--bg)] accent-[var(--accent)] cursor-pointer"
+                />
+                <span className="text-xs text-[var(--text-dim)]">Select all</span>
+              </div>
+            )}
             <div>
               {loading && (
                 <div className="p-6 text-center text-[var(--text-dim)]">
@@ -231,7 +479,14 @@ export default function TodayView() {
                 <>
                   <GroupHeader title="P0 — Today" />
                   {p0.map((t) => (
-                    <TaskItem key={t.id} page={t} onClick={setSelectedTask} />
+                    <TaskItem
+                      key={t.id}
+                      page={t}
+                      onClick={setSelectedTask}
+                      selectable={bulkMode}
+                      selected={selectedIds.has(t.id)}
+                      onSelect={toggleSelect}
+                    />
                   ))}
                 </>
               )}
@@ -239,7 +494,14 @@ export default function TodayView() {
                 <>
                   <GroupHeader title="P1 — This Week" />
                   {p1.map((t) => (
-                    <TaskItem key={t.id} page={t} onClick={setSelectedTask} />
+                    <TaskItem
+                      key={t.id}
+                      page={t}
+                      onClick={setSelectedTask}
+                      selectable={bulkMode}
+                      selected={selectedIds.has(t.id)}
+                      onSelect={toggleSelect}
+                    />
                   ))}
                 </>
               )}
@@ -247,7 +509,14 @@ export default function TodayView() {
                 <>
                   <GroupHeader title="P2 — This Month" />
                   {p2.map((t) => (
-                    <TaskItem key={t.id} page={t} onClick={setSelectedTask} />
+                    <TaskItem
+                      key={t.id}
+                      page={t}
+                      onClick={setSelectedTask}
+                      selectable={bulkMode}
+                      selected={selectedIds.has(t.id)}
+                      onSelect={toggleSelect}
+                    />
                   ))}
                 </>
               )}
