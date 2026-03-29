@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
+import { requireAuth } from "@/lib/require-auth";
 
 export async function POST(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
     const { database_id, filter, sorts } = body;

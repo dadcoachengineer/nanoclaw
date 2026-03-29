@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { proxiedFetch } from "@/lib/onecli";
+import { requireAuth } from "@/lib/require-auth";
 
 const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
 const PROJECTS_PATH = path.join(STORE_DIR, "initiatives.json");
@@ -401,6 +402,9 @@ function buildActivityFeed(
 // ---------------------------------------------------------------------------
 
 export async function GET(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const { searchParams } = req.nextUrl;
   const slug = searchParams.get("slug");
   const projects = loadJson(PROJECTS_PATH) as Record<string, InitiativeEntry>;
@@ -485,6 +489,9 @@ export async function GET(req: NextRequest) {
 // ---------------------------------------------------------------------------
 
 export async function POST(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const body = await req.json();
   const { name, description, keywords, notionProject, owner } = body;
 
@@ -526,6 +533,9 @@ export async function POST(req: NextRequest) {
 // ---------------------------------------------------------------------------
 
 export async function PATCH(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const body = await req.json();
   const { slug, ...updates } = body;
 

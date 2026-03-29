@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
+import { requireAuth } from "@/lib/require-auth";
 
 /**
  * GET /api/notion/blocks?page_id=xxx
  * Fetches all children blocks for a Notion page.
  */
 export async function GET(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const pageId = req.nextUrl.searchParams.get("page_id");
   if (!pageId) {
     return NextResponse.json({ error: "page_id required" }, { status: 400 });

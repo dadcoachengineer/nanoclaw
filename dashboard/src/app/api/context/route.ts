@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { proxiedFetch } from "@/lib/onecli";
+import { requireAuth } from "@/lib/require-auth";
 
 const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
 const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
@@ -84,6 +85,9 @@ function findPerson(index: PersonIndex, email?: string, name?: string): PersonEn
  * Returns cross-platform context for a person from the person index.
  */
 export async function GET(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const { searchParams } = req.nextUrl;
   const email = searchParams.get("email") || undefined;
   const name = searchParams.get("name") || undefined;

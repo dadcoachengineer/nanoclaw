@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
 import fs from "fs";
 import path from "path";
+import { requireAuth } from "@/lib/require-auth";
 
 const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
 const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
@@ -37,6 +38,9 @@ function findPerson(index: Record<string, any>, name?: string, email?: string) {
  * Generates a contextual reply using Claude with full person context.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
     const { message, personName, personEmail, channel } = body;

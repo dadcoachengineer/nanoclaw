@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "path";
 import { execFileSync } from "child_process";
+import { requireAuth } from "@/lib/require-auth";
 
 const PROJECT_ROOT = process.env.NANOCLAW_ROOT || path.join(process.cwd(), "..");
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
@@ -11,6 +12,9 @@ const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
  * Semantic search: embeds query via Ollama, searches SQLite-vec via subprocess.
  */
 export async function GET(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const { searchParams } = req.nextUrl;
   const query = searchParams.get("q");
   const limit = parseInt(searchParams.get("limit") || "15", 10);

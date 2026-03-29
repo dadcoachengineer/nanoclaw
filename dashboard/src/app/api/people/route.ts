@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { requireAuth } from "@/lib/require-auth";
 
 const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
 const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
@@ -23,6 +24,9 @@ function loadIndex() {
  * GET /api/people?name=Tara+Clark — get detail for one person
  */
 export async function GET(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const { searchParams } = req.nextUrl;
   const name = searchParams.get("name");
   const index = loadIndex() as Record<string, any>;

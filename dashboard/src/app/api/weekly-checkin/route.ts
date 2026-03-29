@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { proxiedFetch } from "@/lib/onecli";
+import { requireAuth } from "@/lib/require-auth";
 
 const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
 const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
@@ -233,6 +234,9 @@ function detectManagerConnect(
 /*  GET /api/weekly-checkin                                           */
 /* ------------------------------------------------------------------ */
 export async function GET() {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const personIndex = loadJson(INDEX_PATH);
   const topicIndex = loadJson(TOPIC_INDEX_PATH);
   const summaries = loadJson(SUMMARIES_PATH);

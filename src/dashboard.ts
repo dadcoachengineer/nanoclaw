@@ -83,13 +83,18 @@ function setCache(key: string, data: unknown): void {
 // --- OneCLI proxy config ---
 // The OneCLI HTTPS proxy on port 10255 intercepts requests and injects
 // credentials based on host patterns (Notion, Webex, etc.).
-const ONECLI_AGENT_TOKEN =
-  process.env.ONECLI_AGENT_TOKEN ||
-  'aoc_181429a83379e2122e9e0b6cde6eefd6b897809b92c08cc4bc788816e26e399a';
 const ONECLI_PROXY_HOST = process.env.ONECLI_PROXY_HOST || 'localhost:10255';
-const proxyAgent = new HttpsProxyAgent(
-  `http://x:${ONECLI_AGENT_TOKEN}@${ONECLI_PROXY_HOST}`,
-);
+let _proxyAgent: HttpsProxyAgent<string> | null = null;
+function getProxyAgent(): HttpsProxyAgent<string> {
+  if (!_proxyAgent) {
+    const token = process.env.ONECLI_AGENT_TOKEN;
+    if (!token) {
+      throw new Error('ONECLI_AGENT_TOKEN environment variable is required');
+    }
+    _proxyAgent = new HttpsProxyAgent(`http://x:${token}@${ONECLI_PROXY_HOST}`);
+  }
+  return _proxyAgent;
+}
 
 function proxyRequest(
   url: string,
@@ -107,7 +112,7 @@ function proxyRequest(
         ...headers,
         Accept: 'application/json',
       },
-      agent: proxyAgent,
+      agent: getProxyAgent(),
     };
     const req = https.request(opts, (proxyRes) => {
       let data = '';

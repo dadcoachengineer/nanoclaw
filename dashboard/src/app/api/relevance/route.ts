@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
+import { requireAuth } from "@/lib/require-auth";
 
 const STORE_DIR =
   process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
@@ -26,6 +27,9 @@ function saveScores(scores: Record<string, ScoreEntry>): void {
  * Body: { context: string, itemType: string, itemId: string, vote: "up" | "down" }
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { context, itemType, itemId, vote } = await req.json();
 
@@ -63,6 +67,9 @@ export async function POST(req: NextRequest) {
  * Returns all scores matching the context prefix, with the prefix stripped from keys.
  */
 export async function GET(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { searchParams } = req.nextUrl;
     const context = searchParams.get("context");

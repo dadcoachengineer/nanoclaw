@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { proxiedFetch } from "@/lib/onecli";
+import { requireAuth } from "@/lib/require-auth";
 
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
 const STORE_DIR =
@@ -115,6 +116,9 @@ interface TaskRecord {
 }
 
 export async function GET() {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     // Fetch all open tasks (paginated, up to 500)
     const allPages: any[] = [];
@@ -260,6 +264,9 @@ interface BulkMergeBody {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
 

@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
+import { requireAuth } from "@/lib/require-auth";
 
 export async function PATCH(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
     const { page_id, properties, comment } = body;
@@ -81,6 +85,9 @@ export async function PATCH(req: NextRequest) {
 
 /** POST — create a new task in the Notion database */
 export async function POST(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const body = await req.json();
     const { database_id, properties } = body;

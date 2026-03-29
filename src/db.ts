@@ -373,7 +373,9 @@ export function getMessagesSince(
 }
 
 export function createTask(
-  task: Omit<ScheduledTask, 'last_run' | 'last_result' | 'model'> & { model?: string | null },
+  task: Omit<ScheduledTask, 'last_run' | 'last_result' | 'model'> & {
+    model?: string | null;
+  },
 ): void {
   db.prepare(
     `

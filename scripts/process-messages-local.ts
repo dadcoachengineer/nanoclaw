@@ -25,8 +25,10 @@ const OLLAMA_TIMEOUT_MS = 180_000;
 const MY_EMAIL = "jasheare@cisco.com";
 
 // OneCLI proxy for Notion
-const AGENT_TOKEN =
-  "aoc_181429a83379e2122e9e0b6cde6eefd6b897809b92c08cc4bc788816e26e399a";
+const AGENT_TOKEN = process.env.ONECLI_AGENT_TOKEN;
+if (!AGENT_TOKEN) {
+  throw new Error("ONECLI_AGENT_TOKEN environment variable is required");
+}
 const proxyAgent = new HttpsProxyAgent(
   `http://x:${AGENT_TOKEN}@localhost:10255`
 );

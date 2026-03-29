@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { proxiedFetch } from "@/lib/onecli";
+import { requireAuth } from "@/lib/require-auth";
 
 const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
 const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
@@ -107,6 +108,9 @@ function extractPersonName(meetingTitle: string, hostName?: string, hostEmail?: 
  * Returns contextual prep data for a specific meeting.
  */
 export async function GET(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const { searchParams } = req.nextUrl;
   const title = searchParams.get("title") || "";
   const host = searchParams.get("host") || "";

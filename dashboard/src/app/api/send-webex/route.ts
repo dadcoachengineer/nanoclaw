@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
+import { requireAuth } from "@/lib/require-auth";
 
 /**
  * POST /api/send-webex
@@ -8,6 +9,9 @@ import { proxiedFetch } from "@/lib/onecli";
  * Sends a message to a Webex room via API.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { roomId, text } = await req.json();
 

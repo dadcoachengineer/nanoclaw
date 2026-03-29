@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
+import { requireAuth } from "@/lib/require-auth";
 
 const STORE_DIR =
   process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
@@ -228,6 +229,9 @@ function ensureModelColumn(db: Database.Database): void {
 // --- GET handler ---
 
 export async function GET() {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   // Fetch all data sources in parallel
   const [healthResult, statsResult, runsResult, ollamaResult, shimResult] =
     await Promise.allSettled([
@@ -578,6 +582,9 @@ export async function GET() {
 // --- POST handler: trigger a pipeline ---
 
 export async function POST(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   const { searchParams } = req.nextUrl;
   const action = searchParams.get("action");
   const id = searchParams.get("id");
@@ -612,6 +619,9 @@ export async function POST(req: NextRequest) {
 // --- PATCH handler: update pipeline model ---
 
 export async function PATCH(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   let body: { action?: string; id?: string; model?: string | null };
   try {
     body = await req.json();

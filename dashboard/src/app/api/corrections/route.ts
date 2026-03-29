@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
 import fs from "fs";
 import path from "path";
+import { requireAuth } from "@/lib/require-auth";
 
 const STORE_DIR =
   process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
@@ -80,6 +81,9 @@ function saveCorrections(corrections: Record<string, string>): void {
  * Body: { taskId: string, oldTitle: string, newTitle: string }
  */
 export async function PATCH(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
   try {
     const { taskId, oldTitle, newTitle } = await req.json();
 

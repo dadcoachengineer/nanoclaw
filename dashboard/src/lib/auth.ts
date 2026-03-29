@@ -3,8 +3,16 @@ import fs from "fs";
 import path from "path";
 
 const AUTH_PATH = path.join(process.cwd(), "..", "store", "auth.json");
-const SESSION_SECRET =
-  process.env.SESSION_SECRET || "nanoclaw-mc-session-secret-change-me";
+let _sessionSecret: string | null = null;
+function getSessionSecret(): string {
+  if (_sessionSecret) return _sessionSecret;
+  const secret = process.env.SESSION_SECRET;
+  if (!secret) {
+    throw new Error("SESSION_SECRET environment variable is required");
+  }
+  _sessionSecret = secret;
+  return secret;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,14 +32,11 @@ interface SessionPayload {
 }
 
 // ---------------------------------------------------------------------------
-// Password hashing (SHA-256 + salt, no external deps)
+// Password hashing (scrypt, no external deps)
 // ---------------------------------------------------------------------------
 
 export function hashPassword(password: string, salt: string): string {
-  return crypto
-    .createHash("sha256")
-    .update(password + salt)
-    .digest("hex");
+  return crypto.scryptSync(password, salt, 64).toString("hex");
 }
 
 export function verifyPassword(
@@ -147,7 +152,7 @@ export function getTOTPAuthURL(secret: string, username: string): string {
 // ---------------------------------------------------------------------------
 
 function deriveKey(): Buffer {
-  return crypto.createHash("sha256").update(SESSION_SECRET).digest();
+  return crypto.createHash("sha256").update(getSessionSecret()).digest();
 }
 
 export function encryptSession(data: SessionPayload): string {

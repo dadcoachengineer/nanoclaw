@@ -7,13 +7,19 @@
  */
 import { HttpsProxyAgent } from "https-proxy-agent";
 
-const AGENT_TOKEN =
-  process.env.ONECLI_AGENT_TOKEN ||
-  "aoc_181429a83379e2122e9e0b6cde6eefd6b897809b92c08cc4bc788816e26e399a";
 const PROXY_HOST = process.env.ONECLI_PROXY_HOST || "localhost:10255";
-const PROXY_URL = `http://x:${AGENT_TOKEN}@${PROXY_HOST}`;
 
-const proxyAgent = new HttpsProxyAgent(PROXY_URL);
+let _proxyAgent: HttpsProxyAgent<string> | null = null;
+
+function getProxyAgent(): HttpsProxyAgent<string> {
+  if (_proxyAgent) return _proxyAgent;
+  const token = process.env.ONECLI_AGENT_TOKEN;
+  if (!token) {
+    throw new Error("ONECLI_AGENT_TOKEN environment variable is required");
+  }
+  _proxyAgent = new HttpsProxyAgent(`http://x:${token}@${PROXY_HOST}`);
+  return _proxyAgent;
+}
 
 export async function proxiedFetch(
   url: string,
@@ -22,7 +28,7 @@ export async function proxiedFetch(
   const nodeFetch = (await import("node-fetch")).default;
   const resp = await nodeFetch(url, {
     ...init,
-    agent: proxyAgent,
+    agent: getProxyAgent(),
   } as Parameters<typeof nodeFetch>[1]);
 
   return resp as unknown as Response;
