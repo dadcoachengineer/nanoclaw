@@ -53,6 +53,10 @@ export async function queryNotion(
       sorts: sorts || [{ property: "Priority", direction: "ascending" }],
     }),
   });
+  if (resp.status === 401) {
+    if (typeof window !== "undefined") window.location.href = "/login";
+    return [];
+  }
   const data = await resp.json();
   return data.results || [];
 }

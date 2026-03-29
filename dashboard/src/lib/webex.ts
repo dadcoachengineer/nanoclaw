@@ -21,6 +21,10 @@ export async function fetchMeetings(
   const resp = await fetch(
     `/api/webex/meetings?from=${from}&to=${to}`
   );
+  if (resp.status === 401) {
+    if (typeof window !== "undefined") window.location.href = "/login";
+    return [];
+  }
   const data = await resp.json();
   return data.items || [];
 }

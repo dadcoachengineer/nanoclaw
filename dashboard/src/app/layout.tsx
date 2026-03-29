@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { AuthInterceptor } from "./auth-interceptor";
 
 export const metadata: Metadata = {
   title: "Mission Control",
@@ -13,7 +14,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="dark">
-      <body className="font-sans antialiased">{children}</body>
+      <body className="font-sans antialiased">
+        <AuthInterceptor />
+        {children}
+      </body>
     </html>
   );
 }
