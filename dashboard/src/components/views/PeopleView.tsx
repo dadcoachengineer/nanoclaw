@@ -5,6 +5,7 @@ import { Card, CardHeader, StatCard } from "@/components/Card";
 import { timeAgo } from "@/lib/dates";
 import ReplyDrafter from "@/components/ReplyDrafter";
 import VoteButtons from "@/components/VoteButtons";
+import ArtifactList from "@/components/ArtifactList";
 
 interface PersonSummary {
   key: string;
@@ -22,6 +23,9 @@ interface PersonDetail {
   name: string;
   emails: string[];
   avatar?: string;
+  company?: string;
+  jobTitle?: string;
+  profileNotes?: string;
   webexRoomIds: string[];
   meetings: { id: string; topic: string; date: string; role: string }[];
   transcriptMentions: {
@@ -71,9 +75,21 @@ export default function PeopleView() {
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("");
-  const [detailFilter, setDetailFilter] = useState<"all" | "meetings" | "transcripts" | "messages" | "tasks" | "summaries">("all");
+  const [detailFilter, setDetailFilter] = useState<"all" | "meetings" | "transcripts" | "messages" | "tasks" | "summaries" | "artifacts">("all");
+  const [personArtifacts, setPersonArtifacts] = useState<{ id: string; title: string; intent: string; createdAt: string; charCount: number }[]>([]);
   const [replyTo, setReplyTo] = useState<{ text: string; personName: string; personEmail?: string; roomId?: string } | null>(null);
   const [scores, setScores] = useState<Record<string, number>>({});
+  const [editingProfile, setEditingProfile] = useState(false);
+  const [profileDraft, setProfileDraft] = useState({ name: "", email: "", company: "", jobTitle: "", notes: "" });
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [lookupResults, setLookupResults] = useState<{ displayName: string; email?: string; title?: string; company?: string; source: string }[]>([]);
+  const [showEnrich, setShowEnrich] = useState(false);
+  const [enrichCandidates, setEnrichCandidates] = useState<{ key: string; name: string; interactions: number }[]>([]);
+  const [enrichResults, setEnrichResults] = useState<Record<string, { displayName: string; email: string; title: string; company: string }[]>>({});
+  const [enriching, setEnriching] = useState(false);
+  const [enrichApplied, setEnrichApplied] = useState<Set<string>>(new Set());
+  const [enrichAction, setEnrichAction] = useState<{ key: string; type: "rename" | "merge" } | null>(null);
+  const [enrichInput, setEnrichInput] = useState("");
 
   const voteContext = selectedName ? `person:${selectedName}` : "";
   const updateScore = (itemType: string, itemId: string, s: number) => setScores((prev) => ({ ...prev, [`${itemType}:${itemId}`]: s }));
@@ -93,6 +109,7 @@ export default function PeopleView() {
   async function selectPerson(name: string) {
     setSelectedName(name);
     setDetailFilter("all");
+    setPersonArtifacts([]);
     const [resp, scoresResp] = await Promise.all([
       fetch(`/api/people?name=${encodeURIComponent(name)}`),
       fetch(`/api/relevance?context=${encodeURIComponent(`person:${name}`)}`).then(r => r.ok ? r.json() : { scores: {} }),
@@ -100,6 +117,11 @@ export default function PeopleView() {
     const data = await resp.json();
     setSelected(data);
     setScores(scoresResp.scores || {});
+    // Fetch artifacts mentioning this person
+    fetch(`/api/artifacts?person=${encodeURIComponent(name)}`)
+      .then((r) => r.json())
+      .then((arts) => { if (Array.isArray(arts)) setPersonArtifacts(arts); })
+      .catch(() => {});
   }
 
   const filtered = filter
@@ -122,6 +144,205 @@ export default function PeopleView() {
         <StatCard value={withTranscripts.length} label="In Transcripts" color="var(--purple)" />
         <StatCard value={withMessages.length} label="Messaged" color="var(--yellow)" />
       </div>
+
+      {/* Enrich tool toggle */}
+      <div className="flex items-center gap-3 mb-4">
+        <button
+          onClick={async () => {
+            if (showEnrich) { setShowEnrich(false); return; }
+            setShowEnrich(true);
+            const resp = await fetch("/api/people/enrich");
+            const data = await resp.json();
+            setEnrichCandidates(data.candidates || []);
+          }}
+          className={`text-xs px-3 py-1.5 rounded-md border transition-colors ${
+            showEnrich
+              ? "border-[var(--accent)] text-[var(--accent)] bg-[rgba(88,166,255,0.08)]"
+              : "border-[var(--border)] text-[var(--text-dim)] hover:text-[var(--accent)] hover:border-[var(--accent)]"
+          }`}
+        >
+          {showEnrich ? "Close Enrichment Tool" : `Enrich Contacts (${people.length - withEmail.length} missing email)`}
+        </button>
+      </div>
+
+      {showEnrich && (
+        <Card>
+          <CardHeader
+            title={`Contact Enrichment — ${enrichCandidates.length} candidates`}
+            right={
+              <button
+                disabled={enriching || enrichCandidates.length === 0}
+                onClick={async () => {
+                  setEnriching(true);
+                  // Process in batches of 10
+                  const remaining = enrichCandidates.filter((c) => !enrichApplied.has(c.key) && !enrichResults[c.key]);
+                  for (let i = 0; i < remaining.length; i += 10) {
+                    const batch = remaining.slice(i, i + 10);
+                    try {
+                      const resp = await fetch("/api/people/enrich", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ names: batch.map((c) => c.name) }),
+                      });
+                      const data = await resp.json();
+                      const newResults: Record<string, any[]> = {};
+                      for (const r of data.results || []) {
+                        const candidate = batch.find((c) => c.name === r.name);
+                        if (candidate) newResults[candidate.key] = r.matches;
+                      }
+                      setEnrichResults((prev) => ({ ...prev, ...newResults }));
+                    } catch {}
+                  }
+                  setEnriching(false);
+                }}
+                className="text-xs px-3 py-1 font-medium bg-[var(--green)] text-white rounded hover:opacity-90 disabled:opacity-40"
+              >
+                {enriching ? "Looking up..." : "Lookup All via Webex"}
+              </button>
+            }
+          />
+          <div className="max-h-[400px] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {enrichCandidates.slice(0, 50).map((c) => {
+              const matches = enrichResults[c.key];
+              const applied = enrichApplied.has(c.key);
+              return (
+                <div key={c.key} className={`px-4 py-2 border-b border-[var(--border)] ${applied ? "opacity-40" : ""}`}>
+                  <div className="flex items-center gap-3">
+                    <div className="flex-1">
+                      <span className="text-sm text-[var(--text)]">{c.name}</span>
+                      <span className="text-[10px] text-[var(--text-dim)] ml-2">{c.interactions} interactions</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {!matches && !applied && (
+                        <button
+                          onClick={async () => {
+                            try {
+                              const resp = await fetch("/api/people/enrich", {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ names: [c.name] }),
+                              });
+                              const data = await resp.json();
+                              const r = data.results?.[0];
+                              if (r) setEnrichResults((prev) => ({ ...prev, [c.key]: r.matches }));
+                            } catch {}
+                          }}
+                          className="text-[11px] text-[var(--accent)] hover:underline"
+                        >
+                          Lookup
+                        </button>
+                      )}
+                      {!applied && (
+                        <>
+                          <button
+                            onClick={() => { setEnrichAction({ key: c.key, type: "rename" }); setEnrichInput(c.name); }}
+                            className="text-[11px] text-[var(--text-dim)] hover:text-[var(--yellow)]"
+                          >
+                            Rename
+                          </button>
+                          <button
+                            onClick={() => { setEnrichAction({ key: c.key, type: "merge" }); setEnrichInput(""); }}
+                            className="text-[11px] text-[var(--text-dim)] hover:text-[var(--purple)]"
+                          >
+                            Merge
+                          </button>
+                          <button
+                            onClick={async () => {
+                              if (!confirm(`Delete "${c.name}" from the person index?`)) return;
+                              await fetch("/api/people/enrich", {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ deleteKeys: [c.key] }),
+                              });
+                              setEnrichCandidates((prev) => prev.filter((p) => p.key !== c.key));
+                            }}
+                            className="text-[11px] text-[var(--text-dim)] hover:text-[var(--red)]"
+                          >
+                            Delete
+                          </button>
+                        </>
+                      )}
+                      {applied && <span className="text-[11px] text-[var(--green)]">Done</span>}
+                    </div>
+                  </div>
+                  {matches && matches.length > 0 && !applied && (
+                    <div className="mt-1 ml-4 space-y-1">
+                      {matches.map((m, i) => (
+                        <button
+                          key={i}
+                          onClick={async () => {
+                            await fetch("/api/people/enrich", {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ updates: [{ key: c.key, email: m.email, company: m.company, jobTitle: m.title, avatar: m.avatar }] }),
+                            });
+                            setEnrichApplied((prev) => new Set([...prev, c.key]));
+                          }}
+                          className="flex items-center gap-2 text-xs text-[var(--text)] hover:text-[var(--accent)] hover:bg-[rgba(88,166,255,0.04)] px-2 py-1 rounded w-full text-left"
+                        >
+                          <span className="text-[var(--accent)]">{m.email}</span>
+                          {m.title && <span className="text-[var(--text-dim)]">— {m.title}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {matches && matches.length === 0 && !applied && (
+                    <div className="mt-1 ml-4 text-[11px] text-[var(--text-dim)] italic">No Webex match found</div>
+                  )}
+                  {enrichAction?.key === c.key && (
+                    <div className="mt-2 ml-4 flex items-center gap-2">
+                      <span className="text-[10px] text-[var(--text-dim)] shrink-0">
+                        {enrichAction.type === "rename" ? "New name:" : "Merge into:"}
+                      </span>
+                      <input
+                        value={enrichInput}
+                        onChange={(e) => setEnrichInput(e.target.value)}
+                        placeholder={enrichAction.type === "merge" ? "Type target person name..." : "New name..."}
+                        className="flex-1 h-6 px-2 text-[11px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]"
+                        autoFocus
+                        onKeyDown={(e) => e.key === "Escape" && setEnrichAction(null)}
+                      />
+                      <button
+                        onClick={async () => {
+                          if (!enrichInput.trim()) return;
+                          if (enrichAction.type === "rename") {
+                            await fetch("/api/people/enrich", {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ rename: { key: c.key, newName: enrichInput.trim() } }),
+                            });
+                            setEnrichCandidates((prev) => prev.map((p) => p.key === c.key ? { ...p, name: enrichInput.trim() } : p));
+                          } else {
+                            // Merge: find target key
+                            const targetKey = enrichInput.trim().toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+                            await fetch("/api/people/enrich", {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ merge: { sourceKey: c.key, targetKey } }),
+                            });
+                            setEnrichCandidates((prev) => prev.filter((p) => p.key !== c.key));
+                          }
+                          setEnrichAction(null);
+                          setEnrichInput("");
+                        }}
+                        className="h-6 px-2 text-[10px] font-medium bg-[var(--accent)] text-white rounded hover:opacity-90"
+                      >
+                        {enrichAction.type === "rename" ? "Rename" : "Merge"}
+                      </button>
+                      <button
+                        onClick={() => setEnrichAction(null)}
+                        className="h-6 px-1.5 text-[10px] text-[var(--text-dim)]"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       <div className="grid grid-cols-[320px_1fr] gap-6">
         {/* Left: People list */}
@@ -188,14 +409,181 @@ export default function PeopleView() {
                 <div className="p-4">
                   <div className="flex items-center gap-3 mb-3">
                     <Avatar name={selected.name} avatar={selected.avatar} size="lg" />
-                    <div>
-                      <div className="text-base font-semibold text-[var(--text-bright)]">
-                        {selected.name}
-                      </div>
-                      {selected.emails.map((e) => (
-                        <div key={e} className="text-xs text-[var(--text-dim)]">{e}</div>
-                      ))}
+                    <div className="flex-1">
+                      {!editingProfile ? (
+                        <>
+                          <div className="text-base font-semibold text-[var(--text-bright)]">
+                            {selected.name}
+                          </div>
+                          {selected.company && (
+                            <div className="text-xs text-[var(--text)]">{selected.jobTitle ? `${selected.jobTitle} at ` : ""}{selected.company}</div>
+                          )}
+                          {selected.emails.map((e) => (
+                            <div key={e} className="text-xs text-[var(--text-dim)]">{e}</div>
+                          ))}
+                          {selected.profileNotes && (
+                            <div className="text-xs text-[var(--text-dim)] mt-1 italic">{selected.profileNotes}</div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="space-y-2">
+                          <input value={profileDraft.name} onChange={(e) => setProfileDraft((d) => ({ ...d, name: e.target.value }))}
+                            placeholder="Name" className="w-full h-7 px-2 text-sm bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]" />
+                          <input value={profileDraft.email} onChange={(e) => setProfileDraft((d) => ({ ...d, email: e.target.value }))}
+                            placeholder="Email" className="w-full h-7 px-2 text-xs bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]" />
+                          <div className="flex gap-2">
+                            <input value={profileDraft.company} onChange={(e) => setProfileDraft((d) => ({ ...d, company: e.target.value }))}
+                              placeholder="Company" className="flex-1 h-7 px-2 text-xs bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]" />
+                            <input value={profileDraft.jobTitle} onChange={(e) => setProfileDraft((d) => ({ ...d, jobTitle: e.target.value }))}
+                              placeholder="Title / Role" className="flex-1 h-7 px-2 text-xs bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]" />
+                          </div>
+                          <input value={profileDraft.notes} onChange={(e) => setProfileDraft((d) => ({ ...d, notes: e.target.value }))}
+                            placeholder="Notes (relationship context, how you know them)" className="w-full h-7 px-2 text-xs bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] focus:outline-none focus:border-[var(--accent)]" />
+                          <div className="flex gap-2 items-center">
+                            <button
+                              onClick={() => {
+                                const q = encodeURIComponent(`"${profileDraft.name}" ${profileDraft.company || ""}`);
+                                window.open(`https://www.linkedin.com/search/results/people/?keywords=${q}`, "_blank");
+                              }}
+                              className="h-7 px-2 text-[11px] text-[#0a66c2] border border-[var(--border)] rounded hover:border-[#0a66c2] hover:bg-[rgba(10,102,194,0.06)] shrink-0"
+                            >
+                              Search LinkedIn
+                            </button>
+                            <input
+                              placeholder="Paste LinkedIn URL here..."
+                              className="flex-1 h-7 px-2 text-xs bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[#0a66c2]"
+                              onPaste={(e) => {
+                                setTimeout(async () => {
+                                  const url = (e.target as HTMLInputElement).value.trim();
+                                  if (!url.includes("linkedin.com/in/")) return;
+                                  setSavingProfile(true);
+                                  try {
+                                    const resp = await fetch("/api/people/linkedin", {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ key: selectedName, linkedinUrl: url }),
+                                    });
+                                    const data = await resp.json();
+                                    if (data.extracted) {
+                                      setProfileDraft((d) => ({
+                                        ...d,
+                                        company: data.extracted.company || d.company,
+                                        jobTitle: data.extracted.title || d.jobTitle,
+                                      }));
+                                    }
+                                  } catch {}
+                                  setSavingProfile(false);
+                                }, 100);
+                              }}
+                            />
+                          </div>
+                          <div className="flex gap-2">
+                            <button disabled={savingProfile} onClick={async () => {
+                              setSavingProfile(true);
+                              await fetch("/api/people", {
+                                method: "PATCH",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ key: selectedName, ...profileDraft }),
+                              });
+                              setSavingProfile(false);
+                              setEditingProfile(false);
+                              if (selectedName) selectPerson(profileDraft.name || selectedName);
+                            }} className="h-7 px-3 text-xs font-medium bg-[var(--accent)] text-white rounded hover:opacity-90 disabled:opacity-50">
+                              {savingProfile ? "Saving..." : "Save"}
+                            </button>
+                            <button disabled={savingProfile} onClick={async () => {
+                              setSavingProfile(true);
+                              setLookupResults([]);
+                              const query = profileDraft.email
+                                ? `email=${encodeURIComponent(profileDraft.email)}`
+                                : `name=${encodeURIComponent(profileDraft.name)}`;
+                              try {
+                                const resp = await fetch(`/api/people/lookup?${query}`);
+                                const data = await resp.json();
+                                const matches = data.results || [];
+                                if (matches.length === 1) {
+                                  setProfileDraft((d) => ({
+                                    ...d,
+                                    name: matches[0].displayName || d.name,
+                                    email: matches[0].email || d.email,
+                                    company: matches[0].company || d.company,
+                                    jobTitle: matches[0].title || d.jobTitle,
+                                  }));
+                                  if (matches[0].avatar && selectedName) {
+                                    fetch("/api/people", {
+                                      method: "PATCH",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ key: selectedName, avatar: matches[0].avatar }),
+                                    }).catch(() => {});
+                                  }
+                                } else if (matches.length > 1) {
+                                  setLookupResults(matches);
+                                }
+                              } catch {}
+                              setSavingProfile(false);
+                            }} className="h-7 px-3 text-xs font-medium text-[var(--green)] border border-[var(--border)] rounded hover:border-[var(--green)] disabled:opacity-50">
+                              {savingProfile ? "..." : "Lookup Webex"}
+                            </button>
+                            <button onClick={() => { setEditingProfile(false); setLookupResults([]); }} className="h-7 px-3 text-xs text-[var(--text-dim)] hover:text-[var(--text)]">Cancel</button>
+                          </div>
+                          {lookupResults.length > 1 && (
+                            <div className="mt-2 border border-[var(--border)] rounded-lg overflow-hidden">
+                              <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-[var(--text-dim)] bg-[var(--bg)]">
+                                Multiple matches — select one
+                              </div>
+                              {lookupResults.map((r, i) => (
+                                <button
+                                  key={i}
+                                  onClick={() => {
+                                    setProfileDraft((d) => ({
+                                      ...d,
+                                      name: r.displayName || d.name,
+                                      email: r.email || d.email,
+                                      company: r.company || d.company,
+                                      jobTitle: r.title || d.jobTitle,
+                                    }));
+                                    if ((r as any).avatar && selectedName) {
+                                      fetch("/api/people", {
+                                        method: "PATCH",
+                                        headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ key: selectedName, avatar: (r as any).avatar }),
+                                      }).catch(() => {});
+                                    }
+                                    setLookupResults([]);
+                                  }}
+                                  className="w-full text-left px-3 py-2 text-xs border-t border-[var(--border)] hover:bg-[rgba(88,166,255,0.06)] transition-colors"
+                                >
+                                  <div className="font-medium text-[var(--text)]">{r.displayName}</div>
+                                  <div className="text-[var(--text-dim)]">
+                                    {r.email}{r.title ? ` — ${r.title}` : ""}{r.company ? ` (${r.company})` : ""}
+                                  </div>
+                                </button>
+                              ))}
+                              <button
+                                onClick={() => setLookupResults([])}
+                                className="w-full text-center px-3 py-1.5 text-[10px] text-[var(--text-dim)] border-t border-[var(--border)] hover:text-[var(--text)]"
+                              >
+                                None of these — enter manually
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
+                    {!editingProfile && (
+                      <button onClick={() => {
+                        setProfileDraft({
+                          name: selected.name,
+                          email: selected.emails?.[0] || "",
+                          company: selected.company || "",
+                          jobTitle: selected.jobTitle || "",
+                          notes: selected.profileNotes || "",
+                        });
+                        setEditingProfile(true);
+                      }} className="text-xs text-[var(--text-dim)] hover:text-[var(--accent)] shrink-0 self-start">
+                        Edit
+                      </button>
+                    )}
                   </div>
                   <div className="flex gap-1 pt-3 border-t border-[var(--border)]">
                     {([
@@ -204,6 +592,7 @@ export default function PeopleView() {
                       { key: "messages" as const, value: selected.messageExcerpts.length, label: "Messages", color: "var(--green)" },
                       { key: "tasks" as const, value: selected.notionTasks.length, label: "Tasks", color: "var(--yellow)" },
                       ...((selected.aiSummaries?.length || 0) > 0 ? [{ key: "summaries" as const, value: selected.aiSummaries.length, label: "AI Summaries", color: "var(--green)" }] : []),
+                      ...(personArtifacts.length > 0 ? [{ key: "artifacts" as const, value: personArtifacts.length, label: "Artifacts", color: "#38b2ac" }] : []),
                     ]).map((s) => (
                       <button
                         key={s.key}
@@ -380,6 +769,16 @@ export default function PeopleView() {
                         <VoteButtons context={voteContext} itemType="task" itemId={t.id} initialScore={getScore("task", t.id)} onVoted={(s) => updateScore("task", t.id, s)} />
                       </div>
                     ))}
+                  </div>
+                </Card>
+              )}
+
+              {/* Artifacts mentioning this person */}
+              {personArtifacts.length > 0 && (detailFilter === "all" || detailFilter === "artifacts") && (
+                <Card>
+                  <CardHeader title="Artifacts" />
+                  <div className="px-4 py-2">
+                    <ArtifactList person={selected?.name} label="" />
                   </div>
                 </Card>
               )}

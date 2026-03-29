@@ -536,11 +536,21 @@ Output ONLY JSON lines. Base analysis ONLY on what you see in the image.`;
         }
 
         if (parsed.type === "action" && parsed.task && parsed.task.length >= 5) {
-          items.push({
-            task: parsed.task,
-            priority: parsed.priority || "P2",
-            context: parsed.context || "Quick Win",
-          });
+          // Quality gate: reject single words, ALL CAPS headings, and generic labels
+          const task = parsed.task.trim();
+          const wordCount = task.split(/\s+/).length;
+          const isAllCaps = task === task.toUpperCase() && task.length < 20;
+          const isGenericLabel = /^(network|vision|customers?|hazel|skyway|software|bills?|resolve|agenda|notes?|goals?|ideas?|misc|overview|summary|action items?|the action item text)$/i.test(task);
+          if (wordCount < 2 || isAllCaps || isGenericLabel) {
+            // Treat as context text, not an action item
+            fullText += (fullText ? "\n" : "") + `[heading] ${task}`;
+          } else {
+            items.push({
+              task,
+              priority: parsed.priority || "P2",
+              context: parsed.context || "Quick Win",
+            });
+          }
         }
       } catch {
         parseErrors++;

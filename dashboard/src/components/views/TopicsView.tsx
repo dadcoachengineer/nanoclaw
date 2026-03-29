@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Card, CardHeader, StatCard } from "@/components/Card";
 import VoteButtons from "@/components/VoteButtons";
+import ArtifactList from "@/components/ArtifactList";
 
 interface TopicSummary {
   key: string;
@@ -285,6 +286,15 @@ export default function TopicsView() {
                         <span className="text-sm">{r.title}</span>
                       </div>
                     ))}
+                  </div>
+                </Card>
+              )}
+
+              {/* Artifacts related to this topic */}
+              {selected && (
+                <Card>
+                  <div className="px-4 py-3">
+                    <ArtifactList project={selected.name} label="Topic Artifacts" />
                   </div>
                 </Card>
               )}

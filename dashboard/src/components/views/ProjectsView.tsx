@@ -4,6 +4,7 @@ import { useEffect, useState, useRef } from "react";
 import { Card, CardHeader, StatCard } from "@/components/Card";
 import { timeAgo } from "@/lib/dates";
 import VoteButtons from "@/components/VoteButtons";
+import ArtifactList from "@/components/ArtifactList";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -610,6 +611,14 @@ export default function InitiativesView() {
                           )}
                         </div>
                       ))}
+                  </div>
+                </Card>
+              )}
+              {/* Artifacts for this initiative's project */}
+              {selected && (
+                <Card>
+                  <div className="px-4 py-3">
+                    <ArtifactList project={selected.name} label="Initiative Artifacts" />
                   </div>
                 </Card>
               )}

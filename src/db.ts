@@ -84,35 +84,30 @@ function createSchema(database: Database.Database): void {
     );
   `);
 
-  // Add context_mode column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  // Add model column if it doesn't exist (migration for per-pipeline LLM selection)
-  try {
-    database.exec(
-      `ALTER TABLE scheduled_tasks ADD COLUMN model TEXT DEFAULT NULL`,
-    );
-  } catch {
-    /* column already exists */
-  }
-
-  // Add is_bot_message column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN is_bot_message INTEGER DEFAULT 0`,
-    );
-    // Backfill: mark existing bot messages that used the content prefix pattern
-    database
-      .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
-      .run(`${ASSISTANT_NAME}:%`);
-  } catch {
-    /* column already exists */
+  // Migrations: add columns if they don't exist.
+  // SQLite throws "duplicate column" if already present — that's expected.
+  const migrations: [string, string][] = [
+    ['scheduled_tasks.context_mode', `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`],
+    ['scheduled_tasks.model', `ALTER TABLE scheduled_tasks ADD COLUMN model TEXT DEFAULT NULL`],
+    ['messages.is_bot_message', `ALTER TABLE messages ADD COLUMN is_bot_message INTEGER DEFAULT 0`],
+  ];
+  for (const [name, sql] of migrations) {
+    try {
+      database.exec(sql);
+      logger.info(`Migration applied: ${name}`);
+      if (name === 'messages.is_bot_message') {
+        database
+          .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
+          .run(`${ASSISTANT_NAME}:%`);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('duplicate column')) {
+        // Expected — column already exists
+      } else {
+        logger.error(`Migration failed (${name}): ${msg}`);
+      }
+    }
   }
 
   // Add is_main column if it doesn't exist (migration for existing DBs)

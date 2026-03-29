@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import {
   loadAuthConfig,
   saveAuthConfig,
@@ -10,9 +10,24 @@ import {
   verifyTOTP,
   createSessionCookie,
 } from "@/lib/auth";
+import { isRateLimited, recordFailedAttempt, clearAttempts } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
+    const hdrs = await headers();
+    const ip = hdrs.get("x-forwarded-for")?.split(",")[0]?.trim()
+      || hdrs.get("x-real-ip")
+      || "unknown";
+
+    // Rate limit check
+    const { limited, retryAfterSec } = isRateLimited(ip);
+    if (limited) {
+      return NextResponse.json(
+        { error: `Too many attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minutes.` },
+        { status: 429, headers: { "Retry-After": String(retryAfterSec) } },
+      );
+    }
+
     const body = await request.json();
 
     // ----- Step 2: verify TOTP code to finalize setup -----
@@ -40,11 +55,14 @@ export async function POST(request: Request) {
       }
 
       if (!verifyTOTP(config.totpSecret, code)) {
+        recordFailedAttempt(ip);
         return NextResponse.json(
           { error: "Invalid code. Make sure the time on your device is correct and try again." },
           { status: 400 },
         );
       }
+
+      clearAttempts(ip);
 
       // Mark setup as complete
       config.setupComplete = true;

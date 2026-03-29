@@ -7,8 +7,8 @@ import MeetingItem, { findConflicts, findGaps, scheduleInsights, isAllDay } from
 import MeetingPrep from "@/components/MeetingPrep";
 import TaskDetail from "@/components/TaskDetail";
 import { NotionPage, prop, priorityRank, queryNotion } from "@/lib/notion";
-import { WebexMeeting, fetchMeetings } from "@/lib/webex";
-import { isoDate, timeAgo } from "@/lib/dates";
+import { WebexMeeting, fetchMeetings, fetchGoogleCalendarEvents } from "@/lib/webex";
+import { isoDate } from "@/lib/dates";
 import { NOTION_DB } from "@/lib/notion";
 
 const PRIORITY_OPTIONS = [
@@ -62,17 +62,9 @@ function richText(rt: { plain_text: string }[] | undefined): string {
   return (rt || []).map((t) => t.plain_text).join("");
 }
 
-interface RunLog {
-  task_id: string;
-  run_at: string;
-  status: string;
-  result?: string;
-}
-
 export default function TodayView() {
   const [tasks, setTasks] = useState<NotionPage[]>([]);
   const [meetings, setMeetings] = useState<WebexMeeting[]>([]);
-  const [runs, setRuns] = useState<RunLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedMeeting, setSelectedMeeting] = useState<WebexMeeting | null>(null);
@@ -84,7 +76,11 @@ export default function TodayView() {
   const [bulkMode, setBulkMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkProgress, setBulkProgress] = useState<string | null>(null);
-  const [bulkDropdown, setBulkDropdown] = useState<"priority" | "status" | null>(null);
+  const [bulkDropdown, setBulkDropdown] = useState<"priority" | "status" | "initiative" | null>(null);
+  const [initiatives, setInitiatives] = useState<{ slug: string; name: string; status: string }[]>([]);
+  const [showNewInitiative, setShowNewInitiative] = useState(false);
+  const [newInitName, setNewInitName] = useState("");
+  const [creatingInit, setCreatingInit] = useState(false);
   const [showAddTask, setShowAddTask] = useState(false);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [newTaskPriority, setNewTaskPriority] = useState("P1 \u2014 This Week");
@@ -234,7 +230,7 @@ export default function TodayView() {
     const selectedTasks = currentTasks.filter((t) => ids.includes(t.id));
     if (selectedTasks.length < 2) return;
 
-    if (!confirm(`Merge ${selectedTasks.length} tasks into one? The task with the highest priority will be kept.`)) return;
+    if (!confirm(`Merge ${selectedTasks.length} tasks into one? AI will synthesize the title and notes.`)) return;
 
     setBulkDropdown(null);
 
@@ -247,34 +243,71 @@ export default function TodayView() {
     const keeper = sorted[0];
     const mergeTargets = sorted.slice(1);
 
-    let done = 0;
-    const total = mergeTargets.length;
-    setBulkProgress(`Merging 0 of ${total}...`);
+    setBulkProgress("Synthesizing merged task...");
 
-    // Build the text to append to the keeper's notes
-    const mergeLines = mergeTargets.map((t) => {
+    // Synthesize title and notes using AI
+    const taskDescriptions = selectedTasks.map((t) => {
+      const title = prop(t, "Task") || prop(t, "Name") || "Untitled";
+      const notes = prop(t, "Notes") || "";
+      const source = prop(t, "Source") || "";
+      return `Title: "${title}"${notes ? `\nNotes: ${notes.slice(0, 300)}` : ""}${source ? `\nSource: ${source}` : ""}`;
+    }).join("\n---\n");
+
+    let synthesizedTitle = prop(keeper, "Task") || prop(keeper, "Name") || "Untitled";
+    let synthesizedNotes = "";
+
+    try {
+      const synthResp = await fetch("/api/synthesize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: `Synthesize these ${selectedTasks.length} duplicate/related tasks into ONE clear action item.\n\n${taskDescriptions}\n\nReturn ONLY two lines, no other text:\nTITLE: <synthesized task title — concise, actionable, captures the full scope>\nNOTES: <one paragraph combining all context, sources, and details from the individual tasks>`,
+        }),
+      });
+      if (synthResp.ok) {
+        const { content: reply } = await synthResp.json();
+        const titleMatch = reply?.match(/TITLE:\s*(.+)/i);
+        const notesMatch = reply?.match(/NOTES:\s*(.+)/is);
+        if (titleMatch) synthesizedTitle = titleMatch[1].trim();
+        if (notesMatch) synthesizedNotes = notesMatch[1].trim();
+      }
+    } catch {
+      // Fall back to simple merge if synthesis fails
+    }
+
+    setBulkProgress(`Updating merged task...`);
+
+    // Update keeper with synthesized title and notes
+    const updateProps: Record<string, unknown> = {
+      Task: { title: [{ text: { content: synthesizedTitle } }] },
+    };
+    const mergeLog = selectedTasks.map((t) => {
       const title = prop(t, "Task") || prop(t, "Name") || "Untitled";
       const source = prop(t, "Source") || "unknown";
-      return `[Merged] "${title}" (Source: ${source})`;
-    }).join("\n\n");
+      return `[Merged] "${title}" (${source})`;
+    }).join("\n");
+    const appendNote = synthesizedNotes
+      ? `${synthesizedNotes}\n\n--- Merged from ${selectedTasks.length} tasks ---\n${mergeLog}`
+      : mergeLog;
 
-    // Update keeper notes via appendNote
     try {
       await fetch("/api/notion/update", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           page_id: keeper.id,
-          properties: {},
-          appendNote: mergeLines,
+          properties: updateProps,
+          appendNote,
         }),
       });
     } catch {
-      // continue even if note append fails
+      // continue even if update fails
     }
 
     // Mark non-keepers as Done
+    let done = 0;
     let failed = 0;
+    const total = mergeTargets.length;
     for (const target of mergeTargets) {
       try {
         const resp = await fetch("/api/notion/update", {
@@ -290,19 +323,76 @@ export default function TodayView() {
         failed++;
       }
       done++;
-      setBulkProgress(`Merging ${done} of ${total}...`);
+      setBulkProgress(`Closing ${done} of ${total} duplicates...`);
     }
 
-    // Remove merged tasks from the list, keep the survivor
-    const mergedIds = new Set(mergeTargets.map((t) => t.id));
-    setTasks((prev) => prev.filter((t) => !mergedIds.has(t.id)));
+    // Update the keeper in the local task list with new title
+    setTasks((prev) => prev.map((t) => {
+      if (t.id === keeper.id) {
+        const updated = { ...t, properties: { ...t.properties } };
+        updated.properties.Task = { ...updated.properties.Task, title: [{ plain_text: synthesizedTitle, text: { content: synthesizedTitle } }] } as any;
+        return updated;
+      }
+      return t;
+    }).filter((t) => !new Set(mergeTargets.map((mt) => mt.id)).has(t.id)));
 
     const msg = failed > 0
       ? `Merged ${done - failed} tasks (${failed} failed)`
-      : `Merged ${done} tasks into keeper`;
+      : `Synthesized ${selectedTasks.length} tasks into: "${synthesizedTitle}"`;
+    setBulkProgress(msg);
+    setTimeout(() => exitBulkMode(), 2500);
+  }, [selectedIds, tasks, exitBulkMode]);
+
+  const handleBulkInitiative = useCallback(async (slug: string) => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBulkDropdown(null);
+    setBulkProgress(`Assigning 0 of ${ids.length}...`);
+    let done = 0;
+    let failed = 0;
+    for (const taskId of ids) {
+      try {
+        const resp = await fetch("/api/initiatives", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slug, pinTask: taskId }),
+        });
+        if (!resp.ok) failed++;
+      } catch { failed++; }
+      done++;
+      setBulkProgress(`Assigning ${done} of ${ids.length}...`);
+    }
+    const msg = failed > 0
+      ? `Assigned ${done - failed} tasks (${failed} failed)`
+      : `Assigned ${done} tasks to initiative`;
     setBulkProgress(msg);
     setTimeout(() => exitBulkMode(), 1500);
-  }, [selectedIds, tasks, exitBulkMode]);
+  }, [selectedIds, exitBulkMode]);
+
+  const handleCreateInitiative = useCallback(async () => {
+    const name = newInitName.trim();
+    if (!name) return;
+    setCreatingInit(true);
+    try {
+      const resp = await fetch("/api/initiatives", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, description: name, keywords: [name.toLowerCase()] }),
+      });
+      if (resp.ok) {
+        const created = await resp.json();
+        setInitiatives((prev) => [...prev, created]);
+        setNewInitName("");
+        setShowNewInitiative(false);
+        // Auto-assign selected tasks to the new initiative
+        if (selectedIds.size > 0 && created.slug) {
+          handleBulkInitiative(created.slug);
+        }
+      }
+    } finally {
+      setCreatingInit(false);
+    }
+  }, [newInitName, selectedIds, handleBulkInitiative]);
 
   useEffect(() => {
     async function load() {
@@ -338,7 +428,7 @@ export default function TodayView() {
         .catch(() => {});
 
       // Fetch independently so one failure doesn't block the others
-      const [taskResult, mtgResult, runResult] = await Promise.allSettled([
+      const [taskResult, mtgResult, gcalResult] = await Promise.allSettled([
         queryNotion({
           and: [
             { property: "Status", status: { does_not_equal: "Done" } },
@@ -352,9 +442,7 @@ export default function TodayView() {
           ],
         }),
         fetchMeetings(localStart.toISOString(), localEnd.toISOString()),
-        fetch(`/api/system?path=${encodeURIComponent("/api/runs/recent?limit=10")}`).then((r) =>
-          r.json()
-        ),
+        fetchGoogleCalendarEvents(localStart.toISOString(), localEnd.toISOString()),
       ]);
 
       const errors: string[] = [];
@@ -363,18 +451,19 @@ export default function TodayView() {
       } else {
         errors.push(`Tasks: ${taskResult.reason}`);
       }
-      if (mtgResult.status === "fulfilled") {
-        setMeetings(mtgResult.value.sort((a: WebexMeeting, b: WebexMeeting) => a.start.localeCompare(b.start)));
-      } else {
+      // Merge Webex + Google Calendar events
+      const webexMeetings = mtgResult.status === "fulfilled" ? mtgResult.value.map((m: WebexMeeting) => ({ ...m, source: m.source || "webex" as const })) : [];
+      const gcalEvents = gcalResult.status === "fulfilled" ? gcalResult.value : [];
+      const allMeetings = [...webexMeetings, ...gcalEvents].sort((a, b) => a.start.localeCompare(b.start));
+      setMeetings(allMeetings);
+      if (mtgResult.status === "rejected" && gcalResult.status === "rejected") {
         errors.push(`Calendar: ${mtgResult.reason}`);
-      }
-      if (runResult.status === "fulfilled") {
-        setRuns(runResult.value);
-      } else {
-        errors.push(`Runs: ${runResult.reason}`);
       }
       if (errors.length > 0) setError(errors.join(" | "));
       setLoading(false);
+
+      // Fetch initiatives (non-blocking)
+      fetch("/api/initiatives").then((r) => r.json()).then(setInitiatives).catch(() => {});
     }
     load();
     const interval = setInterval(load, 60000);
@@ -760,6 +849,67 @@ export default function TodayView() {
                         )}
                       </div>
 
+                      {/* Set Initiative dropdown */}
+                      <div ref={bulkDropdown === "initiative" ? bulkDropdownRef : undefined} className="relative">
+                        <button
+                          onClick={() => setBulkDropdown(bulkDropdown === "initiative" ? null : "initiative")}
+                          className="px-3 py-1 text-xs font-medium text-[var(--text)] bg-[var(--bg)] border border-[var(--border)] rounded-md hover:border-[#38b2ac] transition-colors"
+                        >
+                          Set Initiative
+                        </button>
+                        {bulkDropdown === "initiative" && (
+                          <div className="absolute top-full right-0 mt-1 z-[60] min-w-[200px] bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg py-1 max-h-[240px] overflow-y-auto">
+                            <div className="px-3 py-1 text-[10px] text-[var(--text-dim)] uppercase tracking-wider">
+                              Initiative
+                            </div>
+                            {initiatives.filter((i) => i.status === "active").map((ini) => (
+                              <button
+                                key={ini.slug}
+                                className="block w-full text-left px-3 py-1.5 text-xs text-[#38b2ac] hover:bg-[rgba(56,178,172,0.08)] rounded-md transition-colors"
+                                onClick={() => handleBulkInitiative(ini.slug)}
+                              >
+                                {ini.name}
+                              </button>
+                            ))}
+                            {!showNewInitiative ? (
+                              <button
+                                className="block w-full text-left px-3 py-1.5 text-xs text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[rgba(88,166,255,0.04)] border-t border-[var(--border)] mt-1 pt-1.5"
+                                onClick={() => setShowNewInitiative(true)}
+                              >
+                                + New Initiative
+                              </button>
+                            ) : (
+                              <div className="px-3 py-1.5 border-t border-[var(--border)] mt-1 pt-1.5">
+                                <input
+                                  type="text"
+                                  placeholder="Initiative name..."
+                                  value={newInitName}
+                                  onChange={(e) => setNewInitName(e.target.value)}
+                                  onKeyDown={(e) => { if (e.key === "Enter") handleCreateInitiative(); }}
+                                  className="w-full h-6 px-2 text-[11px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[#38b2ac]"
+                                  autoFocus
+                                />
+                                <div className="flex gap-1 mt-1">
+                                  <button
+                                    onClick={handleCreateInitiative}
+                                    disabled={creatingInit || !newInitName.trim()}
+                                    className="flex-1 h-5 text-[10px] font-medium bg-[#38b2ac] text-white rounded hover:opacity-90 disabled:opacity-40"
+                                  >
+                                    {creatingInit ? "..." : "Create & Assign"}
+                                  </button>
+                                  <button
+                                    onClick={() => { setShowNewInitiative(false); setNewInitName(""); }}
+                                    className="h-5 px-1.5 text-[10px] text-[var(--text-dim)]"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
                       {/* Merge */}
                       <button
                         onClick={handleBulkMerge}
@@ -795,7 +945,7 @@ export default function TodayView() {
                 <span className="text-xs text-[var(--text-dim)]">Select all</span>
               </div>
             )}
-            <div>
+            <div className="max-h-[calc(100vh-280px)] overflow-y-auto [scrollbar-width:none] [-webkit-overflow-scrolling:touch] [&::-webkit-scrollbar]:hidden">
               {loading && (
                 <div className="p-6 text-center text-[var(--text-dim)]">
                   Loading tasks...
@@ -966,31 +1116,6 @@ export default function TodayView() {
             </div>
           </Card>
 
-          <Card>
-            <CardHeader title="Recent Agent Activity" />
-            <div>
-              {(runs || []).map((r, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-3 px-4 py-2 border-b border-[var(--border)]"
-                >
-                  <div
-                    className="w-1.5 h-1.5 rounded-full shrink-0"
-                    style={{
-                      background:
-                        r.status === "success"
-                          ? "var(--green)"
-                          : "var(--red)",
-                    }}
-                  />
-                  <span className="text-[13px] text-[var(--text-dim)] w-16 shrink-0">
-                    {timeAgo(r.run_at)}
-                  </span>
-                  <span className="text-[13px] truncate">{r.task_id}</span>
-                </div>
-              ))}
-            </div>
-          </Card>
         </div>
       </div>
 

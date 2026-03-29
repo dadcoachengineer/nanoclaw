@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from "react";
 import { NotionPage, prop } from "@/lib/notion";
 import EditableBadge from "@/components/EditableBadge";
+import ActionCompose from "@/components/ActionCompose";
 
 /** Check if this is a briefing/prep page (has rich body content) */
 function isRichPage(title: string): boolean {
@@ -175,6 +176,8 @@ export default function TaskDetail({
   const [currentInitiative, setCurrentInitiative] = useState<Initiative | null>(null);
   const [initiativeOpen, setInitiativeOpen] = useState(false);
   const [savingInitiative, setSavingInitiative] = useState(false);
+  const [newInitMode, setNewInitMode] = useState(false);
+  const [newInitName, setNewInitName] = useState("");
   const initiativeRef = useRef<HTMLDivElement>(null);
 
   const originalTitle = prop(page, "Task") || prop(page, "Name") || "Untitled";
@@ -183,6 +186,14 @@ export default function TaskDetail({
   const [titleDraft, setTitleDraft] = useState(originalTitle);
   const [savingTitle, setSavingTitle] = useState(false);
   const titleInputRef = useRef<HTMLInputElement>(null);
+  const [showActions, setShowActions] = useState(false);
+  const [artifacts, setArtifacts] = useState<{ id: string; title: string; intent: string; createdAt: string; charCount: number }[]>([]);
+  const [expandedArtifact, setExpandedArtifact] = useState<string | null>(null);
+  const [artifactContent, setArtifactContent] = useState<string | null>(null);
+  const [taskPeople, setTaskPeople] = useState<{ name: string; email?: string; auto: boolean }[]>([]);
+  const [peopleSearchOpen, setPeopleSearchOpen] = useState(false);
+  const [peopleQuery, setPeopleQuery] = useState("");
+  const [peopleSuggestions, setPeopleSuggestions] = useState<{ name: string; emails: string[] }[]>([]);
   const isRich = isRichPage(title);
 
   // Fetch page blocks for briefing/prep pages
@@ -202,14 +213,76 @@ export default function TaskDetail({
       .then((r) => r.json())
       .then((data: Initiative[]) => {
         setInitiatives(data);
-        // Find which initiative has this task pinned
         const match = data.find((ini) =>
           (ini.pinnedTaskIds || []).includes(page.id)
         );
         if (match) setCurrentInitiative(match);
       })
       .catch(() => {});
+    // Fetch artifacts for this task
+    fetch(`/api/artifacts?taskId=${page.id}`)
+      .then((r) => r.json())
+      .then((data) => { if (Array.isArray(data)) setArtifacts(data); })
+      .catch(() => {});
+    // Load saved people from Notes [People: ...] tag, then auto-detect additional
+    const notesText = prop(page, "Notes") || "";
+    const savedMatch = notesText.match(/\[People:\s*([^\]]+)\]/);
+    const savedNames = savedMatch ? savedMatch[1].split(",").map((n: string) => n.trim()).filter(Boolean) : [];
+    const savedSet = new Set(savedNames.map((n: string) => n.toLowerCase()));
+
+    const taskText = `${originalTitle} ${notesText}`;
+    fetch("/api/people")
+      .then((r) => r.json())
+      .then((people: { name: string; emails: string[] }[]) => {
+        const result: { name: string; email?: string; auto: boolean }[] = [];
+        // Add saved people first
+        for (const name of savedNames) {
+          const match = people.find((p) => p.name.toLowerCase() === name.toLowerCase());
+          result.push({ name: match?.name || name, email: match?.emails?.[0], auto: false });
+        }
+        // Auto-detect additional people from text
+        for (const p of people) {
+          if (!p.name || p.name.length < 4) continue;
+          if (savedSet.has(p.name.toLowerCase())) continue;
+          const escaped = p.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          if (new RegExp(`\\b${escaped}\\b`, "i").test(taskText)) {
+            result.push({ name: p.name, email: p.emails?.[0], auto: true });
+          }
+        }
+        setTaskPeople(result);
+      })
+      .catch(() => {});
   }, [page.id]);
+
+  // Auto-save people list to Notion Notes as [People: Name1, Name2, ...]
+  const peopleInitialized = useRef(false);
+  useEffect(() => {
+    // Skip the first render (initial load sets people from existing data)
+    if (!peopleInitialized.current) {
+      if (taskPeople.length > 0) peopleInitialized.current = true;
+      return;
+    }
+    const names = taskPeople.map((p) => p.name);
+    const tag = names.length > 0 ? `[People: ${names.join(", ")}]` : "";
+    const currentNotes = prop(page, "Notes") || "";
+    // Replace existing tag or append
+    const cleaned = currentNotes.replace(/\[People:[^\]]*\]\s*/g, "").trim();
+    const newNotes = tag ? (cleaned ? `${tag}\n${cleaned}` : tag) : cleaned;
+    // Only update if changed
+    const oldTag = currentNotes.match(/\[People:[^\]]*\]/)?.[0] || "";
+    const newTag = tag;
+    if (oldTag === newTag) return;
+    fetch("/api/notion/update", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        page_id: page.id,
+        properties: {
+          Notes: { rich_text: [{ text: { content: newNotes.slice(0, 2000) } }] },
+        },
+      }),
+    }).catch(() => {});
+  }, [taskPeople, page.id]);
 
   // Close initiative dropdown on outside click
   useEffect(() => {
@@ -428,6 +501,74 @@ export default function TaskDetail({
                           )}
                         </button>
                       ))}
+                      {!newInitMode ? (
+                        <button
+                          className="block w-full text-left px-3 py-1.5 text-xs text-[var(--text-dim)] hover:text-[var(--text)] hover:bg-[rgba(88,166,255,0.04)] border-t border-[var(--border)] mt-1 pt-1.5"
+                          onClick={(e) => { e.stopPropagation(); setNewInitMode(true); }}
+                        >
+                          + New Initiative
+                        </button>
+                      ) : (
+                        <div className="px-3 py-1.5 border-t border-[var(--border)] mt-1 pt-1.5" onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="text"
+                            placeholder="Initiative name..."
+                            value={newInitName}
+                            onChange={(e) => setNewInitName(e.target.value)}
+                            onKeyDown={async (e) => {
+                              if (e.key === "Enter" && newInitName.trim()) {
+                                setSavingInitiative(true);
+                                const resp = await fetch("/api/initiatives", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ name: newInitName.trim(), description: newInitName.trim(), keywords: [newInitName.trim().toLowerCase()] }),
+                                });
+                                if (resp.ok) {
+                                  const created = await resp.json();
+                                  setInitiatives((prev) => [...prev, created]);
+                                  handleInitiativeSelect(created);
+                                }
+                                setNewInitMode(false);
+                                setNewInitName("");
+                                setSavingInitiative(false);
+                              }
+                            }}
+                            className="w-full h-6 px-2 text-[11px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[#38b2ac]"
+                            autoFocus
+                          />
+                          <div className="flex gap-1 mt-1">
+                            <button
+                              onClick={async () => {
+                                if (!newInitName.trim()) return;
+                                setSavingInitiative(true);
+                                const resp = await fetch("/api/initiatives", {
+                                  method: "POST",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ name: newInitName.trim(), description: newInitName.trim(), keywords: [newInitName.trim().toLowerCase()] }),
+                                });
+                                if (resp.ok) {
+                                  const created = await resp.json();
+                                  setInitiatives((prev) => [...prev, created]);
+                                  handleInitiativeSelect(created);
+                                }
+                                setNewInitMode(false);
+                                setNewInitName("");
+                                setSavingInitiative(false);
+                              }}
+                              disabled={!newInitName.trim()}
+                              className="flex-1 h-5 text-[10px] font-medium bg-[#38b2ac] text-white rounded hover:opacity-90 disabled:opacity-40"
+                            >
+                              Create
+                            </button>
+                            <button
+                              onClick={() => { setNewInitMode(false); setNewInitName(""); }}
+                              className="h-5 px-1.5 text-[10px] text-[var(--text-dim)]"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -475,6 +616,105 @@ export default function TaskDetail({
                 <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-1">Due Date</div>
                 <div className="text-sm text-[var(--text)]">{dueDate}</div>
               </div>
+            )}
+          </div>
+
+          {/* People */}
+          <div>
+            <div className="text-xs text-[var(--text-dim)] uppercase tracking-wider mb-2">People</div>
+            <div className="flex flex-wrap gap-1.5">
+              {taskPeople.map((p) => (
+                <div key={p.name} className="flex items-center gap-1 px-2 py-1 rounded-full bg-[rgba(88,166,255,0.08)] text-xs text-[var(--accent)]">
+                  <span>{p.name}</span>
+                  <button
+                    onClick={() => setTaskPeople((prev) => prev.filter((pp) => pp.name !== p.name))}
+                    className="text-[var(--text-dim)] hover:text-[var(--red)] text-[10px] ml-0.5"
+                  >
+                    &times;
+                  </button>
+                </div>
+              ))}
+              {!peopleSearchOpen ? (
+                <button
+                  onClick={() => setPeopleSearchOpen(true)}
+                  className="px-2 py-1 rounded-full text-xs text-[var(--text-dim)] hover:text-[var(--accent)] border border-dashed border-[var(--border)] hover:border-[var(--accent)]"
+                >
+                  + Add person
+                </button>
+              ) : (
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={peopleQuery}
+                    onChange={(e) => {
+                      setPeopleQuery(e.target.value);
+                      if (e.target.value.length >= 2) {
+                        fetch(`/api/people`).then((r) => r.json()).then((all: { name: string; emails: string[] }[]) => {
+                          const q = e.target.value.toLowerCase();
+                          const existing = new Set(taskPeople.map((p) => p.name.toLowerCase()));
+                          setPeopleSuggestions(all.filter((p) =>
+                            p.name.toLowerCase().includes(q) && !existing.has(p.name.toLowerCase())
+                          ).slice(0, 6));
+                        }).catch(() => {});
+                      } else {
+                        setPeopleSuggestions([]);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") { setPeopleSearchOpen(false); setPeopleQuery(""); setPeopleSuggestions([]); }
+                      if (e.key === "Enter" && peopleQuery.trim().length >= 2) {
+                        const name = peopleQuery.trim();
+                        // Check if there's an exact suggestion match — use it
+                        const exactMatch = peopleSuggestions.find((p) => p.name.toLowerCase() === name.toLowerCase());
+                        if (exactMatch) {
+                          setTaskPeople((prev) => [...prev, { name: exactMatch.name, email: exactMatch.emails?.[0], auto: false }]);
+                        } else {
+                          // Hot-seed: add to task AND person index
+                          setTaskPeople((prev) => [...prev, { name, auto: false }]);
+                          fetch("/api/people", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ name }),
+                          }).catch(() => {});
+                        }
+                        setPeopleSearchOpen(false);
+                        setPeopleQuery("");
+                        setPeopleSuggestions([]);
+                      }
+                    }}
+                    placeholder="Search..."
+                    className="h-7 w-40 px-2 text-xs bg-[var(--bg)] border border-[var(--accent)] rounded-full text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none"
+                    autoFocus
+                  />
+                  {peopleQuery.length >= 2 && (
+                    <div className="absolute top-full left-0 mt-1 z-30 w-56 bg-[var(--surface)] border border-[var(--border)] rounded-lg shadow-lg py-1 max-h-[180px] overflow-y-auto">
+                      {peopleSuggestions.map((p) => (
+                        <button
+                          key={p.name}
+                          onClick={() => {
+                            setTaskPeople((prev) => [...prev, { name: p.name, email: p.emails?.[0], auto: false }]);
+                            setPeopleSearchOpen(false);
+                            setPeopleQuery("");
+                            setPeopleSuggestions([]);
+                          }}
+                          className="w-full text-left px-3 py-1.5 text-xs text-[var(--text)] hover:bg-[rgba(88,166,255,0.06)]"
+                        >
+                          <div>{p.name}</div>
+                          {p.emails?.[0] && <div className="text-[10px] text-[var(--text-dim)]">{p.emails[0]}</div>}
+                        </button>
+                      ))}
+                      {peopleSuggestions.length === 0 && (
+                        <div className="px-3 py-1.5 text-[11px] text-[var(--text-dim)]">
+                          Press <span className="text-[var(--accent)]">Enter</span> to add &ldquo;{peopleQuery}&rdquo; as a new person
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+            {taskPeople.length === 0 && !peopleSearchOpen && (
+              <div className="text-[11px] text-[var(--text-dim)] italic mt-1">No people detected — click + to add</div>
             )}
           </div>
 
@@ -574,6 +814,62 @@ export default function TaskDetail({
           </div>
         </div>
 
+        {/* Artifacts */}
+        {artifacts.length > 0 && (
+          <div className="px-6 py-4 border-t border-[var(--border)]">
+            <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] font-medium mb-2">
+              Artifacts ({artifacts.length})
+            </div>
+            {artifacts.map((a) => (
+              <div key={a.id} className="mb-2">
+                <button
+                  onClick={async () => {
+                    if (expandedArtifact === a.id) { setExpandedArtifact(null); return; }
+                    setExpandedArtifact(a.id);
+                    setArtifactContent(null);
+                    try {
+                      const resp = await fetch(`/api/artifacts?id=${a.id}`);
+                      const data = await resp.json();
+                      if (data.content) setArtifactContent(data.content);
+                    } catch { /* ignore */ }
+                  }}
+                  className="w-full text-left flex items-center gap-2 rounded-lg px-3 py-2 hover:bg-[rgba(88,166,255,0.04)] transition-colors"
+                >
+                  <div className="w-6 h-6 rounded bg-[rgba(63,185,80,0.12)] flex items-center justify-center text-[10px] font-bold text-[var(--green)] shrink-0">A</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium text-[var(--text)] truncate">{a.title}</div>
+                    <div className="text-[10px] text-[var(--text-dim)]">
+                      {new Date(a.createdAt).toLocaleDateString()} — {a.charCount.toLocaleString()} chars
+                    </div>
+                  </div>
+                  <span className="text-[var(--text-dim)] text-xs">{expandedArtifact === a.id ? "\u25BE" : "\u25B8"}</span>
+                </button>
+                {expandedArtifact === a.id && artifactContent && (
+                  <div className="mt-1 bg-[var(--bg)] rounded-lg px-4 py-3 text-xs text-[var(--text)] max-h-[300px] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden leading-relaxed space-y-1">
+                    {artifactContent.split("\n").map((line, i) => {
+                      if (line.startsWith("---") || line.match(/^(title|intent|created|taskId|taskTitle|project|sources):/)) return null;
+                      if (line.startsWith("### ")) return <h3 key={i} className="text-xs font-bold text-[var(--text-bright)] mt-3 mb-1">{line.replace("### ", "")}</h3>;
+                      if (line.startsWith("## ")) return <h2 key={i} className="text-sm font-bold text-[var(--text-bright)] mt-3 mb-1">{line.replace("## ", "")}</h2>;
+                      if (line.startsWith("# ")) return <h2 key={i} className="text-sm font-bold text-[var(--text-bright)] mt-3 mb-1">{line.replace("# ", "")}</h2>;
+                      if (line.startsWith("- ") || line.startsWith("* ")) return <div key={i} className="flex gap-2"><span className="text-[var(--text-dim)] shrink-0">&bull;</span><span>{line.slice(2)}</span></div>;
+                      if (!line.trim()) return <div key={i} className="h-1.5" />;
+                      return <p key={i}>{line}</p>;
+                    })}
+                    <button
+                      onClick={async () => {
+                        try { await navigator.clipboard.writeText(artifactContent); } catch { /* ignore */ }
+                      }}
+                      className="mt-2 text-[10px] text-[var(--accent)] hover:underline"
+                    >
+                      Copy to clipboard
+                    </button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Footer: complete action */}
         {!done && (
           <div className="px-6 py-4 border-t border-[var(--border)] bg-[var(--surface2)]">
@@ -593,10 +889,23 @@ export default function TaskDetail({
               >
                 {completing ? "Saving..." : "Mark Done"}
               </button>
+              {!isRich && (
+                <button
+                  onClick={() => setShowActions(true)}
+                  className="px-4 py-2 bg-[var(--accent)] text-white text-sm font-medium rounded-md hover:opacity-90 whitespace-nowrap"
+                >
+                  Take Action
+                </button>
+              )}
             </div>
           </div>
         )}
       </div>
+
+      {/* Action Compose slide-over */}
+      {showActions && (
+        <ActionCompose page={page} onClose={() => setShowActions(false)} />
+      )}
     </div>
   );
 }

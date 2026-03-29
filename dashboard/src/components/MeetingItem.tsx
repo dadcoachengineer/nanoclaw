@@ -155,9 +155,16 @@ export default function MeetingItem({
             <div className="text-sm font-medium text-[var(--purple)]">
               {meeting.title}
             </div>
-            {meeting.hostDisplayName && meeting.hostEmail !== "jasheare@cisco.com" && (
-              <div className="text-[11px] text-[var(--text-dim)]">{meeting.hostDisplayName}</div>
-            )}
+            <div className="flex items-center gap-2">
+              {meeting.hostDisplayName && meeting.hostEmail !== "jasheare@cisco.com" && (
+                <span className="text-[11px] text-[var(--text-dim)]">{meeting.hostDisplayName}</span>
+              )}
+              {meeting.source === "google" && meeting.calendarName && (
+                <span className="text-[9px] uppercase tracking-wider text-[var(--green)] bg-[rgba(63,185,80,0.12)] px-1.5 py-0.5 rounded-full">
+                  {meeting.calendarName}
+                </span>
+              )}
+            </div>
           </div>
           {onClick && <div className="text-[var(--text-dim)] text-xs shrink-0">›</div>}
         </div>
@@ -192,9 +199,21 @@ export default function MeetingItem({
             >
               {meeting.title}
             </div>
-            {meeting.hostDisplayName && meeting.hostEmail !== "jasheare@cisco.com" && (
-              <div className="text-[11px] text-[var(--text-dim)]">{meeting.hostDisplayName}</div>
-            )}
+            <div className="flex items-center gap-2">
+              {meeting.hostDisplayName && meeting.hostEmail !== "jasheare@cisco.com" && (
+                <span className="text-[11px] text-[var(--text-dim)]">{meeting.hostDisplayName}</span>
+              )}
+              {meeting.source === "google" && meeting.calendarName && (
+                <span className="text-[9px] uppercase tracking-wider text-[var(--green)] bg-[rgba(63,185,80,0.12)] px-1.5 py-0.5 rounded-full">
+                  {meeting.calendarName}
+                </span>
+              )}
+              {meeting.location && (
+                <span className="text-[10px] text-[var(--text-dim)] truncate max-w-[120px]" title={meeting.location}>
+                  {meeting.location}
+                </span>
+              )}
+            </div>
           </div>
           {onClick && <div className="text-[var(--text-dim)] text-xs shrink-0">›</div>}
         </div>

@@ -1,14 +1,29 @@
 import { NextResponse } from "next/server";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import {
   loadAuthConfig,
   verifyPassword,
   verifyTOTP,
   createSessionCookie,
 } from "@/lib/auth";
+import { isRateLimited, recordFailedAttempt, clearAttempts } from "@/lib/rate-limit";
 
 export async function POST(request: Request) {
   try {
+    const hdrs = await headers();
+    const ip = hdrs.get("x-forwarded-for")?.split(",")[0]?.trim()
+      || hdrs.get("x-real-ip")
+      || "unknown";
+
+    // Rate limit check
+    const { limited, retryAfterSec } = isRateLimited(ip);
+    if (limited) {
+      return NextResponse.json(
+        { error: `Too many login attempts. Try again in ${Math.ceil(retryAfterSec / 60)} minutes.` },
+        { status: 429, headers: { "Retry-After": String(retryAfterSec) } },
+      );
+    }
+
     const body = await request.json();
     const { username, password, totpCode } = body;
 
@@ -29,6 +44,7 @@ export async function POST(request: Request) {
 
     // Verify username
     if (username !== config.username) {
+      recordFailedAttempt(ip);
       return NextResponse.json(
         { error: "Invalid credentials" },
         { status: 401 },
@@ -37,6 +53,7 @@ export async function POST(request: Request) {
 
     // Verify password
     if (!verifyPassword(password, config.passwordHash, config.salt)) {
+      recordFailedAttempt(ip);
       return NextResponse.json(
         { error: "Invalid credentials" },
         { status: 401 },
@@ -45,11 +62,15 @@ export async function POST(request: Request) {
 
     // Verify TOTP
     if (!verifyTOTP(config.totpSecret, totpCode)) {
+      recordFailedAttempt(ip);
       return NextResponse.json(
         { error: "Invalid authenticator code" },
         { status: 401 },
       );
     }
+
+    // Successful login — clear rate limit history
+    clearAttempts(ip);
 
     // Create session
     const session = createSessionCookie();

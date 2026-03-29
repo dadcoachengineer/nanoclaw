@@ -3,7 +3,10 @@ import path from "path";
 import { execFileSync } from "child_process";
 import { requireAuth } from "@/lib/require-auth";
 
-const PROJECT_ROOT = process.env.NANOCLAW_ROOT || path.join(process.cwd(), "..");
+// Computed at runtime — opaque to turbopack's static analysis
+function getProjectRoot() {
+  return process.env.NANOCLAW_ROOT || path.join(process.cwd(), "..");
+}
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 
 /**
@@ -35,15 +38,12 @@ export async function GET(req: NextRequest) {
     const queryVec = embedData.embeddings[0];
 
     // Run vector search via subprocess (native SQLite modules don't work in Turbopack)
+    const root = getProjectRoot();
+    const scriptPath = [root, "scripts", "vector-search.cjs"].join(path.sep);
     const result = execFileSync(
       "node",
-      [
-        path.join(PROJECT_ROOT, "scripts", "vector-search.cjs"),
-        JSON.stringify(queryVec),
-        String(limit * 2),
-        sourceFilter,
-      ],
-      { cwd: PROJECT_ROOT, timeout: 10000, encoding: "utf-8" }
+      [scriptPath, JSON.stringify(queryVec), String(limit * 2), sourceFilter],
+      { cwd: root, timeout: 10000, encoding: "utf-8" }
     );
 
     const results = JSON.parse(result).slice(0, limit);

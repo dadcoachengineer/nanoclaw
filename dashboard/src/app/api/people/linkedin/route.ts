@@ -1,0 +1,86 @@
+import { NextRequest, NextResponse } from "next/server";
+import { requireAuth } from "@/lib/require-auth";
+import fs from "fs";
+import path from "path";
+
+const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
+const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
+
+/**
+ * POST /api/people/linkedin
+ * Body: { key: string, linkedinUrl: string }
+ *
+ * Fetches the LinkedIn public profile page and extracts available data.
+ * LinkedIn blocks unauthenticated scraping, so we extract what we can from
+ * the page metadata and Open Graph tags.
+ */
+export async function POST(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  try {
+    const { key, linkedinUrl } = await req.json();
+    if (!key || !linkedinUrl) {
+      return NextResponse.json({ error: "key and linkedinUrl required" }, { status: 400 });
+    }
+
+    // Validate it's a LinkedIn URL
+    if (!linkedinUrl.includes("linkedin.com/in/")) {
+      return NextResponse.json({ error: "Not a valid LinkedIn profile URL" }, { status: 400 });
+    }
+
+    const extracted: { title?: string; company?: string; headline?: string; image?: string; location?: string } = {};
+
+    // Try fetching — LinkedIn returns limited data but OG tags and meta are often available
+    try {
+      const resp = await fetch(linkedinUrl, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+          "Accept": "text/html",
+        },
+        redirect: "follow",
+      });
+      const html = await resp.text();
+
+      // Extract Open Graph tags (LinkedIn serves these even on auth walls)
+      const ogTitle = html.match(/<meta[^>]*property="og:title"[^>]*content="([^"]+)"/)?.[1];
+      const ogDesc = html.match(/<meta[^>]*property="og:description"[^>]*content="([^"]+)"/)?.[1];
+      const ogImage = html.match(/<meta[^>]*property="og:image"[^>]*content="([^"]+)"/)?.[1];
+
+      if (ogTitle) {
+        // OG title format: "Name - Title - Company | LinkedIn"
+        const parts = ogTitle.split(" - ");
+        if (parts.length >= 3) {
+          extracted.title = parts[1]?.trim();
+          extracted.company = parts[2]?.replace(/\s*\|.*/, "").trim();
+        } else if (parts.length === 2) {
+          extracted.headline = parts[1]?.replace(/\s*\|.*/, "").trim();
+        }
+      }
+      if (ogDesc) extracted.headline = ogDesc.replace(/\s*·.*/, "").trim();
+      if (ogImage && !ogImage.includes("ghost")) extracted.image = ogImage;
+    } catch {
+      // Fetch failed — continue with just saving the URL
+    }
+
+    // Save to person index
+    const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
+    const normalizedKey = key.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+    const person = index[normalizedKey];
+
+    if (person) {
+      person.linkedinUrl = linkedinUrl;
+      if (extracted.title && !person.jobTitle) person.jobTitle = extracted.title;
+      if (extracted.company && !person.company) person.company = extracted.company;
+      if (extracted.headline) person.linkedinHeadline = extracted.headline;
+      if (extracted.image && !person.avatar) person.avatar = extracted.image;
+      if (extracted.location) person.location = extracted.location;
+
+      fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
+    }
+
+    return NextResponse.json({ extracted, saved: !!person });
+  } catch (err) {
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}
