@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { AuthInterceptor } from "./auth-interceptor";
+// Auth is handled by middleware (HMAC session validation in Edge runtime).
+// No client-side interceptor needed.
 
 export const metadata: Metadata = {
   title: "Mission Control",
@@ -15,7 +16,6 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="font-sans antialiased">
-        <AuthInterceptor />
         {children}
       </body>
     </html>

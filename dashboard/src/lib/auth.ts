@@ -155,47 +155,91 @@ function deriveKey(): Buffer {
   return crypto.createHash("sha256").update(getSessionSecret()).digest();
 }
 
+/**
+ * Session token format: base64url(payload).base64url(hmac-sha256-signature)
+ *
+ * This format can be verified in BOTH Node.js and Edge runtime (Web Crypto API).
+ * The payload is NOT encrypted (it's just username + expiry) but it IS
+ * tamper-proof via HMAC. No sensitive data in the payload.
+ */
 export function encryptSession(data: SessionPayload): string {
-  const key = deriveKey();
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-
-  const plaintext = JSON.stringify(data);
-  const encrypted = Buffer.concat([
-    cipher.update(plaintext, "utf8"),
-    cipher.final(),
-  ]);
-  const authTag = cipher.getAuthTag();
-
-  // iv (12) + encrypted + authTag (16)
-  return Buffer.concat([iv, encrypted, authTag]).toString("base64url");
+  const payload = Buffer.from(JSON.stringify(data)).toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", getSessionSecret())
+    .update(payload)
+    .digest("base64url");
+  return `${payload}.${sig}`;
 }
 
 export function decryptSession(token: string): SessionPayload | null {
   try {
-    const key = deriveKey();
-    const raw = Buffer.from(token, "base64url");
+    const [payload, sig] = token.split(".");
+    if (!payload || !sig) return null;
 
-    if (raw.length < 12 + 16) return null;
+    // Verify HMAC signature
+    const expectedSig = crypto
+      .createHmac("sha256", getSessionSecret())
+      .update(payload)
+      .digest("base64url");
 
-    const iv = raw.subarray(0, 12);
-    const authTag = raw.subarray(raw.length - 16);
-    const encrypted = raw.subarray(12, raw.length - 16);
+    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
+      return null;
+    }
 
-    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-    decipher.setAuthTag(authTag);
+    const data = JSON.parse(
+      Buffer.from(payload, "base64url").toString("utf8")
+    ) as SessionPayload;
 
-    const decrypted = Buffer.concat([
-      decipher.update(encrypted),
-      decipher.final(),
-    ]);
+    if (!data.username || !data.expiresAt) return null;
+    if (Date.now() > data.expiresAt) return null;
 
-    const payload = JSON.parse(decrypted.toString("utf8")) as SessionPayload;
+    return data;
+  } catch {
+    return null;
+  }
+}
 
-    if (!payload.username || !payload.expiresAt) return null;
-    if (Date.now() > payload.expiresAt) return null;
+/**
+ * Verify a session token using ONLY Web Crypto API (Edge runtime compatible).
+ * Returns the payload if valid, null otherwise.
+ */
+export async function verifySessionEdge(
+  token: string,
+  secret: string
+): Promise<SessionPayload | null> {
+  try {
+    const [payload, sig] = token.split(".");
+    if (!payload || !sig) return null;
 
-    return payload;
+    const encoder = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"]
+    );
+
+    // Decode the signature from base64url
+    const sigBytes = Uint8Array.from(
+      atob(sig.replace(/-/g, "+").replace(/_/g, "/")),
+      (c) => c.charCodeAt(0)
+    );
+
+    const valid = await crypto.subtle.verify(
+      "HMAC",
+      key,
+      sigBytes,
+      encoder.encode(payload)
+    );
+
+    if (!valid) return null;
+
+    const data = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))) as SessionPayload;
+    if (!data.username || !data.expiresAt) return null;
+    if (Date.now() > data.expiresAt) return null;
+
+    return data;
   } catch {
     return null;
   }
