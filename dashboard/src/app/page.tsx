@@ -54,6 +54,16 @@ export default function Home() {
           <span className="text-sm text-[var(--text-dim)]">
             {fmtDate(new Date())}
           </span>
+          <button
+            onClick={async () => {
+              await fetch("/api/auth/logout", { method: "POST" });
+              window.location.href = "/login";
+            }}
+            className="px-3 py-1.5 rounded-md text-[13px] border border-transparent text-[var(--text-dim)] hover:text-[var(--text)] hover:border-[var(--border)] transition-colors"
+            title="Sign out"
+          >
+            Sign Out
+          </button>
         </div>
       </header>
 
