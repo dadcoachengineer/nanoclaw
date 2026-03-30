@@ -482,11 +482,16 @@ export default function TodayView() {
       // Fetch initiatives (non-blocking)
       fetch("/api/initiatives").then((r) => r.json()).then(setInitiatives).catch(() => {});
 
-      // Fetch triage inbox
-      fetch("/api/triage?suggest=true").then((r) => r.json()).then((data) => {
+      // Fetch triage inbox — first load without suggestions (fast), then with
+      fetch("/api/triage").then((r) => r.json()).then((data) => {
         setTriageInbox(data.inbox || []);
-        setTriageSuggestions(data.suggestions || {});
         setTriageLoaded(true);
+        // Then fetch suggestions in background (Ollama call, may be slow)
+        if ((data.inbox || []).length > 0 && data.decisionCount >= 5) {
+          fetch("/api/triage?suggest=true").then((r) => r.json()).then((sugData) => {
+            setTriageSuggestions(sugData.suggestions || {});
+          }).catch(() => {});
+        }
       }).catch(() => setTriageLoaded(true));
     }
     load();
