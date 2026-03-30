@@ -88,6 +88,10 @@ export const DASHBOARD_PORT = parseInt(
   process.env.DASHBOARD_PORT || '3939',
   10,
 );
+
+// Database backend: 'sqlite' (current), 'dual' (write both), 'postgres' (PG only)
+export const DATA_BACKEND = (process.env.DATA_BACKEND || 'sqlite') as 'sqlite' | 'dual' | 'postgres';
+export const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://nanoclaw@localhost:5432/nanoclaw';
 export const DASHBOARD_ENABLED =
   (process.env.DASHBOARD_ENABLED || 'true') !== 'false';
 
