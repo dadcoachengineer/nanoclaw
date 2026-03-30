@@ -376,19 +376,47 @@ export default function TaskDetail({
   // Parse Webex deep link IDs from notes
   const webexRoomId = notes?.match(/webex_room:(\S+)/)?.[1] || "";
   const webexMsgId = notes?.match(/webex_msg:(\S+)/)?.[1] || "";
-  // Parse source recording/file IDs for archive links
+  // Parse source IDs and meeting names for archive links
   const recordingId = notes?.match(/file_id:\s*(\S+)/)?.[1] || notes?.match(/Recording:\s*(\S+)/)?.[1] || "";
   const webexMeetingId = notes?.match(/webex_meeting:(\S+)/)?.[1] || "";
-  // Determine archive type from source
+  const meetingName = notes?.match(/(?:From (?:Webex )?meeting|From recording|From meeting):\s*([^\n—]+)/i)?.[1]?.trim() || "";
   const sourceField = prop(page, "Source") || "";
-  const archiveType = sourceField.includes("Transcript") ? "transcripts"
-    : sourceField.includes("PLAUD") ? "plaud"
-    : sourceField.includes("Webex Message") ? "messages"
-    : sourceField.includes("Webex AI") ? "summaries"
-    : sourceField.includes("Boox") ? "boox"
-    : sourceField.includes("Gmail") ? "emails"
-    : "";
-  const archiveId = recordingId || webexMeetingId || "";
+
+  // Source provenance state — resolved async
+  const [provenanceLink, setProvenanceLink] = useState<{ type: string; id: string; title: string } | null>(null);
+  useEffect(() => {
+    // Try explicit IDs first
+    const explicitId = recordingId || webexMeetingId;
+    if (explicitId) {
+      const archiveType = sourceField.includes("Transcript") ? "transcripts"
+        : sourceField.includes("PLAUD") ? "plaud"
+        : sourceField.includes("Webex Message") ? "messages"
+        : sourceField.includes("Webex AI") ? "summaries"
+        : sourceField.includes("Boox") ? "boox"
+        : sourceField.includes("Gmail") ? "emails" : "transcripts";
+      fetch(`/api/archive?type=${archiveType}&id=${explicitId}`).then((r) => {
+        if (r.ok) return r.json();
+        return null;
+      }).then((data) => {
+        if (data && !data.error) setProvenanceLink({ type: archiveType, id: explicitId, title: data.title });
+      }).catch(() => {});
+      return;
+    }
+    // Fallback: search archive by meeting name
+    if (meetingName) {
+      const searchName = meetingName.replace(/\s*—\s*\d{4}.*$/, "").trim();
+      // Search across transcripts, summaries, plaud
+      Promise.all(["transcripts", "summaries", "plaud"].map((type) =>
+        fetch(`/api/archive?type=${type}&q=${encodeURIComponent(searchName)}`).then((r) => r.json()).catch(() => ({ items: [] }))
+      )).then(([trans, summ, plaud]) => {
+        const match = (trans.items?.[0]) || (summ.items?.[0]) || (plaud.items?.[0]);
+        if (match) {
+          const type = trans.items?.[0] ? "transcripts" : summ.items?.[0] ? "summaries" : "plaud";
+          setProvenanceLink({ type, id: match.id, title: match.title });
+        }
+      });
+    }
+  }, [recordingId, webexMeetingId, meetingName, sourceField]);
   // Strip the IDs from displayed notes
   const displayNotes = notes
     ?.replace(/\s*webex_room:\S+/g, "")
@@ -823,24 +851,23 @@ export default function TaskDetail({
                 Open in Webex &rarr;
               </a>
             )}
-            {archiveType && archiveId && (
+            {provenanceLink && (
               <button
                 onClick={async () => {
                   try {
-                    const resp = await fetch(`/api/archive?type=${archiveType}&id=${archiveId}`);
+                    const resp = await fetch(`/api/archive?type=${provenanceLink.type}&id=${provenanceLink.id}`);
                     if (resp.ok) {
                       const data = await resp.json();
-                      // Open in a simple modal-like view
                       const w = window.open("", "_blank", "width=700,height=600");
                       if (w) {
-                        w.document.write(`<html><head><title>${data.title || "Source"}</title><style>body{font-family:system-ui;background:#1a1a2e;color:#e0e0e0;padding:2rem;line-height:1.6}h1{font-size:1.1rem;color:#58a6ff}pre{white-space:pre-wrap;font-size:0.85rem;}</style></head><body><h1>${data.title || "Source Content"}</h1><p style="color:#888;font-size:0.8rem">${data.date || ""} &middot; ${data.source || archiveType}</p><pre>${(data.content || "").replace(/</g,"&lt;")}</pre></body></html>`);
+                        w.document.write(`<html><head><title>${data.title || "Source"}</title><style>body{font-family:system-ui;background:#1a1a2e;color:#e0e0e0;padding:2rem;line-height:1.6;max-width:700px}h1{font-size:1.1rem;color:#58a6ff}h2{font-size:0.95rem;color:#bc8cff;margin-top:1.5rem}.meta{color:#888;font-size:0.8rem;margin-bottom:1rem}pre{white-space:pre-wrap;font-size:0.85rem;line-height:1.5}</style></head><body><h1>${(data.title || "Source Content").replace(/</g,"&lt;")}</h1><div class="meta">${(data.date || "").slice(0,10)} &middot; ${data.source || provenanceLink.type}${data.speakers ? " &middot; " + data.speakers.join(", ") : ""}</div><pre>${(data.content || "").replace(/</g,"&lt;")}</pre></body></html>`);
                       }
                     }
                   } catch {}
                 }}
                 className="text-xs text-[var(--purple)] hover:underline"
               >
-                View Source &rarr;
+                View Source: {provenanceLink.title.slice(0, 40)}{provenanceLink.title.length > 40 ? "..." : ""} &rarr;
               </button>
             )}
           </div>

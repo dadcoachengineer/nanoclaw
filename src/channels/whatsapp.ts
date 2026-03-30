@@ -17,7 +17,11 @@ import {
   ASSISTANT_NAME,
   STORE_DIR,
 } from '../config.js';
-import { getLastGroupSync, setLastGroupSync, updateChatName } from '../db-adapter.js';
+import {
+  getLastGroupSync,
+  setLastGroupSync,
+  updateChatName,
+} from '../db-adapter.js';
 import { logger } from '../logger.js';
 import {
   Channel,

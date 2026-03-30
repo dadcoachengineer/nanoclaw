@@ -13,7 +13,12 @@ import { DATA_BACKEND } from './config.js';
 import { logger } from './logger.js';
 import * as sqlite from './db.js';
 import * as pg from './pg-writes.js';
-import type { NewMessage, RegisteredGroup, ScheduledTask, TaskRunLog } from './types.js';
+import type {
+  NewMessage,
+  RegisteredGroup,
+  ScheduledTask,
+  TaskRunLog,
+} from './types.js';
 
 const dual = DATA_BACKEND === 'dual' || DATA_BACKEND === 'postgres';
 
@@ -59,7 +64,10 @@ export function storeChatMetadata(
   isGroup?: boolean,
 ): void {
   sqlite.storeChatMetadata(chatJid, timestamp, name, channel, isGroup);
-  pgWrite(() => pg.pgStoreChatMetadata(chatJid, timestamp, name, channel, isGroup), 'storeChatMetadata');
+  pgWrite(
+    () => pg.pgStoreChatMetadata(chatJid, timestamp, name, channel, isGroup),
+    'storeChatMetadata',
+  );
 }
 
 export function updateChatName(chatJid: string, name: string): void {
@@ -92,7 +100,9 @@ export function storeMessageDirect(msg: {
 }
 
 export function createTask(
-  task: Omit<ScheduledTask, 'last_run' | 'last_result' | 'model'> & { model?: string | null },
+  task: Omit<ScheduledTask, 'last_run' | 'last_result' | 'model'> & {
+    model?: string | null;
+  },
 ): void {
   sqlite.createTask(task);
   pgWrite(() => pg.pgCreateTask(task), 'createTask');
@@ -100,7 +110,12 @@ export function createTask(
 
 export function updateTask(
   id: string,
-  updates: Partial<Pick<ScheduledTask, 'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'>>,
+  updates: Partial<
+    Pick<
+      ScheduledTask,
+      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
+    >
+  >,
 ): void {
   sqlite.updateTask(id, updates);
   pgWrite(() => pg.pgUpdateTask(id, updates), 'updateTask');
@@ -111,9 +126,16 @@ export function deleteTask(id: string): void {
   pgWrite(() => pg.pgDeleteTask(id), 'deleteTask');
 }
 
-export function updateTaskAfterRun(id: string, nextRun: string | null, lastResult: string): void {
+export function updateTaskAfterRun(
+  id: string,
+  nextRun: string | null,
+  lastResult: string,
+): void {
   sqlite.updateTaskAfterRun(id, nextRun, lastResult);
-  pgWrite(() => pg.pgUpdateTaskAfterRun(id, nextRun, lastResult), 'updateTaskAfterRun');
+  pgWrite(
+    () => pg.pgUpdateTaskAfterRun(id, nextRun, lastResult),
+    'updateTaskAfterRun',
+  );
 }
 
 export function logTaskRun(log: TaskRunLog): void {

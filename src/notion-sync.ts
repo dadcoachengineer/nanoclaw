@@ -27,9 +27,7 @@ async function notionFetch(
 ): Promise<any> {
   const { default: fetch } = await import('node-fetch');
   const { HttpsProxyAgent } = await import('https-proxy-agent');
-  const agent = new HttpsProxyAgent(
-    `http://x:${ONECLI_TOKEN}@localhost:10255`,
-  );
+  const agent = new HttpsProxyAgent(`http://x:${ONECLI_TOKEN}@localhost:10255`);
 
   const resp = await fetch(url, {
     method,
@@ -82,7 +80,11 @@ function buildNotionProperties(task: PendingTask): Record<string, unknown> {
   return props;
 }
 
-async function syncOutbound(): Promise<{ created: number; updated: number; errors: number }> {
+async function syncOutbound(): Promise<{
+  created: number;
+  updated: number;
+  errors: number;
+}> {
   const result = { created: 0, updated: 0, errors: 0 };
 
   // Get tasks that need syncing to Notion
@@ -124,10 +126,10 @@ async function syncOutbound(): Promise<{ created: number; updated: number; error
 
         if (resp.id) {
           // Store the Notion page ID back in PG
-          await query(
-            'UPDATE tasks SET notion_page_id = $1 WHERE id = $2',
-            [resp.id, task.id],
-          );
+          await query('UPDATE tasks SET notion_page_id = $1 WHERE id = $2', [
+            resp.id,
+            task.id,
+          ]);
           result.created++;
         } else {
           throw new Error(resp.message || 'Failed to create Notion page');
@@ -222,10 +224,9 @@ export function stopNotionSync(): void {
 
 /** Mark a task as needing sync to Notion */
 export async function markTaskForSync(taskId: string): Promise<void> {
-  await query(
-    `UPDATE tasks SET notion_sync_status = 'pending' WHERE id = $1`,
-    [taskId],
-  );
+  await query(`UPDATE tasks SET notion_sync_status = 'pending' WHERE id = $1`, [
+    taskId,
+  ]);
 }
 
 /** Create a task in PG and queue it for Notion sync */

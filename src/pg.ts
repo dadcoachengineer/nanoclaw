@@ -2,11 +2,11 @@
  * PostgreSQL connection pool for NanoClaw Mission Control.
  * Used by the main process, pipelines, and dashboard API routes.
  */
-import pg from "pg";
-import { logger } from "./logger.js";
+import pg from 'pg';
+import { logger } from './logger.js';
 
 const DATABASE_URL =
-  process.env.DATABASE_URL || "postgresql://nanoclaw@localhost:5432/nanoclaw";
+  process.env.DATABASE_URL || 'postgresql://nanoclaw@localhost:5432/nanoclaw';
 
 let _pool: pg.Pool | null = null;
 
@@ -19,7 +19,7 @@ export function getPool(): pg.Pool {
       connectionTimeoutMillis: 5000,
     });
 
-    _pool.on("error", (err) => {
+    _pool.on('error', (err) => {
       logger.error(`PostgreSQL pool error: ${err.message}`);
     });
   }
@@ -29,7 +29,7 @@ export function getPool(): pg.Pool {
 /** Run a single query */
 export async function query<T extends pg.QueryResultRow = any>(
   text: string,
-  params?: any[]
+  params?: any[],
 ): Promise<pg.QueryResult<T>> {
   return getPool().query<T>(text, params);
 }
@@ -50,7 +50,7 @@ export async function closePool(): Promise<void> {
 /** Health check */
 export async function pgHealthCheck(): Promise<boolean> {
   try {
-    const result = await query("SELECT 1 as ok");
+    const result = await query('SELECT 1 as ok');
     return result.rows[0]?.ok === 1;
   } catch {
     return false;
