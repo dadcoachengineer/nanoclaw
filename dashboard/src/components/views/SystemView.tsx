@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from "react";
 import { Card, CardHeader, StatCard } from "@/components/Card";
+import PlatformDigitalTwin from "@/components/PlatformDigitalTwin";
 
 // --- Dedup types ---
 
@@ -614,6 +615,12 @@ export default function SystemView() {
           {error}
         </div>
       )}
+
+      {/* Platform Digital Twin */}
+      <Card className="mb-6">
+        <CardHeader title="Platform Architecture" />
+        <PlatformDigitalTwin />
+      </Card>
 
       {/* Section 0: Live Health Overview */}
       {health?.checks && (
