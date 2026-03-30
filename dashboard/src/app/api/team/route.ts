@@ -27,21 +27,21 @@ export async function GET(req: NextRequest) {
 
     // Get tasks: delegated + mentioned
     const tasks = await sql(
-      `SELECT DISTINCT t.id, t.title, t.priority, t.status, t.project, t.context,
+      `SELECT t.id, t.title, t.priority, t.status, t.project, t.context,
               CASE
                 WHEN t.delegated_to = $1 THEN 'delegated'
-                WHEN t.notes LIKE '%[People:%' || $2 || '%' THEN 'tagged'
+                WHEN t.notes LIKE '%[People:%' AND t.notes ILIKE $4 THEN 'tagged'
                 ELSE 'mentioned'
-              END as tier
+              END as tier,
+              CASE WHEN t.delegated_to = $1 THEN 0
+                   WHEN t.notes LIKE '%[People:%' AND t.notes ILIKE $4 THEN 1
+                   ELSE 2 END as tier_rank,
+              CASE WHEN t.priority LIKE 'P0%' THEN 0 WHEN t.priority LIKE 'P1%' THEN 1
+                   WHEN t.priority LIKE 'P2%' THEN 2 ELSE 3 END as priority_rank
        FROM tasks t
        WHERE t.status != 'Done'
          AND (t.delegated_to = $1 OR t.title ILIKE $3 OR t.notes ILIKE $4)
-       ORDER BY
-         CASE WHEN t.delegated_to = $1 THEN 0
-              WHEN t.notes LIKE '%[People:%' || $2 || '%' THEN 1
-              ELSE 2 END,
-         CASE WHEN t.priority LIKE 'P0%' THEN 0 WHEN t.priority LIKE 'P1%' THEN 1
-              WHEN t.priority LIKE 'P2%' THEN 2 ELSE 3 END`,
+       ORDER BY tier_rank, priority_rank`,
       [firstName, member.name, `%${firstName}%`, `%${member.name}%`]
     );
 
