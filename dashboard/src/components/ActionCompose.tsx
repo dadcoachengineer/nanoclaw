@@ -233,6 +233,30 @@ export default function ActionCompose({
 
           {!loading && !error && !selected && (
             <div className="space-y-3">
+              {/* Always-present Research & Enrich action */}
+              <button
+                onClick={() => setShowPrepWorkspace({
+                  type: "document",
+                  label: `Research: ${title}`,
+                  airgapped: true,
+                  reason: "Deep-dive into this task — gather context, upload documents, generate a research brief",
+                } as SuggestedAction)}
+                className="w-full text-left p-3 rounded-lg border-2 border-[rgba(56,178,172,0.3)] hover:border-[#38b2ac] bg-[rgba(56,178,172,0.04)] hover:bg-[rgba(56,178,172,0.08)] transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-7 h-7 rounded-md flex items-center justify-center text-[11px] font-bold shrink-0 bg-[rgba(56,178,172,0.15)] text-[#38b2ac]">
+                    R
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-[#38b2ac]">Research &amp; Enrich</div>
+                    <div className="text-[11px] text-[var(--text-dim)] mt-0.5">
+                      Gather context, upload docs, generate a brief — creates a reusable artifact
+                    </div>
+                  </div>
+                  <div className="text-[#38b2ac] text-xs shrink-0">&rsaquo;</div>
+                </div>
+              </button>
+
               <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] font-medium">Suggested Actions</div>
               {actions.map((action, i) => (
                 <button

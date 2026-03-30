@@ -198,6 +198,24 @@ function loadSummaries(): SummariesStore {
 
 function saveSummaries(summaries: SummariesStore): void {
   fs.writeFileSync(SUMMARIES_PATH, JSON.stringify(summaries, null, 2));
+
+  // Also archive each summary individually
+  try {
+    const archiveDir = path.join(STORE_DIR, "archive", "summaries");
+    if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+    for (const [id, summary] of Object.entries(summaries)) {
+      const s = summary as any;
+      fs.writeFileSync(path.join(archiveDir, `${id}.json`), JSON.stringify({
+        id,
+        title: s.meetingTopic || s.title || id,
+        meeting: s.meetingTopic,
+        date: s.start || s.date || "",
+        content: s.summaryContent || s.summary || JSON.stringify(s, null, 2),
+        source: "webex-ai-summary",
+        archivedAt: new Date().toISOString(),
+      }, null, 2));
+    }
+  } catch { /* archive is best-effort */ }
 }
 
 // --- Notion task creation ---

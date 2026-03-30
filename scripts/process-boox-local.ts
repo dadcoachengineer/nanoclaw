@@ -541,7 +541,8 @@ Output ONLY JSON lines. Base analysis ONLY on what you see in the image.`;
           const wordCount = task.split(/\s+/).length;
           const isAllCaps = task === task.toUpperCase() && task.length < 20;
           const isGenericLabel = /^(network|vision|customers?|hazel|skyway|software|bills?|resolve|agenda|notes?|goals?|ideas?|misc|overview|summary|action items?|the action item text)$/i.test(task);
-          if (wordCount < 2 || isAllCaps || isGenericLabel) {
+          const isPromptLeak = /read only what|do not add text|if the page is blank|output only json|base analysis only|boxed text.*action|circled text.*p1|priority rules|context rules|critical rules|jason.*notation/i.test(task);
+          if (wordCount < 2 || isAllCaps || isGenericLabel || isPromptLeak) {
             // Treat as context text, not an action item
             fullText += (fullText ? "\n" : "") + `[heading] ${task}`;
           } else {
@@ -891,6 +892,26 @@ async function main() {
       console.log(
         `    OCR: ${ocrResult.text.length} chars, ${ocrResult.items.length} action items in ${(ocrResult.latencyMs / 1000).toFixed(1)}s`
       );
+
+      // Archive the OCR text
+      if (ocrResult.text.length > 20) {
+        try {
+          const archiveDir = path.join(STORE_DIR, "archive", "boox");
+          if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+          const archiveId = pageKey.replace(/[^a-z0-9]/gi, "-");
+          fs.writeFileSync(path.join(archiveDir, `${archiveId}.json`), JSON.stringify({
+            id: archiveId,
+            title: `${pdfFile} page ${pageNum}`,
+            source: pdfFile,
+            page: pageNum,
+            date: new Date().toISOString(),
+            content: ocrResult.text,
+            items: ocrResult.items,
+            charCount: ocrResult.text.length,
+            archivedAt: new Date().toISOString(),
+          }, null, 2));
+        } catch { /* archive is best-effort */ }
+      }
 
       if (ocrResult.items.length === 0 && ocrResult.parseErrors > 0) {
         console.warn("    WARNING: No action items parsed. Raw response:");

@@ -800,6 +800,22 @@ async function main() {
 
     console.log(`  Transcript length: ${transcriptText.length} chars`);
 
+    // Archive the original recording transcript
+    try {
+      const archiveDir = path.join(STORE_DIR, "archive", "plaud");
+      if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+      fs.writeFileSync(path.join(archiveDir, `${file.id}.json`), JSON.stringify({
+        id: file.id,
+        title: plaudTitle(file),
+        meeting: plaudTitle(file),
+        date: recDate,
+        folder: folderName,
+        content: transcriptText,
+        charCount: transcriptText.length,
+        archivedAt: new Date().toISOString(),
+      }, null, 2));
+    } catch { /* archive is best-effort */ }
+
     // 5. Get Plaud AI summary (if available)
     let summaryText: string | null = null;
     if (file.is_summary) {

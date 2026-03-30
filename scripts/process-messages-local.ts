@@ -626,6 +626,23 @@ async function main() {
     );
     console.log(`  Context: ${contextMessages.length} messages, ${messagesText.length} chars`);
 
+    // Archive the conversation
+    try {
+      const archiveDir = path.join(STORE_DIR, "archive", "messages");
+      if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+      const archiveId = `${room.id.slice(-12)}-${new Date().toISOString().slice(0, 10)}`;
+      fs.writeFileSync(path.join(archiveDir, `${archiveId}.json`), JSON.stringify({
+        id: archiveId,
+        title: `DM: ${roomLabel}`,
+        roomId: room.id,
+        roomTitle: roomLabel,
+        date: new Date().toISOString(),
+        messageCount: contextMessages.length,
+        content: messagesText,
+        archivedAt: new Date().toISOString(),
+      }, null, 2));
+    } catch { /* archive is best-effort */ }
+
     // Send to Ollama for analysis
     let ollamaResult: Awaited<ReturnType<typeof analyzeMessages>>;
     try {

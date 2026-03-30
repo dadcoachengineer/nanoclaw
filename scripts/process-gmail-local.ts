@@ -768,6 +768,26 @@ async function main() {
     `Sending ${actionableEmails.length} emails to ${OLLAMA_MODEL} (${emailSummaries.length} chars)...`
   );
 
+  // Archive the emails
+  try {
+    const archiveDir = path.join(STORE_DIR, "archive", "emails");
+    if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+    for (const e of actionableEmails) {
+      const archiveId = (e as any).id || `${new Date(e.date).getTime()}-${e.subject.slice(0, 30).replace(/[^a-z0-9]/gi, "-")}`;
+      fs.writeFileSync(path.join(archiveDir, `${archiveId}.json`), JSON.stringify({
+        id: archiveId,
+        title: e.subject,
+        subject: e.subject,
+        from: e.from,
+        to: e.to,
+        date: e.date,
+        content: e.snippet,
+        source: "gmail",
+        archivedAt: new Date().toISOString(),
+      }, null, 2));
+    }
+  } catch { /* archive is best-effort */ }
+
   let ollamaResult: Awaited<ReturnType<typeof analyzeEmails>>;
   try {
     ollamaResult = await analyzeEmails(emailSummaries);

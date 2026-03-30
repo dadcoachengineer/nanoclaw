@@ -620,6 +620,23 @@ async function main() {
     console.log(`  Speakers: ${speakers.join(", ")}`);
     console.log(`  Transcript length: ${transcriptText.length} chars`);
 
+    // Archive the original transcript
+    try {
+      const archiveDir = path.join(STORE_DIR, "archive", "transcripts");
+      if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
+      fs.writeFileSync(path.join(archiveDir, `${recording.id}.json`), JSON.stringify({
+        id: recording.id,
+        title: recording.meetingTopic,
+        meeting: recording.meetingTopic,
+        date: recording.startTime || recDate,
+        speakers,
+        content: transcriptText,
+        vttRaw: vttText.slice(0, 50000), // Preserve original VTT (capped at 50K)
+        charCount: transcriptText.length,
+        archivedAt: new Date().toISOString(),
+      }, null, 2));
+    } catch { /* archive is best-effort */ }
+
     // 4. Send to Ollama for action item extraction
     let ollamaResult: Awaited<ReturnType<typeof extractActionItems>>;
     try {

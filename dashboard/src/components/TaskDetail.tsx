@@ -376,10 +376,24 @@ export default function TaskDetail({
   // Parse Webex deep link IDs from notes
   const webexRoomId = notes?.match(/webex_room:(\S+)/)?.[1] || "";
   const webexMsgId = notes?.match(/webex_msg:(\S+)/)?.[1] || "";
+  // Parse source recording/file IDs for archive links
+  const recordingId = notes?.match(/file_id:\s*(\S+)/)?.[1] || notes?.match(/Recording:\s*(\S+)/)?.[1] || "";
+  const webexMeetingId = notes?.match(/webex_meeting:(\S+)/)?.[1] || "";
+  // Determine archive type from source
+  const sourceField = prop(page, "Source") || "";
+  const archiveType = sourceField.includes("Transcript") ? "transcripts"
+    : sourceField.includes("PLAUD") ? "plaud"
+    : sourceField.includes("Webex Message") ? "messages"
+    : sourceField.includes("Webex AI") ? "summaries"
+    : sourceField.includes("Boox") ? "boox"
+    : sourceField.includes("Gmail") ? "emails"
+    : "";
+  const archiveId = recordingId || webexMeetingId || "";
   // Strip the IDs from displayed notes
   const displayNotes = notes
     ?.replace(/\s*webex_room:\S+/g, "")
     .replace(/\s*webex_msg:\S+/g, "")
+    .replace(/\s*webex_meeting:\S+/g, "")
     .trim();
 
   useEffect(() => {
@@ -808,6 +822,26 @@ export default function TaskDetail({
               >
                 Open in Webex &rarr;
               </a>
+            )}
+            {archiveType && archiveId && (
+              <button
+                onClick={async () => {
+                  try {
+                    const resp = await fetch(`/api/archive?type=${archiveType}&id=${archiveId}`);
+                    if (resp.ok) {
+                      const data = await resp.json();
+                      // Open in a simple modal-like view
+                      const w = window.open("", "_blank", "width=700,height=600");
+                      if (w) {
+                        w.document.write(`<html><head><title>${data.title || "Source"}</title><style>body{font-family:system-ui;background:#1a1a2e;color:#e0e0e0;padding:2rem;line-height:1.6}h1{font-size:1.1rem;color:#58a6ff}pre{white-space:pre-wrap;font-size:0.85rem;}</style></head><body><h1>${data.title || "Source Content"}</h1><p style="color:#888;font-size:0.8rem">${data.date || ""} &middot; ${data.source || archiveType}</p><pre>${(data.content || "").replace(/</g,"&lt;")}</pre></body></html>`);
+                      }
+                    }
+                  } catch {}
+                }}
+                className="text-xs text-[var(--purple)] hover:underline"
+              >
+                View Source &rarr;
+              </button>
             )}
           </div>
         </div>
