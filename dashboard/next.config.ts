@@ -12,7 +12,7 @@ const nextConfig: NextConfig = {
       },
     ];
   },
-  serverExternalPackages: ["child_process", "better-sqlite3"],
+  serverExternalPackages: ["child_process", "better-sqlite3", "pg"],
   outputFileTracingRoot: import.meta.dirname,
   turbopack: {
     root: import.meta.dirname,
