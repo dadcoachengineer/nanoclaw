@@ -376,19 +376,27 @@ export default function TaskDetail({
   // Parse Webex deep link IDs from notes
   const webexRoomId = (notes?.match(/webex_room:(\S+)/)?.[1] || "").replace(/[.\s,;]+$/, "");
   const webexMsgId = notes?.match(/webex_msg:(\S+)/)?.[1] || "";
-  // Look up verified email from PG person index (not from notes — LLMs hallucinate emails)
+  // Look up verified email for the primary person in this task (from PG, not LLM notes)
   const [webexVerifiedEmail, setWebexVerifiedEmail] = useState<string | null>(null);
   useEffect(() => {
-    if (!webexRoomId) return;
-    // Find person linked to this room in PG
+    // Try multiple ways to identify the person
+    const fromName = notes?.match(/From:\s*([^(]+?)(?:\s*\(|$)/)?.[1]?.trim();
+    const peopleName = notes?.match(/\[People:\s*([^\],]+)/)?.[1]?.trim();
+    // Also try extracting from title: "Reply to X about..." or "Follow up with X about..."
+    const titlePerson = title?.match(/^(?:Reply to|Follow up with|Message|Email|Contact|Schedule with)\s+([A-Z][a-z]+ [A-Z][a-z]+)/)?.[1];
+    const searchName = fromName || peopleName || titlePerson;
+    if (!searchName) return;
+
+    const firstName = searchName.split(" ")[0];
+    if (firstName.length < 3) return;
+
     fetch(`/api/people`).then((r) => r.json()).then((people: any[]) => {
-      // Extract person name from notes "From: Name (email) in Room"
-      const fromName = notes?.match(/From:\s*([^(]+)/)?.[1]?.trim();
-      if (!fromName) return;
-      const match = people.find((p: any) => p.name?.toLowerCase().includes(fromName.toLowerCase().split(" ")[0]));
+      const match = people.find((p: any) =>
+        p.name?.toLowerCase().includes(firstName.toLowerCase()) && p.emails?.length > 0
+      );
       if (match?.emails?.[0]) setWebexVerifiedEmail(match.emails[0]);
     }).catch(() => {});
-  }, [webexRoomId, notes]);
+  }, [title, notes]);
   // Parse source IDs and meeting names for archive links
   const recordingId = notes?.match(/file_id:\s*(\S+)/)?.[1] || notes?.match(/Recording:\s*(\S+)/)?.[1] || "";
   const webexMeetingId = notes?.match(/webex_meeting:(\S+)/)?.[1] || "";
@@ -865,17 +873,22 @@ export default function TaskDetail({
             >
               Open in Notion &rarr;
             </a>
-            {webexRoomId && (
+            {webexVerifiedEmail && (
               <a
-                href={webexVerifiedEmail
-                  ? `webexteams://im?email=${encodeURIComponent(webexVerifiedEmail)}`
-                  : `https://web.webex.com/spaces/${webexRoomId}`}
-                {...(webexVerifiedEmail ? {} : { target: "_blank", rel: "noopener noreferrer" })}
+                href={`webexteams://im?email=${encodeURIComponent(webexVerifiedEmail)}`}
                 className="text-xs text-[var(--green)] hover:underline"
               >
-                {webexVerifiedEmail
-                  ? `Open chat with ${webexVerifiedEmail.split("@")[0]} →`
-                  : "Open in Webex →"}
+                Chat with {webexVerifiedEmail.split("@")[0]} &rarr;
+              </a>
+            )}
+            {webexRoomId && !webexVerifiedEmail && (
+              <a
+                href={`https://web.webex.com/spaces/${webexRoomId}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-[var(--green)] hover:underline"
+              >
+                Open in Webex &rarr;
               </a>
             )}
             {provenanceLink && (
