@@ -374,7 +374,7 @@ export default function TaskDetail({
   const dueDate = prop(page, "Due Date");
 
   // Parse Webex deep link IDs from notes
-  const webexRoomId = notes?.match(/webex_room:(\S+)/)?.[1] || "";
+  const webexRoomId = (notes?.match(/webex_room:(\S+)/)?.[1] || "").replace(/[.\s,;]+$/, "");
   const webexMsgId = notes?.match(/webex_msg:(\S+)/)?.[1] || "";
   // Don't extract email from notes — LLMs hallucinate email addresses.
   // The person index has verified emails from Webex API.
@@ -856,7 +856,9 @@ export default function TaskDetail({
             </a>
             {webexRoomId && (
               <a
-                href={`webexteams://im?space=${webexRoomId}`}
+                href={`https://web.webex.com/spaces/${webexRoomId}`}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="text-xs text-[var(--green)] hover:underline"
               >
                 Open in Webex &rarr;
