@@ -488,8 +488,10 @@ export async function GET() {
     })
   );
 
-  // Indexes — from PostgreSQL
+  // Indexes — from PostgreSQL with table sizes
   let pgCounts: any = {};
+  let pgSizes: any = {};
+  let pgDates: any = {};
   try {
     const counts = await pgSql(`
       SELECT
@@ -504,58 +506,65 @@ export async function GET() {
         (SELECT COUNT(*) FROM archive_items) as archive
     `);
     pgCounts = counts[0] || {};
+
+    const sizes = await pgSql(`
+      SELECT
+        pg_total_relation_size('people') / 1024 as people_kb,
+        pg_total_relation_size('topics') / 1024 as topics_kb,
+        pg_total_relation_size('vector_chunks') / 1024 as vectors_kb,
+        pg_total_relation_size('ai_summaries') / 1024 as summaries_kb,
+        pg_total_relation_size('corrections') / 1024 as corrections_kb,
+        pg_total_relation_size('relevance_scores') / 1024 as scores_kb,
+        pg_total_relation_size('initiatives') / 1024 as initiatives_kb
+    `);
+    pgSizes = sizes[0] || {};
+
+    const dates = await pgSql(`
+      SELECT
+        (SELECT MAX(updated_at) FROM people) as people_last,
+        (SELECT MAX(created_at) FROM topics) as topics_last,
+        (SELECT MAX(embedded_at) FROM vector_chunks) as vectors_last,
+        (SELECT MAX(created_at) FROM ai_summaries) as summaries_last,
+        (SELECT MAX(created_at) FROM initiatives) as initiatives_last
+    `);
+    pgDates = dates[0] || {};
   } catch {}
 
   const indexes = {
     personIndex: {
       count: parseInt(pgCounts.people || "0"),
-      lastBuilt: null,
-      sizeKb: 0,
-      source: "postgresql",
+      lastBuilt: pgDates.people_last || null,
+      sizeKb: parseInt(pgSizes.people_kb || "0"),
     },
     topicIndex: {
       count: parseInt(pgCounts.topics || "0"),
-      lastBuilt: null,
-      sizeKb: 0,
-      source: "postgresql",
+      lastBuilt: pgDates.topics_last || null,
+      sizeKb: parseInt(pgSizes.topics_kb || "0"),
     },
     vectorIndex: {
       chunks: parseInt(pgCounts.vectors || "0"),
-      lastBuilt: null,
-      sizeKb: 0,
-      source: "postgresql (pgvector)",
+      lastBuilt: pgDates.vectors_last || null,
+      sizeKb: parseInt(pgSizes.vectors_kb || "0"),
     },
     webexSummaries: {
       count: parseInt(pgCounts.summaries || "0"),
-      lastBuilt: null,
-      sizeKb: 0,
-      source: "postgresql",
+      lastBuilt: pgDates.summaries_last || null,
+      sizeKb: parseInt(pgSizes.summaries_kb || "0"),
     },
     corrections: {
       entries: parseInt(pgCounts.corrections || "0"),
       lastBuilt: null,
-      sizeKb: 0,
-      source: "postgresql",
+      sizeKb: parseInt(pgSizes.corrections_kb || "0"),
     },
     relevanceScores: {
       entries: parseInt(pgCounts.scores || "0"),
       lastBuilt: null,
-      sizeKb: 0,
-      source: "postgresql",
+      sizeKb: parseInt(pgSizes.scores_kb || "0"),
     },
     initiatives: {
       count: parseInt(pgCounts.initiatives || "0"),
-      lastBuilt: null,
-      sizeKb: 0,
-      source: "postgresql",
-    },
-    tasks: {
-      count: parseInt(pgCounts.tasks || "0"),
-      source: "postgresql",
-    },
-    archive: {
-      count: parseInt(pgCounts.archive || "0"),
-      source: "postgresql",
+      lastBuilt: pgDates.initiatives_last || null,
+      sizeKb: parseInt(pgSizes.initiatives_kb || "0"),
     },
   };
 
