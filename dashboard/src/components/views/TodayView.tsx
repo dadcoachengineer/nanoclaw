@@ -647,7 +647,23 @@ export default function TodayView() {
 
               return (
                 <div key={t.id} className={`px-4 py-3 border-b border-[var(--border)] ${processing ? "opacity-40" : ""}`}>
-                  <div className="text-sm text-[var(--text)]">{t.title}</div>
+                  <button
+                    onClick={async () => {
+                      // Open task detail by fetching the full task
+                      try {
+                        const resp = await fetch("/api/notion/query", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ filter: { property: "Task", title: { equals: t.title } }, page_size: 1 }),
+                        });
+                        const data = await resp.json();
+                        if (data.results?.[0]) setSelectedTask(data.results[0]);
+                      } catch {}
+                    }}
+                    className="text-sm text-[var(--text)] hover:text-[var(--accent)] hover:underline text-left"
+                  >
+                    {t.title}
+                  </button>
                   <div className="flex items-center gap-2 mt-1 flex-wrap">
                     <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(88,166,255,0.08)] text-[var(--accent)]">{t.source || "Unknown"}</span>
                     {t.project && <span className="text-[10px] text-[var(--text-dim)]">{t.project}</span>}
@@ -664,6 +680,12 @@ export default function TodayView() {
                       className="h-6 px-2.5 text-[10px] font-medium bg-[var(--yellow)] text-[var(--bg)] rounded hover:opacity-90">Accept P2</button>
                     <button onClick={() => triageAction("accept", { priority: "P0 \u2014 Today" })}
                       className="h-6 px-2.5 text-[10px] font-medium bg-[var(--red)] text-white rounded hover:opacity-90">P0</button>
+                    <button onClick={() => triageAction("accept", { priority: "P1 \u2014 This Week" }).then(() => {
+                        // Immediately mark as Done after accepting
+                        fetch("/api/notion/update", { method: "PATCH", headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ page_id: t.id, properties: { Status: { status: { name: "Done" } } } }) });
+                      })}
+                      className="h-6 px-2.5 text-[10px] font-medium text-[var(--green)] border border-[var(--green)] rounded hover:bg-[rgba(63,185,80,0.1)]">Done</button>
                     <select
                       onChange={(e) => { if (e.target.value) triageAction("delegate", { delegatedTo: e.target.value, priority: "P1 \u2014 This Week" }); }}
                       className="h-6 px-1.5 text-[10px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] appearance-none"
