@@ -38,15 +38,17 @@ export async function GET(req: NextRequest) {
       const pinnedPlaceholders = pinnedIds.map((_: any, i: number) => `$${i + 1}::uuid`).join(",");
       tasks = await sql(
         `SELECT id, title, priority, status, source, project, delegated_to, notes, created_at
-         FROM tasks WHERE id IN (${pinnedPlaceholders}) AND status != 'Done'
-         ORDER BY CASE WHEN priority LIKE 'P0%' THEN 0 WHEN priority LIKE 'P1%' THEN 1 WHEN priority LIKE 'P2%' THEN 2 ELSE 3 END`,
+         FROM tasks WHERE id IN (${pinnedPlaceholders})
+         ORDER BY CASE WHEN status = 'Done' THEN 1 ELSE 0 END,
+                  CASE WHEN priority LIKE 'P0%' THEN 0 WHEN priority LIKE 'P1%' THEN 1 WHEN priority LIKE 'P2%' THEN 2 ELSE 3 END`,
         pinnedIds
       );
     }
-    // Also find keyword-matched tasks
-    if (ini.keywords?.length) {
-      const kwConditions = ini.keywords.map((_: string, i: number) => `title ILIKE $${i + 1}`).join(" OR ");
-      const kwParams = ini.keywords.map((k: string) => `%${k}%`);
+    // Also find keyword-matched tasks (split multi-word keywords into individual search terms)
+    const searchTerms = (ini.keywords || []).flatMap((k: string) => k.split(/\s+/).filter((w: string) => w.length > 3));
+    if (searchTerms.length > 0) {
+      const kwConditions = searchTerms.map((_: string, i: number) => `title ILIKE $${i + 1}`).join(" OR ");
+      const kwParams = searchTerms.map((k: string) => `%${k}%`);
       const kwTasks = await sql(
         `SELECT id, title, priority, status, source, project, delegated_to, notes, created_at
          FROM tasks WHERE status != 'Done' AND (${kwConditions})
@@ -78,9 +80,9 @@ export async function GET(req: NextRequest) {
       if (person) people.push({ name: person.name, email: person.email, meetings: parseInt(person.meetings), pinned: true });
     }
     // Add keyword-matched people from meetings
-    if (ini.keywords?.length) {
-      const kwCond = ini.keywords.map((_: string, i: number) => `m.topic ILIKE $${i + 1}`).join(" OR ");
-      const kwP = ini.keywords.map((k: string) => `%${k}%`);
+    if (searchTerms.length > 0) {
+      const kwCond = searchTerms.map((_: string, i: number) => `m.topic ILIKE $${i + 1}`).join(" OR ");
+      const kwP = searchTerms.map((k: string) => `%${k}%`);
       const matched = await sql(
         `SELECT DISTINCT p.name, pe.email FROM people p
          JOIN meeting_participants mp ON mp.person_id = p.id
@@ -97,9 +99,9 @@ export async function GET(req: NextRequest) {
 
     // Get linked meetings
     const meetings: any[] = [];
-    if (ini.keywords?.length) {
-      const kwCond = ini.keywords.map((_: string, i: number) => `topic ILIKE $${i + 1}`).join(" OR ");
-      const kwP = ini.keywords.map((k: string) => `%${k}%`);
+    if (searchTerms.length > 0) {
+      const kwCond = searchTerms.map((_: string, i: number) => `topic ILIKE $${i + 1}`).join(" OR ");
+      const kwP = searchTerms.map((k: string) => `%${k}%`);
       const mtgs = await sql(
         `SELECT id, topic, date::text, host_name FROM meetings WHERE ${kwCond} ORDER BY date DESC LIMIT 15`,
         kwP
@@ -109,9 +111,9 @@ export async function GET(req: NextRequest) {
 
     // Get summaries
     const summaries: any[] = [];
-    if (ini.keywords?.length) {
-      const kwCond = ini.keywords.map((_: string, i: number) => `title ILIKE $${i + 1} OR summary ILIKE $${i + 1}`).join(" OR ");
-      const kwP = ini.keywords.map((k: string) => `%${k}%`);
+    if (searchTerms.length > 0) {
+      const kwCond = searchTerms.map((_: string, i: number) => `title ILIKE $${i + 1} OR summary ILIKE $${i + 1}`).join(" OR ");
+      const kwP = searchTerms.map((k: string) => `%${k}%`);
       const sums = await sql(
         `SELECT meeting_id, title, date::text, summary FROM ai_summaries WHERE ${kwCond} ORDER BY date DESC LIMIT 5`,
         kwP
