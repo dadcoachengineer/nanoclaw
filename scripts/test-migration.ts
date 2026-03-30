@@ -244,6 +244,51 @@ async function testPhase4() {
 }
 
 // ══════════════════════════════════════════════════════════
+// Phase 5: Tasks local-first in PostgreSQL
+// ══════════════════════════════════════════════════════════
+async function testPhase5() {
+  console.log("\n\x1b[1m━━━ Phase 5: Tasks Local-First in PostgreSQL ━━━\x1b[0m");
+
+  const pgTasks = await pgCount("tasks");
+  assert(pgTasks > 0, `tasks: PG(${pgTasks}) populated`);
+
+  const pgOpen = parseInt((await pool.query("SELECT COUNT(*) as c FROM tasks WHERE status != 'Done'")).rows[0].c);
+  assert(pgOpen > 0, `open tasks: ${pgOpen}`);
+
+  const pgDone = parseInt((await pool.query("SELECT COUNT(*) as c FROM tasks WHERE status = 'Done'")).rows[0].c);
+  assert(pgDone > 0, `done tasks: ${pgDone} (history preserved)`);
+
+  // Triage status distribution
+  const triageStats = (await pool.query(
+    "SELECT triage_status, COUNT(*) as c FROM tasks GROUP BY triage_status ORDER BY c DESC"
+  )).rows;
+  for (const s of triageStats) {
+    assert(true, `triage: ${s.triage_status} = ${s.c}`);
+  }
+
+  // Task-people links
+  const taskPeople = await pgCount("task_people");
+  assert(taskPeople >= 0, `task_people links: ${taskPeople}`);
+
+  // Triage decisions (should be backfilled now)
+  const triageDecisions = await pgCount("triage_decisions");
+  const jsonTriage = jsonLength("triage-decisions.json");
+  assert(triageDecisions >= jsonTriage, `triage_decisions: JSON(${jsonTriage}) <= PG(${triageDecisions})`);
+
+  // Spot-check: verify a task has correct data
+  const sample = (await pool.query(
+    "SELECT title, priority, status, source, project FROM tasks WHERE status != 'Done' ORDER BY created_at DESC LIMIT 1"
+  )).rows[0];
+  if (sample) {
+    assert(!!sample.title && sample.title.length > 0, `Spot-check task: "${sample.title.slice(0, 50)}..." (${sample.priority}, ${sample.source})`);
+  }
+
+  // Notion sync readiness
+  const synced = parseInt((await pool.query("SELECT COUNT(*) as c FROM tasks WHERE notion_sync_status = 'synced'")).rows[0].c);
+  assert(synced === pgTasks, `All ${synced}/${pgTasks} tasks marked as synced from Notion`);
+}
+
+// ══════════════════════════════════════════════════════════
 // Main
 // ══════════════════════════════════════════════════════════
 async function main() {
@@ -263,6 +308,7 @@ async function main() {
   if (phase === "2c" || phase === "all") await testPhase2c();
   if (phase === "3" || phase === "all") await testPhase3();
   if (phase === "4" || phase === "all") await testPhase4();
+  if (phase === "5" || phase === "all") await testPhase5();
 
   console.log("\n╔══════════════════════════════════════════════════════════╗");
   console.log(`║  Results: \x1b[32m${passed} passed\x1b[0m  \x1b[31m${failed} failed\x1b[0m${" ".repeat(Math.max(0, 30 - String(passed).length - String(failed).length))}║`);
