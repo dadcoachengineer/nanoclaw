@@ -856,8 +856,15 @@ export default function TaskDetail({
             </a>
             {webexRoomId && (
               <a
-                href={`webexteams://im?space=${webexRoomId}`}
+                href={`https://web.webex.com/spaces/${webexRoomId}`}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="text-xs text-[var(--green)] hover:underline"
+                onClick={(e) => {
+                  // On click, copy the direct URL to clipboard for manual use
+                  // and open the web link which has "Open in app" button
+                  navigator.clipboard?.writeText(`https://web.webex.com/spaces/${webexRoomId}`).catch(() => {});
+                }}
               >
                 Open in Webex &rarr;
               </a>
