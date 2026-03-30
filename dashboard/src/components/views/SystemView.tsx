@@ -509,6 +509,16 @@ export default function SystemView() {
     setBulkMergeProgress(null);
   }
 
+  // Health check data
+  const [health, setHealth] = useState<any>(null);
+  useEffect(() => {
+    fetch("/api/health").then((r) => r.json()).then(setHealth).catch(() => {});
+    const interval = setInterval(() => {
+      fetch("/api/health").then((r) => r.json()).then(setHealth).catch(() => {});
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
   if (loading && !data) {
     return (
       <div className="max-w-[1400px] mx-auto px-8 py-6">
@@ -603,6 +613,64 @@ export default function SystemView() {
         <div className="mb-4 p-3 bg-[rgba(248,81,73,0.1)] border border-[var(--red)] rounded-lg text-sm text-[var(--red)]">
           {error}
         </div>
+      )}
+
+      {/* Section 0: Live Health Overview */}
+      {health?.checks && (
+        <Card className="mb-6">
+          <CardHeader
+            title="System Health"
+            right={
+              <span className="text-xs" style={{ color: health.status === "healthy" ? "var(--green)" : "var(--yellow)" }}>
+                {health.status === "healthy" ? "All Systems Healthy" : "Degraded"}
+              </span>
+            }
+          />
+          <div className="px-4 py-3">
+            <div className="grid grid-cols-6 gap-4 mb-3">
+              {[
+                { name: "PostgreSQL", status: health.checks.postgresql?.status, detail: health.checks.postgresql?.size || "", sub: `${health.checks.postgresql?.latencyMs || "?"}ms latency` },
+                { name: "NanoClaw", status: health.checks.nanoclaw?.status, detail: health.checks.nanoclaw?.uptime ? formatUptime(health.checks.nanoclaw.uptime) : "", sub: `${health.checks.nanoclaw?.groups || 0} groups` },
+                { name: "Ollama", status: health.checks.ollama?.status, detail: `${health.checks.ollama?.modelCount || 0} models`, sub: "Mac Studio" },
+                { name: "Nginx", status: health.checks.nginx?.status, detail: health.checks.nginx?.certDaysLeft ? `${health.checks.nginx.certDaysLeft}d cert` : "", sub: "dashboard.shearer.live" },
+                { name: "Notion Sync", status: health.checks.notionSync?.status === "active" ? "healthy" : "unknown", detail: `${health.checks.postgresql?.sync_ok || 0} synced`, sub: `${health.checks.postgresql?.sync_pending || 0} pending` },
+                { name: "Triage", status: (health.checks.postgresql?.triage_inbox || 0) > 0 ? "attention" : "healthy", detail: `${health.checks.postgresql?.triage_inbox || 0} inbox`, sub: `${health.checks.postgresql?.open_tasks || 0} open tasks` },
+              ].map((svc) => (
+                <div key={svc.name} className="text-center">
+                  <div className="flex items-center justify-center gap-1.5 mb-1">
+                    <div className="w-2 h-2 rounded-full" style={{
+                      background: svc.status === "healthy" ? "var(--green)" : svc.status === "attention" ? "var(--yellow)" : svc.status === "error" || svc.status === "unreachable" ? "var(--red)" : "var(--text-dim)",
+                    }} />
+                    <span className="text-[11px] font-medium text-[var(--text-bright)]">{svc.name}</span>
+                  </div>
+                  <div className="text-[10px] text-[var(--text)]">{svc.detail}</div>
+                  <div className="text-[9px] text-[var(--text-dim)]">{svc.sub}</div>
+                </div>
+              ))}
+            </div>
+            {/* Pipeline status row */}
+            {health.checks.pipelines?.length > 0 && (
+              <div className="border-t border-[var(--border)] pt-2 mt-2">
+                <div className="text-[9px] text-[var(--text-dim)] uppercase tracking-wider mb-1.5">Pipelines</div>
+                <div className="flex flex-wrap gap-3">
+                  {health.checks.pipelines.map((p: any) => (
+                    <div key={p.id} className="flex items-center gap-1.5">
+                      <div className="w-1.5 h-1.5 rounded-full" style={{
+                        background: p.lastStatus === "success" ? "var(--green)" : p.lastStatus === "error" ? "var(--red)" : "var(--text-dim)",
+                      }} />
+                      <span className="text-[10px] text-[var(--text)]">{p.id.replace("mc-", "")}</span>
+                      {p.lastRun && (
+                        <span className="text-[9px] text-[var(--text-dim)]">
+                          {new Date(p.lastRun).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </Card>
       )}
 
       {/* Section 1: Platform Health */}
