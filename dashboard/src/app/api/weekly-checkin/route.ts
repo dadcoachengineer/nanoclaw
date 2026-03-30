@@ -117,8 +117,39 @@ export async function GET() {
       [weekAgo.toISOString()]
     );
 
+    // Build ratings evidence from the week's data
+    const strengthsEvidence: string[] = [];
+    const outstandingEvidence: string[] = [];
+    const managerEvidence: string[] = [];
+
+    // Strengths: tasks completed, pipeline throughput
+    if (completedTasks.length > 0) strengthsEvidence.push(`Completed ${completedTasks.length} tasks this week`);
+    if (weekMeetings.length > 5) strengthsEvidence.push(`Attended ${weekMeetings.length} meetings — high engagement`);
+    for (const t of completedTasks.slice(0, 3)) strengthsEvidence.push(`Closed: ${t.title.slice(0, 80)}`);
+
+    // Outstanding value: key deliverables
+    const p0Completed = completedTasks.filter((t: any) => t.priority?.includes("P0"));
+    if (p0Completed.length > 0) outstandingEvidence.push(`${p0Completed.length} P0 urgent items resolved`);
+    for (const s of weekSummaries.slice(0, 2)) {
+      if (s.action_items?.length) outstandingEvidence.push(`Meeting "${s.title}": ${s.action_items.length} action items driven`);
+    }
+    if (outstandingEvidence.length === 0) outstandingEvidence.push("Review deliverables for this week");
+
+    // Manager connect: 1:1s and team interactions
+    const teamMeetings = weekMeetings.filter((m: any) => /1:1|sync|check.in/i.test(m.topic));
+    if (teamMeetings.length > 0) managerEvidence.push(`${teamMeetings.length} 1:1s and team syncs this week`);
+    for (const m of teamMeetings.slice(0, 3)) managerEvidence.push(`${m.topic} on ${new Date(m.date).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}`);
+    if (managerEvidence.length === 0) managerEvidence.push("Schedule manager check-in");
+
+    const ratings = {
+      strengths: { evidence: strengthsEvidence, score: null },
+      outstandingValue: { evidence: outstandingEvidence, score: null },
+      managerConnect: { evidence: managerEvidence, score: null },
+    };
+
     return NextResponse.json({
       weekOf: monday.toISOString().slice(0, 10),
+      ratings,
       stats: {
         tasksCompleted: completedTasks.length,
         tasksOpen: openTasks.length,
