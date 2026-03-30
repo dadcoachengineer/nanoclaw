@@ -8,6 +8,15 @@ import { NotionPage } from "@/lib/notion";
 import ReplyDrafter from "@/components/ReplyDrafter";
 import TaskDetail from "@/components/TaskDetail";
 import VoteButtons from "@/components/VoteButtons";
+import ArtifactList from "@/components/ArtifactList";
+
+interface QuickAttendee {
+  name: string;
+  emails: string[];
+  meetings: number;
+  messages: number;
+  transcripts: number;
+}
 
 /** Inline-editable task title. Click to edit, Enter/blur to save. Calls corrections API. */
 function EditableTitle({
@@ -125,6 +134,9 @@ export default function MeetingPrep({
   const [selectedTask, setSelectedTask] = useState<NotionPage | null>(null);
   const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
   const [scores, setScores] = useState<Record<string, number>>({});
+  const [attendees, setAttendees] = useState<QuickAttendee[]>([]);
+  const [quickBrief, setQuickBrief] = useState<string | null>(null);
+  const [briefLoading, setBriefLoading] = useState(false);
 
   const voteContext = `prep:${meeting.title}`;
   const disambigKey = `mc:disambig:${meeting.title}`;
@@ -155,6 +167,19 @@ export default function MeetingPrep({
         ]);
         setPrep(data);
         setScores(scoresResp.scores || {});
+        // If no person-specific context, fetch attendee quick-briefs from meeting title keywords
+        const hasCtx = data && (
+          (data.recentMessages?.length || 0) > 0 ||
+          (data.previousMeetings?.length || 0) > 0 ||
+          (data.openTasks?.length || 0) > 0
+        );
+        // Fetch real invitees from Webex API
+        if (meeting.id && !meeting.id.startsWith("gcal-")) {
+          fetch(`/api/webex/invitees?meetingId=${encodeURIComponent(meeting.id)}`)
+            .then((r) => r.json())
+            .then((data) => { if (data.invitees) setAttendees(data.invitees); })
+            .catch(() => {});
+        }
       } catch {
         setPrep(null);
       } finally {
@@ -280,10 +305,157 @@ export default function MeetingPrep({
             <div className="text-center text-[var(--text-dim)] py-8">Loading prep...</div>
           )}
 
-          {!loading && !hasContext && (
-            <div className="text-center text-[var(--text-dim)] py-8 italic">
-              No specific prep needed for this meeting
+          {/* Attendees — always show if available */}
+          {!loading && attendees.length > 0 && (
+            <Card>
+              <CardHeader
+                title="Attendees"
+                right={<span className="text-xs text-[var(--text-dim)]">{attendees.length}</span>}
+              />
+              <div className="max-h-[300px] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {attendees.map((a) => (
+                  <div
+                    key={a.name}
+                    className="flex items-center gap-3 px-4 py-2.5 border-b border-[var(--border)] last:border-0 hover:bg-[rgba(88,166,255,0.03)] cursor-pointer"
+                    onClick={() => {
+                      handleCandidateSelect(a.name.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim());
+                    }}
+                  >
+                    {(a as any).avatar ? (
+                      <img src={(a as any).avatar} className="w-8 h-8 rounded-full shrink-0 object-cover" alt="" />
+                    ) : (
+                      <div className="w-8 h-8 rounded-full bg-[rgba(88,166,255,0.12)] flex items-center justify-center text-xs font-bold text-[var(--accent)] shrink-0">
+                        {a.name.split(" ").map((n: string) => n[0]).join("").slice(0, 2).toUpperCase()}
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-[var(--text)]">{a.name}</div>
+                      <div className="text-[10px] text-[var(--text-dim)]">
+                        {(a as any).jobTitle ? `${(a as any).jobTitle}${(a as any).company ? ` · ${(a as any).company}` : ""}` : (a as any).email || ""}
+                      </div>
+                    </div>
+                    <div className="flex gap-2 text-[10px] text-[var(--text-dim)] shrink-0">
+                      {a.meetings > 0 && <span>{a.meetings} mtg</span>}
+                      {a.messages > 0 && <span>{a.messages} msg</span>}
+                      {a.transcripts > 0 && <span>{a.transcripts} tr</span>}
+                    </div>
+                    <span className="text-[var(--text-dim)] text-xs">&rsaquo;</span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          {!loading && !hasContext && attendees.length === 0 && (
+            <div className="text-center text-[var(--text-dim)] py-4 italic text-sm">
+              No attendee or topic context found
             </div>
+          )}
+
+          {/* Quick brief — synthesized from attendees + meeting topic */}
+          {!loading && attendees.length > 0 && (
+            <Card>
+              <CardHeader
+                title="Meeting Brief"
+                right={
+                  !quickBrief ? (
+                    <button
+                      disabled={briefLoading}
+                      onClick={async () => {
+                        setBriefLoading(true);
+                        try {
+                          const attendeeList = attendees.map((a) => {
+                            let desc = a.name;
+                            if ((a as any).jobTitle) desc += ` (${(a as any).jobTitle})`;
+                            if (a.meetings > 0 || a.messages > 0) desc += ` — ${a.meetings} meetings, ${a.messages} messages`;
+                            return desc;
+                          }).join("\n");
+                          // Fetch related conversations from vector DB
+                          let vectorContext = "";
+                          try {
+                            const searchResp = await fetch(`/api/search?q=${encodeURIComponent(meeting.title)}&limit=5`);
+                            if (searchResp.ok) {
+                              const searchData = await searchResp.json();
+                              if (searchData.results?.length) {
+                                vectorContext = "\n\nRelated conversations from history:\n" +
+                                  searchData.results.map((r: any) => `- [${r.source}] ${(r.text || "").slice(0, 200)}`).join("\n");
+                              }
+                            }
+                          } catch {}
+
+                          const resp = await fetch("/api/synthesize", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              prompt: `You are preparing a quick meeting brief for Jason Shearer.
+
+Meeting: "${meeting.title}"
+Host: ${meeting.hostDisplayName || "Unknown"}
+Time: ${new Date(meeting.start).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}
+
+Attendees:
+${attendeeList}
+${vectorContext}
+
+Provide a concise meeting brief (200 words max). Use plain text, no markdown formatting, no asterisks:
+
+1) PURPOSE: What is this meeting about? Infer from the title, attendee roles, and any conversation history.
+2) KEY PEOPLE: Who should Jason pay attention to? Highlight anyone with high interaction counts or relevant context from conversations.
+3) YOUR ANGLE: One sentence on what Jason should be ready to contribute or discuss.
+4) OPEN ITEMS: Any action items or follow-ups from conversation history that are relevant to this meeting.
+
+Be direct and specific. No filler. No markdown bold/italic — use plain text only.`,
+                            }),
+                          });
+                          if (resp.ok) {
+                            const { content } = await resp.json();
+                            setQuickBrief(content || null);
+                          }
+                        } catch {}
+                        setBriefLoading(false);
+                      }}
+                      className="text-[11px] px-2 py-1 font-medium text-[var(--accent)] border border-[var(--border)] rounded hover:border-[var(--accent)] hover:bg-[rgba(88,166,255,0.06)] disabled:opacity-50 transition-colors"
+                    >
+                      {briefLoading ? "Generating..." : "Generate Brief"}
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => { setQuickBrief(null); }}
+                      className="text-[10px] text-[var(--text-dim)] hover:text-[var(--accent)]"
+                    >
+                      Regenerate
+                    </button>
+                  )
+                }
+              />
+              {quickBrief ? (
+                <div className="px-4 py-3 text-xs text-[var(--text)] leading-relaxed space-y-2">
+                  {quickBrief.split("\n").map((line, i) => {
+                    if (!line.trim()) return <div key={i} className="h-1.5" />;
+                    // Render inline bold **text** and strip raw markdown
+                    const renderLine = (text: string) => {
+                      const parts = text.split(/\*\*([^*]+)\*\*/g);
+                      return parts.map((part, j) => j % 2 === 1
+                        ? <strong key={j} className="text-[var(--text-bright)] font-semibold">{part}</strong>
+                        : <span key={j}>{part}</span>
+                      );
+                    };
+                    if (line.match(/^\d+[\)\.]/)) return <div key={i} className="flex gap-2"><span className="text-[var(--accent)] shrink-0 w-5 text-right font-medium">{line.match(/^(\d+)/)?.[1]}.</span><span>{renderLine(line.replace(/^\d+[\)\.]\s*/, ""))}</span></div>;
+                    if (line.startsWith("- ") || line.startsWith("* ") || line.startsWith("• ")) return <div key={i} className="flex gap-2"><span className="text-[var(--text-dim)] shrink-0">&bull;</span><span>{renderLine(line.replace(/^[-*•]\s*/, ""))}</span></div>;
+                    if (line.match(/^[A-Z\s]{4,}:/)) return <div key={i} className="font-semibold text-[var(--text-bright)] mt-2">{renderLine(line)}</div>;
+                    return <p key={i}>{renderLine(line)}</p>;
+                  })}
+                </div>
+              ) : !briefLoading ? (
+                <div className="px-4 py-3 text-xs text-[var(--text-dim)] italic">
+                  Click Generate to synthesize attendee context and meeting topic
+                </div>
+              ) : (
+                <div className="px-4 py-3 text-xs text-[var(--text-dim)] animate-pulse">
+                  Analyzing attendees and meeting context...
+                </div>
+              )}
+            </Card>
           )}
 
           {/* Follow-ups owed — most important, show first */}

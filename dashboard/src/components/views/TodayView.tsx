@@ -90,6 +90,12 @@ export default function TodayView() {
   const [filterOpen, setFilterOpen] = useState(false);
   const filterDropdownRef = useRef<HTMLDivElement>(null);
 
+  // Triage inbox state
+  const [triageInbox, setTriageInbox] = useState<any[]>([]);
+  const [triageSuggestions, setTriageSuggestions] = useState<Record<string, { action: string; confidence: number; reason: string }>>({});
+  const [triageProcessing, setTriageProcessing] = useState<Set<string>>(new Set());
+  const [triageLoaded, setTriageLoaded] = useState(false);
+
   // Search and filter state
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -401,8 +407,9 @@ export default function TodayView() {
       const localStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
       const localEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
 
-      // Fetch today's briefing page
-      const todayStr = now.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+      // Fetch today's briefing page — handles both "March 30" and "2026-03-30" title formats
+      const todayLong = now.toLocaleDateString("en-US", { month: "long", day: "numeric" });
+      const todayISO = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
       fetch("/api/notion/query", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -410,7 +417,10 @@ export default function TodayView() {
           database_id: NOTION_DB,
           filter: { and: [
             { property: "Task", title: { contains: "Daily Briefing" } },
-            { property: "Task", title: { contains: todayStr.split(",")[0] } },
+            { or: [
+              { property: "Task", title: { contains: todayLong } },
+              { property: "Task", title: { contains: todayISO } },
+            ]},
           ]},
           page_size: 1,
         }),
@@ -464,6 +474,13 @@ export default function TodayView() {
 
       // Fetch initiatives (non-blocking)
       fetch("/api/initiatives").then((r) => r.json()).then(setInitiatives).catch(() => {});
+
+      // Fetch triage inbox
+      fetch("/api/triage?suggest=true").then((r) => r.json()).then((data) => {
+        setTriageInbox(data.inbox || []);
+        setTriageSuggestions(data.suggestions || {});
+        setTriageLoaded(true);
+      }).catch(() => setTriageLoaded(true));
     }
     load();
     const interval = setInterval(load, 60000);
@@ -586,6 +603,70 @@ export default function TodayView() {
       </Card>
 
       <div className="h-4" />
+
+      {/* Triage Inbox */}
+      {triageLoaded && triageInbox.length > 0 && (
+        <Card>
+          <CardHeader
+            title={`Triage Inbox`}
+            right={
+              <span className="text-xs text-[var(--yellow)]">{triageInbox.length} new items to review</span>
+            }
+          />
+          <div className="max-h-[350px] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {triageInbox.map((t) => {
+              const suggestion = triageSuggestions[t.id];
+              const processing = triageProcessing.has(t.id);
+
+              async function triageAction(action: string, extra?: Record<string, string>) {
+                setTriageProcessing((prev) => new Set([...prev, t.id]));
+                await fetch("/api/triage", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ taskId: t.id, title: t.title, source: t.source, project: t.project, action, ...extra }),
+                });
+                setTriageInbox((prev) => prev.filter((item) => item.id !== t.id));
+                setTriageProcessing((prev) => { const n = new Set(prev); n.delete(t.id); return n; });
+              }
+
+              return (
+                <div key={t.id} className={`px-4 py-3 border-b border-[var(--border)] ${processing ? "opacity-40" : ""}`}>
+                  <div className="text-sm text-[var(--text)]">{t.title}</div>
+                  <div className="flex items-center gap-2 mt-1 flex-wrap">
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(88,166,255,0.08)] text-[var(--accent)]">{t.source || "Unknown"}</span>
+                    {t.project && <span className="text-[10px] text-[var(--text-dim)]">{t.project}</span>}
+                    {suggestion && (
+                      <span className="text-[10px] italic text-[var(--text-dim)]" title={suggestion.reason}>
+                        AI suggests: <span className="text-[var(--accent)]">{suggestion.action}{suggestion.reason ? ` — ${suggestion.reason}` : ""}</span>
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-1.5 mt-2">
+                    <button onClick={() => triageAction("accept", { priority: "P1 \u2014 This Week" })}
+                      className="h-6 px-2.5 text-[10px] font-medium bg-[var(--green)] text-white rounded hover:opacity-90">Accept P1</button>
+                    <button onClick={() => triageAction("accept", { priority: "P2 \u2014 This Month" })}
+                      className="h-6 px-2.5 text-[10px] font-medium bg-[var(--yellow)] text-[var(--bg)] rounded hover:opacity-90">Accept P2</button>
+                    <button onClick={() => triageAction("accept", { priority: "P0 \u2014 Today" })}
+                      className="h-6 px-2.5 text-[10px] font-medium bg-[var(--red)] text-white rounded hover:opacity-90">P0</button>
+                    <select
+                      onChange={(e) => { if (e.target.value) triageAction("delegate", { delegatedTo: e.target.value, priority: "P1 \u2014 This Week" }); }}
+                      className="h-6 px-1.5 text-[10px] bg-[var(--bg)] border border-[var(--border)] rounded text-[var(--text)] appearance-none"
+                      defaultValue=""
+                    >
+                      <option value="" disabled>Delegate...</option>
+                      {["Liz", "Tim", "Ross", "Marcela", "Rodney", "Jeff", "Juulia", "Jason"].map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))}
+                    </select>
+                    <button onClick={() => triageAction("dismiss")}
+                      className="h-6 px-2.5 text-[10px] text-[var(--text-dim)] hover:text-[var(--red)] border border-[var(--border)] rounded">Dismiss</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
       {/* Two columns */}
       <div className="grid grid-cols-[1fr_380px] gap-6">

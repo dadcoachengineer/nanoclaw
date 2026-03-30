@@ -803,12 +803,10 @@ export default function TaskDetail({
             </a>
             {webexRoomId && (
               <a
-                href={`https://web.webex.com/spaces/${webexRoomId}${webexMsgId ? `?messageId=${webexMsgId}` : ""}`}
-                target="_blank"
-                rel="noopener noreferrer"
+                href={`webexteams://im?space=${webexRoomId}`}
                 className="text-xs text-[var(--green)] hover:underline"
               >
-                View in Webex &rarr;
+                Open in Webex &rarr;
               </a>
             )}
           </div>

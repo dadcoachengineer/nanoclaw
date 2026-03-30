@@ -173,7 +173,7 @@ export default function PrepWorkspace({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: intent || topic,
+          title: topic || intent || "Research",
           content: brief,
           intent: intent || "research",
           taskId,
@@ -370,7 +370,9 @@ export default function PrepWorkspace({
             <textarea
               value={guidance}
               onChange={(e) => setGuidance(e.target.value)}
-              placeholder="Steer the research — e.g. 'Focus on their building portfolio and connectivity challenges' or 'Draft an org announcement using the attached background doc, emphasize her IoT and smart building experience'"
+              placeholder={intent?.toLowerCase().includes("meeting prep")
+                ? "Steer the prep — e.g. 'Focus on the partnership status and next steps' or 'This is a first meeting, need discovery questions' or 'Recurring 1:1, surface open action items'"
+                : "Steer the research — e.g. 'Focus on their building portfolio and connectivity challenges' or 'Draft an org announcement using the attached background doc'"}
               rows={3}
               className="w-full px-3 py-2 text-xs bg-[var(--bg)] border border-[var(--border)] rounded-lg text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)] resize-y"
             />

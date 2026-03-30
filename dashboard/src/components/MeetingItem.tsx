@@ -128,11 +128,15 @@ export default function MeetingItem({
   onClick,
   isConflict,
   gap,
+  prepArtifact,
+  onPrepClick,
 }: {
   meeting: WebexMeeting;
   onClick?: (meeting: WebexMeeting) => void;
   isConflict?: boolean;
   gap?: { minutes: number; start: string; end: string } | null;
+  prepArtifact?: { id: string; title: string } | null;
+  onPrepClick?: (artifactId: string) => void;
 }) {
   const isActive = meeting.state === "inProgress";
   const isMissed = meeting.state === "missed";
@@ -212,6 +216,15 @@ export default function MeetingItem({
                 <span className="text-[10px] text-[var(--text-dim)] truncate max-w-[120px]" title={meeting.location}>
                   {meeting.location}
                 </span>
+              )}
+              {prepArtifact && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onPrepClick?.(prepArtifact.id); }}
+                  className="text-[9px] px-1.5 py-0.5 rounded-full bg-[rgba(63,185,80,0.12)] text-[var(--green)] font-medium hover:bg-[rgba(63,185,80,0.2)] transition-colors"
+                  title={prepArtifact.title}
+                >
+                  Prep
+                </button>
               )}
             </div>
           </div>
