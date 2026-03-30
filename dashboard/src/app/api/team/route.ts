@@ -30,19 +30,19 @@ export async function GET(req: NextRequest) {
       `SELECT t.id, t.title, t.priority, t.status, t.project, t.context,
               CASE
                 WHEN t.delegated_to = $1 THEN 'delegated'
-                WHEN t.notes LIKE '%[People:%' AND t.notes ILIKE $4 THEN 'tagged'
+                WHEN t.notes LIKE '%[People:%' AND t.notes ILIKE $3 THEN 'tagged'
                 ELSE 'mentioned'
               END as tier,
               CASE WHEN t.delegated_to = $1 THEN 0
-                   WHEN t.notes LIKE '%[People:%' AND t.notes ILIKE $4 THEN 1
+                   WHEN t.notes LIKE '%[People:%' AND t.notes ILIKE $3 THEN 1
                    ELSE 2 END as tier_rank,
               CASE WHEN t.priority LIKE 'P0%' THEN 0 WHEN t.priority LIKE 'P1%' THEN 1
                    WHEN t.priority LIKE 'P2%' THEN 2 ELSE 3 END as priority_rank
        FROM tasks t
        WHERE t.status != 'Done'
-         AND (t.delegated_to = $1 OR t.title ILIKE $3 OR t.notes ILIKE $4)
+         AND (t.delegated_to = $1 OR t.title ILIKE $2 OR t.notes ILIKE $3)
        ORDER BY tier_rank, priority_rank`,
-      [firstName, member.name, `%${firstName}%`, `%${member.name}%`]
+      [firstName, `%${firstName}%`, `%${member.name}%`]
     );
 
     // Get stats from person index
