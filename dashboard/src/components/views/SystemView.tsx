@@ -669,6 +669,53 @@ export default function SystemView() {
         </div>
       </Card>
 
+      {/* Section 2b: PostgreSQL & Notion Sync */}
+      {data?.postgres && (
+        <Card className="mb-6">
+          <CardHeader
+            title="PostgreSQL"
+            right={
+              <span className="text-xs" style={{ color: data.postgres.status === "connected" ? "var(--green)" : "var(--red)" }}>
+                {data.postgres.status === "connected" ? "Connected" : data.postgres.status}
+                {data.postgres.size ? ` · ${data.postgres.size}` : ""}
+              </span>
+            }
+          />
+          <div className="px-4 py-3">
+            <div className="grid grid-cols-4 gap-4 mb-3">
+              <div className="text-center">
+                <div className="text-lg font-bold text-[var(--accent)]">{data.postgres.dataBackend}</div>
+                <div className="text-[9px] text-[var(--text-dim)] uppercase">Data Backend</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-[var(--green)]">{data.postgres.notionSync?.synced || 0}</div>
+                <div className="text-[9px] text-[var(--text-dim)] uppercase">Synced</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold text-[var(--yellow)]">{data.postgres.notionSync?.pending || 0}</div>
+                <div className="text-[9px] text-[var(--text-dim)] uppercase">Pending Sync</div>
+              </div>
+              <div className="text-center">
+                <div className="text-lg font-bold" style={{ color: (data.postgres.notionSync?.errors || 0) > 0 ? "var(--red)" : "var(--green)" }}>
+                  {data.postgres.notionSync?.errors || 0}
+                </div>
+                <div className="text-[9px] text-[var(--text-dim)] uppercase">Sync Errors</div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-[var(--text-dim)]">
+              <span>Connections: {data.postgres.connections}</span>
+              <span>Triage inbox: <span className={data.postgres.triageInbox > 0 ? "text-[var(--yellow)]" : ""}>{data.postgres.triageInbox}</span></span>
+              {data.postgres.notionSync?.lastSync && (
+                <span>Last sync: {new Date(data.postgres.notionSync.lastSync).toLocaleTimeString()}</span>
+              )}
+              {data.postgres.notionSync?.syncLastHour > 0 && (
+                <span>Synced last hour: {data.postgres.notionSync.syncLastHour}</span>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
       {/* Section 3: LLM Configuration */}
       <Card className="mb-6">
         <CardHeader title="LLM Configuration" />
