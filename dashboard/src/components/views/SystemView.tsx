@@ -1059,7 +1059,7 @@ export default function SystemView() {
                   <td className="px-4 py-2.5 text-right">
                     <button
                       onClick={() => triggerPipeline(p.id)}
-                      disabled={triggeringId === p.id || p.status === "paused" || p.status === "local"}
+                      disabled={triggeringId === p.id || p.status === "paused"}
                       className="text-[11px] px-2.5 py-1 rounded border border-[var(--border)] text-[var(--accent)] hover:bg-[rgba(88,166,255,0.08)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                     >
                       {triggeringId === p.id ? "Triggering..." : "Run Now"}

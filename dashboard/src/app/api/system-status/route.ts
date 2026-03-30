@@ -648,13 +648,17 @@ export async function POST(req: NextRequest) {
       );
     }
     try {
-      // Open writable for updates
-      const writableDb = new Database(path.join(STORE_DIR, "messages.db"));
+      // Update both SQLite and PG so scheduler picks it up
       const now = new Date().toISOString();
-      writableDb
-        .prepare("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?")
-        .run(now, id);
-      writableDb.close();
+      try {
+        const writableDb = new Database(path.join(STORE_DIR, "messages.db"));
+        writableDb.prepare("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?").run(now, id);
+        writableDb.close();
+      } catch {}
+      // Also update PG
+      try {
+        await pgSql("UPDATE scheduled_tasks SET next_run = $1 WHERE id = $2", [now, id]);
+      } catch {}
       db.close();
       return NextResponse.json({ ok: true, message: `Triggered ${id}` });
     } catch (err) {
@@ -749,6 +753,11 @@ export async function PATCH(req: NextRequest) {
       }
 
       writableDb.close();
+
+      // Sync model change to PG
+      try {
+        await pgSql("UPDATE scheduled_tasks SET model = $1 WHERE id = $2", [body.model || null, body.id]);
+      } catch {}
 
       const action = isLocal && hasLocalScript ? "Switched to local script" :
                      !isLocal && hasLocalScript ? "Resumed on API, stopped local script" :
