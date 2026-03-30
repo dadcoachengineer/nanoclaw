@@ -1,590 +1,219 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
-import { proxiedFetch } from "@/lib/onecli";
 import { requireAuth } from "@/lib/require-auth";
-
-const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const PROJECTS_PATH = path.join(STORE_DIR, "initiatives.json");
-const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
-const TOPIC_INDEX_PATH = path.join(STORE_DIR, "topic-index.json");
-const SUMMARIES_PATH = path.join(STORE_DIR, "webex-summaries.json");
-const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
-
-function loadJson(p: string) {
-  try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return {}; }
-}
-
-function saveJson(p: string, data: unknown) {
-  fs.writeFileSync(p, JSON.stringify(data, null, 2) + "\n", "utf-8");
-}
+import { sql, sqlOne } from "@/lib/pg";
 
 function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
+  return name.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
 
-/** Case-insensitive keyword match against a text string. */
 function matchesKeywords(text: string, keywords: string[]): boolean {
   const lower = text.toLowerCase();
   return keywords.some((kw) => lower.includes(kw.toLowerCase()));
 }
 
-// ---------------------------------------------------------------------------
-// Auto-linking helpers (list view counts)
-// ---------------------------------------------------------------------------
-
-interface InitiativeEntry {
-  name: string;
-  description: string;
-  status: string;
-  owner: string;
-  notionProject?: string;
-  keywords: string[];
-  pinnedTaskIds: string[];
-  pinnedPeople: string[];
-  pinnedMeetingTitles: string[];
-  createdAt: string;
-}
-
-function countLinkedPeople(
-  personIndex: Record<string, any>,
-  project: InitiativeEntry
-): { count: number; latestDate: string | null } {
-  let count = 0;
-  let latest: string | null = null;
-
-  for (const entry of Object.values(personIndex)) {
-    const e = entry as any;
-    const isPinned = project.pinnedPeople.some(
-      (pp) => pp.toLowerCase() === (e.name || "").toLowerCase()
-    );
-    if (isPinned) {
-      count++;
-      continue;
-    }
-    // Check meetings, transcripts, and AI summaries for keyword matches
-    const texts: { text: string; date?: string }[] = [];
-    for (const m of e.meetings || []) texts.push({ text: m.topic || "", date: m.date });
-    for (const t of e.transcriptMentions || []) texts.push({ text: t.topic || "", date: t.date });
-    for (const s of e.aiSummaries || []) texts.push({ text: `${s.title || ""} ${s.summary || ""}`, date: s.date });
-
-    const matched = texts.some((t) => matchesKeywords(t.text, project.keywords));
-    if (matched) {
-      count++;
-      for (const t of texts) {
-        if (t.date && (!latest || t.date > latest)) latest = t.date;
-      }
-    }
-  }
-  return { count, latestDate: latest };
-}
-
-function countLinkedMeetings(
-  personIndex: Record<string, any>,
-  summaries: Record<string, any>,
-  project: InitiativeEntry
-): { count: number; latestDate: string | null } {
-  const seen = new Set<string>();
-  let latest: string | null = null;
-
-  // From pinned titles
-  for (const title of project.pinnedMeetingTitles) {
-    seen.add(title.toLowerCase());
-  }
-
-  // From person index meetings
-  for (const entry of Object.values(personIndex)) {
-    const e = entry as any;
-    for (const m of e.meetings || []) {
-      const key = (m.topic || "").toLowerCase();
-      if (!seen.has(key) && matchesKeywords(m.topic || "", project.keywords)) {
-        seen.add(key);
-        if (m.date && (!latest || m.date > latest)) latest = m.date;
-      }
-    }
-  }
-
-  // From webex summaries
-  for (const s of Object.values(summaries)) {
-    const sm = s as any;
-    const key = (sm.title || "").toLowerCase();
-    if (!seen.has(key) && matchesKeywords(sm.title || "", project.keywords)) {
-      seen.add(key);
-      if (sm.date && (!latest || sm.date > latest)) latest = sm.date;
-    }
-  }
-
-  return { count: seen.size, latestDate: latest };
-}
-
-// ---------------------------------------------------------------------------
-// Detail view helpers
-// ---------------------------------------------------------------------------
-
-async function fetchNotionTasks(
-  keywords: string[],
-  pinnedTaskIds: string[]
-): Promise<any[]> {
-  const tasks: any[] = [];
-  const seen = new Set<string>();
-
-  // Fetch pinned tasks by ID
-  for (const id of pinnedTaskIds) {
-    try {
-      const resp = await proxiedFetch(`https://api.notion.com/v1/pages/${id}`, {
-        method: "GET",
-        headers: { "Content-Type": "application/json", "Notion-Version": "2022-06-28" },
-      });
-      const page = (await resp.json()) as any;
-      if (page.id) {
-        seen.add(page.id);
-        tasks.push({
-          id: page.id,
-          title: page.properties?.Task?.title?.[0]?.plain_text || "",
-          status: page.properties?.Status?.status?.name || "",
-          priority: page.properties?.Priority?.select?.name || "",
-          source: "pinned",
-          pinned: true,
-        });
-      }
-    } catch { /* skip unreachable tasks */ }
-  }
-
-  // Search by keywords
-  for (const kw of keywords.slice(0, 5)) {
-    try {
-      const resp = await proxiedFetch(
-        `https://api.notion.com/v1/databases/${NOTION_DB}/query`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Notion-Version": "2022-06-28" },
-          body: JSON.stringify({
-            filter: {
-              and: [
-                { property: "Status", status: { does_not_equal: "Done" } },
-                {
-                  or: [
-                    { property: "Task", title: { contains: kw } },
-                    { property: "Notes", rich_text: { contains: kw } },
-                  ],
-                },
-              ],
-            },
-            page_size: 10,
-          }),
-        }
-      );
-      const data = (await resp.json()) as { results?: any[] };
-      for (const page of data.results || []) {
-        if (seen.has(page.id)) continue;
-        seen.add(page.id);
-        tasks.push({
-          id: page.id,
-          title: page.properties?.Task?.title?.[0]?.plain_text || "",
-          status: page.properties?.Status?.status?.name || "",
-          priority: page.properties?.Priority?.select?.name || "",
-          source: `keyword:${kw}`,
-          pinned: false,
-        });
-      }
-    } catch { /* skip failed queries */ }
-  }
-
-  return tasks;
-}
-
-function findLinkedPeople(
-  personIndex: Record<string, any>,
-  project: InitiativeEntry
-): any[] {
-  const people: any[] = [];
-  const seen = new Set<string>();
-
-  for (const [key, entry] of Object.entries(personIndex)) {
-    const e = entry as any;
-    const name = e.name || key;
-    const isPinned = project.pinnedPeople.some(
-      (pp) => pp.toLowerCase() === name.toLowerCase()
-    );
-
-    if (isPinned) {
-      seen.add(key);
-      people.push({
-        name,
-        email: e.emails?.[0] || null,
-        avatar: e.avatar || null,
-        meetingCount: (e.meetings || []).length,
-        pinned: true,
-      });
-      continue;
-    }
-
-    // Check meetings, transcripts, and AI summaries
-    const allTexts: string[] = [];
-    for (const m of e.meetings || []) allTexts.push(m.topic || "");
-    for (const t of e.transcriptMentions || []) allTexts.push(t.topic || "");
-    for (const s of e.aiSummaries || []) allTexts.push(`${s.title || ""} ${s.summary || ""}`);
-
-    if (allTexts.some((txt) => matchesKeywords(txt, project.keywords))) {
-      if (seen.has(key)) continue;
-      seen.add(key);
-      people.push({
-        name,
-        email: e.emails?.[0] || null,
-        avatar: e.avatar || null,
-        meetingCount: (e.meetings || []).length,
-        pinned: false,
-      });
-    }
-  }
-
-  // Sort: pinned first, then by meetingCount descending
-  people.sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    return b.meetingCount - a.meetingCount;
-  });
-
-  return people;
-}
-
-function findLinkedMeetings(
-  personIndex: Record<string, any>,
-  summaries: Record<string, any>,
-  project: InitiativeEntry
-): any[] {
-  const meetings: any[] = [];
-  const seen = new Set<string>();
-
-  // Pinned meetings first
-  for (const title of project.pinnedMeetingTitles) {
-    const key = title.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    // Try to find date from summaries or person index
-    let date: string | null = null;
-    let hasSummary = false;
-    for (const s of Object.values(summaries)) {
-      const sm = s as any;
-      if ((sm.title || "").toLowerCase() === key) {
-        date = sm.date || null;
-        hasSummary = true;
-        break;
-      }
-    }
-    if (!date) {
-      for (const entry of Object.values(personIndex)) {
-        const e = entry as any;
-        for (const m of e.meetings || []) {
-          if ((m.topic || "").toLowerCase() === key) {
-            date = m.date || null;
-            break;
-          }
-        }
-        if (date) break;
-      }
-    }
-
-    meetings.push({ title, date, hasSummary, pinned: true });
-  }
-
-  // From person index
-  for (const entry of Object.values(personIndex)) {
-    const e = entry as any;
-    for (const m of e.meetings || []) {
-      const key = (m.topic || "").toLowerCase();
-      if (seen.has(key)) continue;
-      if (matchesKeywords(m.topic || "", project.keywords)) {
-        seen.add(key);
-        const hasSummary = Object.values(summaries).some(
-          (s: any) => (s.title || "").toLowerCase() === key
-        );
-        meetings.push({ title: m.topic, date: m.date || null, hasSummary, pinned: false });
-      }
-    }
-  }
-
-  // From webex summaries
-  for (const s of Object.values(summaries)) {
-    const sm = s as any;
-    const key = (sm.title || "").toLowerCase();
-    if (seen.has(key)) continue;
-    if (matchesKeywords(sm.title || "", project.keywords)) {
-      seen.add(key);
-      meetings.push({ title: sm.title, date: sm.date || null, hasSummary: true, pinned: false });
-    }
-  }
-
-  // Sort: pinned first, then by date descending
-  meetings.sort((a, b) => {
-    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-    return (b.date || "").localeCompare(a.date || "");
-  });
-
-  return meetings;
-}
-
-function findLinkedSummaries(
-  summaries: Record<string, any>,
-  project: InitiativeEntry
-): any[] {
-  const result: any[] = [];
-
-  for (const [meetingId, s] of Object.entries(summaries)) {
-    const sm = s as any;
-    if (matchesKeywords(sm.title || "", project.keywords)) {
-      result.push({
-        meetingId,
-        title: sm.title || "",
-        date: sm.date || null,
-        summary: sm.summary || "",
-        actionItems: sm.actionItems || [],
-      });
-    }
-  }
-
-  result.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-  return result;
-}
-
-function buildActivityFeed(
-  tasks: any[],
-  meetings: any[],
-  summariesList: any[]
-): any[] {
-  const activity: any[] = [];
-
-  for (const t of tasks) {
-    activity.push({
-      type: "task",
-      title: t.title,
-      date: null, // Notion tasks don't carry a date from our query
-      detail: `${t.status}${t.priority ? " / " + t.priority : ""}`,
-    });
-  }
-
-  for (const m of meetings) {
-    activity.push({
-      type: "meeting",
-      title: m.title,
-      date: m.date,
-      detail: m.hasSummary ? "Has AI summary" : "No summary",
-    });
-  }
-
-  for (const s of summariesList) {
-    activity.push({
-      type: "summary",
-      title: s.title,
-      date: s.date,
-      detail: (s.actionItems || []).length + " action items",
-    });
-  }
-
-  // Sort by date descending; null dates go last
-  activity.sort((a, b) => {
-    if (!a.date && !b.date) return 0;
-    if (!a.date) return 1;
-    if (!b.date) return -1;
-    return b.date.localeCompare(a.date);
-  });
-
-  return activity;
-}
-
-// ---------------------------------------------------------------------------
-// GET handler
-// ---------------------------------------------------------------------------
-
+/**
+ * GET /api/initiatives — list or detail view (from PostgreSQL)
+ */
 export async function GET(req: NextRequest) {
   const auth = await requireAuth();
   if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const { searchParams } = req.nextUrl;
-  const slug = searchParams.get("slug");
-  const projects = loadJson(PROJECTS_PATH) as Record<string, InitiativeEntry>;
+  const slug = req.nextUrl.searchParams.get("slug");
 
   if (slug) {
     // --- Detail view ---
-    const project = projects[slug];
-    if (!project) {
-      return NextResponse.json({ error: "Initiative not found" }, { status: 404 });
+    const ini = await sqlOne(
+      "SELECT * FROM initiatives WHERE slug = $1", [slug]
+    );
+    if (!ini) return NextResponse.json({ error: "Initiative not found" }, { status: 404 });
+
+    // Get pinned tasks
+    const pinnedIds = (await sql(
+      "SELECT task_id FROM initiative_pinned_tasks WHERE initiative_slug = $1", [slug]
+    )).map((r: any) => r.task_id);
+
+    // Get tasks: pinned + keyword-matched
+    let tasks: any[] = [];
+    if (pinnedIds.length > 0) {
+      const pinnedPlaceholders = pinnedIds.map((_: any, i: number) => `$${i + 1}::uuid`).join(",");
+      tasks = await sql(
+        `SELECT id, title, priority, status, source, project, delegated_to, notes, created_at
+         FROM tasks WHERE id IN (${pinnedPlaceholders}) AND status != 'Done'
+         ORDER BY CASE WHEN priority LIKE 'P0%' THEN 0 WHEN priority LIKE 'P1%' THEN 1 WHEN priority LIKE 'P2%' THEN 2 ELSE 3 END`,
+        pinnedIds
+      );
+    }
+    // Also find keyword-matched tasks
+    if (ini.keywords?.length) {
+      const kwConditions = ini.keywords.map((_: string, i: number) => `title ILIKE $${i + 1}`).join(" OR ");
+      const kwParams = ini.keywords.map((k: string) => `%${k}%`);
+      const kwTasks = await sql(
+        `SELECT id, title, priority, status, source, project, delegated_to, notes, created_at
+         FROM tasks WHERE status != 'Done' AND (${kwConditions})
+         ORDER BY created_at DESC LIMIT 20`,
+        kwParams
+      );
+      const existingIds = new Set(tasks.map((t: any) => t.id));
+      for (const t of kwTasks) {
+        if (!existingIds.has(t.id)) tasks.push(t);
+      }
     }
 
-    const personIndex = loadJson(INDEX_PATH);
-    const summaries = loadJson(SUMMARIES_PATH);
+    // Get linked people (pinned + keyword-matched in meetings)
+    const pinnedPeople = (await sql(
+      "SELECT person_name FROM initiative_pinned_people WHERE initiative_slug = $1", [slug]
+    )).map((r: any) => r.person_name);
 
-    const [tasks, people, meetings, summariesList] = await Promise.all([
-      fetchNotionTasks(project.keywords, project.pinnedTaskIds),
-      Promise.resolve(findLinkedPeople(personIndex, project)),
-      Promise.resolve(findLinkedMeetings(personIndex, summaries, project)),
-      Promise.resolve(findLinkedSummaries(summaries, project)),
-    ]);
+    const people: any[] = [];
+    // Add pinned people
+    for (const name of pinnedPeople) {
+      const person = await sqlOne(
+        `SELECT p.name, pe.email, COUNT(DISTINCT mp.meeting_id) as meetings
+         FROM people p LEFT JOIN person_emails pe ON pe.person_id = p.id
+         LEFT JOIN meeting_participants mp ON mp.person_id = p.id
+         WHERE p.name ILIKE $1
+         GROUP BY p.name, pe.email LIMIT 1`,
+        [`%${name}%`]
+      );
+      if (person) people.push({ name: person.name, email: person.email, meetings: parseInt(person.meetings), pinned: true });
+    }
+    // Add keyword-matched people from meetings
+    if (ini.keywords?.length) {
+      const kwCond = ini.keywords.map((_: string, i: number) => `m.topic ILIKE $${i + 1}`).join(" OR ");
+      const kwP = ini.keywords.map((k: string) => `%${k}%`);
+      const matched = await sql(
+        `SELECT DISTINCT p.name, pe.email FROM people p
+         JOIN meeting_participants mp ON mp.person_id = p.id
+         JOIN meetings m ON m.id = mp.meeting_id
+         LEFT JOIN person_emails pe ON pe.person_id = p.id
+         WHERE ${kwCond} LIMIT 15`,
+        kwP
+      );
+      const existingNames = new Set(people.map((p: any) => p.name.toLowerCase()));
+      for (const m of matched) {
+        if (!existingNames.has(m.name.toLowerCase())) people.push({ name: m.name, email: m.email, pinned: false });
+      }
+    }
 
-    const activity = buildActivityFeed(tasks, meetings, summariesList);
+    // Get linked meetings
+    const meetings: any[] = [];
+    if (ini.keywords?.length) {
+      const kwCond = ini.keywords.map((_: string, i: number) => `topic ILIKE $${i + 1}`).join(" OR ");
+      const kwP = ini.keywords.map((k: string) => `%${k}%`);
+      const mtgs = await sql(
+        `SELECT id, topic, date::text, host_name FROM meetings WHERE ${kwCond} ORDER BY date DESC LIMIT 15`,
+        kwP
+      );
+      meetings.push(...mtgs.map((m: any) => ({ id: m.id, topic: m.topic, date: m.date, host: m.host_name })));
+    }
+
+    // Get summaries
+    const summaries: any[] = [];
+    if (ini.keywords?.length) {
+      const kwCond = ini.keywords.map((_: string, i: number) => `title ILIKE $${i + 1} OR summary ILIKE $${i + 1}`).join(" OR ");
+      const kwP = ini.keywords.map((k: string) => `%${k}%`);
+      const sums = await sql(
+        `SELECT meeting_id, title, date::text, summary FROM ai_summaries WHERE ${kwCond} ORDER BY date DESC LIMIT 5`,
+        kwP
+      );
+      summaries.push(...sums.map((s: any) => ({ meetingId: s.meeting_id, title: s.title, date: s.date, summary: s.summary })));
+    }
 
     return NextResponse.json({
-      name: project.name,
-      description: project.description,
-      status: project.status,
-      keywords: project.keywords,
-      tasks,
-      people,
-      meetings,
-      summaries: summariesList,
-      activity,
+      name: ini.name, description: ini.description, status: ini.status,
+      keywords: ini.keywords, tasks, people, meetings, summaries, activity: [],
     });
   }
 
   // --- List view ---
-  const personIndex = loadJson(INDEX_PATH);
-  const summaries = loadJson(SUMMARIES_PATH);
+  const initiatives = await sql(
+    `SELECT i.slug, i.name, i.description, i.status, i.owner, i.keywords, i.created_at,
+            COALESCE(tc.task_count, 0) as task_count,
+            COALESCE(pc.people_count, 0) as people_count,
+            array_agg(DISTINCT ipt.task_id) FILTER (WHERE ipt.task_id IS NOT NULL) as pinned_task_ids
+     FROM initiatives i
+     LEFT JOIN initiative_pinned_tasks ipt ON ipt.initiative_slug = i.slug
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*) as task_count FROM initiative_pinned_tasks WHERE initiative_slug = i.slug
+     ) tc ON true
+     LEFT JOIN LATERAL (
+       SELECT COUNT(*) as people_count FROM initiative_pinned_people WHERE initiative_slug = i.slug
+     ) pc ON true
+     GROUP BY i.slug, i.name, i.description, i.status, i.owner, i.keywords, i.created_at, tc.task_count, pc.people_count
+     ORDER BY CASE WHEN i.status = 'active' THEN 0 ELSE 1 END, i.created_at DESC`
+  );
 
-  const list = Object.entries(projects).map(([slug, project]) => {
-    const { count: peopleCount, latestDate: peopleLast } = countLinkedPeople(personIndex, project);
-    const { count: meetingCount, latestDate: meetingLast } = countLinkedMeetings(
-      personIndex,
-      summaries,
-      project
-    );
-
-    // Task count is expensive (Notion API) so we skip it in list view and report 0.
-    // The detail view will give the real count.
-    const dates = [peopleLast, meetingLast, project.createdAt].filter(Boolean) as string[];
-    const recentActivity = dates.sort().pop() || project.createdAt;
-
-    return {
-      slug,
-      name: project.name,
-      description: project.description,
-      status: project.status,
-      owner: project.owner,
-      taskCount: 0,
-      peopleCount: peopleCount,
-      meetingCount: meetingCount,
-      recentActivity,
-      pinnedTaskIds: project.pinnedTaskIds || [],
-    };
-  });
-
-  // Sort: active first, then by recentActivity descending
-  list.sort((a, b) => {
-    if (a.status !== b.status) {
-      if (a.status === "active") return -1;
-      if (b.status === "active") return 1;
-    }
-    return (b.recentActivity || "").localeCompare(a.recentActivity || "");
-  });
+  const list = initiatives.map((i: any) => ({
+    slug: i.slug, name: i.name, description: i.description, status: i.status,
+    owner: i.owner, taskCount: parseInt(i.task_count), peopleCount: parseInt(i.people_count),
+    meetingCount: 0, recentActivity: i.created_at,
+    pinnedTaskIds: (i.pinned_task_ids || []).filter(Boolean),
+  }));
 
   return NextResponse.json(list);
 }
 
-// ---------------------------------------------------------------------------
-// POST handler — create initiative
-// ---------------------------------------------------------------------------
-
+/**
+ * POST /api/initiatives — create initiative
+ */
 export async function POST(req: NextRequest) {
   const auth = await requireAuth();
   if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const body = await req.json();
-  const { name, description, keywords, notionProject, owner } = body;
-
+  const { name, description, keywords, notionProject, owner } = await req.json();
   if (!name || !description || !keywords || !Array.isArray(keywords)) {
-    return NextResponse.json(
-      { error: "name, description, and keywords (array) are required" },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: "name, description, and keywords (array) are required" }, { status: 400 });
   }
 
-  const projects = loadJson(PROJECTS_PATH) as Record<string, InitiativeEntry>;
   const slug = slugify(name);
+  const existing = await sqlOne("SELECT slug FROM initiatives WHERE slug = $1", [slug]);
+  if (existing) return NextResponse.json({ error: "Initiative already exists" }, { status: 409 });
 
-  if (projects[slug]) {
-    return NextResponse.json({ error: "Initiative with this slug already exists" }, { status: 409 });
-  }
+  await sql(
+    `INSERT INTO initiatives (slug, name, description, status, owner, notion_project, keywords, created_at)
+     VALUES ($1, $2, $3, 'active', $4, $5, $6, CURRENT_DATE)`,
+    [slug, name, description, owner || "Jason", notionProject || null, keywords]
+  );
 
-  const newProject: InitiativeEntry = {
-    name,
-    description,
-    status: "active",
-    owner: owner || "Jason",
-    notionProject: notionProject || undefined,
-    keywords,
-    pinnedTaskIds: [],
-    pinnedPeople: [],
-    pinnedMeetingTitles: [],
-    createdAt: new Date().toISOString().slice(0, 10),
-  };
-
-  projects[slug] = newProject;
-  saveJson(PROJECTS_PATH, projects);
-
-  return NextResponse.json({ slug, ...newProject }, { status: 201 });
+  return NextResponse.json({ slug, name, description, status: "active", owner: owner || "Jason", keywords, pinnedTaskIds: [], pinnedPeople: [] }, { status: 201 });
 }
 
-// ---------------------------------------------------------------------------
-// PATCH handler — update initiative (fields + pin/unpin)
-// ---------------------------------------------------------------------------
-
+/**
+ * PATCH /api/initiatives — update initiative (fields + pin/unpin)
+ */
 export async function PATCH(req: NextRequest) {
   const auth = await requireAuth();
   if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const body = await req.json();
-  const { slug, ...updates } = body;
+  const { slug } = body;
+  if (!slug) return NextResponse.json({ error: "slug is required" }, { status: 400 });
 
-  if (!slug) {
-    return NextResponse.json({ error: "slug is required" }, { status: 400 });
-  }
+  const ini = await sqlOne("SELECT * FROM initiatives WHERE slug = $1", [slug]);
+  if (!ini) return NextResponse.json({ error: "Initiative not found" }, { status: 404 });
 
-  const projects = loadJson(PROJECTS_PATH) as Record<string, InitiativeEntry>;
-  const project = projects[slug];
+  // Field updates
+  if (body.name) await sql("UPDATE initiatives SET name = $1 WHERE slug = $2", [body.name, slug]);
+  if (body.description) await sql("UPDATE initiatives SET description = $1 WHERE slug = $2", [body.description, slug]);
+  if (body.status) await sql("UPDATE initiatives SET status = $1 WHERE slug = $2", [body.status, slug]);
+  if (body.keywords) await sql("UPDATE initiatives SET keywords = $1 WHERE slug = $2", [body.keywords, slug]);
 
-  if (!project) {
-    return NextResponse.json({ error: "Initiative not found" }, { status: 404 });
+  // Pin/unpin task
+  if (body.pinTask) {
+    await sql("INSERT INTO initiative_pinned_tasks (initiative_slug, task_id) VALUES ($1, $2::uuid) ON CONFLICT DO NOTHING", [slug, body.pinTask]);
   }
-
-  // Pin / unpin operations
-  if (updates.pinTask) {
-    if (!project.pinnedTaskIds.includes(updates.pinTask)) {
-      project.pinnedTaskIds.push(updates.pinTask);
-    }
-  }
-  if (updates.unpinTask) {
-    project.pinnedTaskIds = project.pinnedTaskIds.filter((id: string) => id !== updates.unpinTask);
-  }
-  if (updates.pinPerson) {
-    if (!project.pinnedPeople.includes(updates.pinPerson)) {
-      project.pinnedPeople.push(updates.pinPerson);
-    }
-  }
-  if (updates.unpinPerson) {
-    project.pinnedPeople = project.pinnedPeople.filter((n: string) => n !== updates.unpinPerson);
-  }
-  if (updates.pinMeeting) {
-    if (!project.pinnedMeetingTitles.includes(updates.pinMeeting)) {
-      project.pinnedMeetingTitles.push(updates.pinMeeting);
-    }
-  }
-  if (updates.unpinMeeting) {
-    project.pinnedMeetingTitles = project.pinnedMeetingTitles.filter(
-      (t: string) => t !== updates.unpinMeeting
-    );
+  if (body.unpinTask) {
+    await sql("DELETE FROM initiative_pinned_tasks WHERE initiative_slug = $1 AND task_id = $2::uuid", [slug, body.unpinTask]);
   }
 
-  // Direct field updates
-  if (updates.status !== undefined) project.status = updates.status;
-  if (updates.description !== undefined) project.description = updates.description;
-  if (updates.keywords !== undefined) project.keywords = updates.keywords;
+  // Pin/unpin person
+  if (body.pinPerson) {
+    await sql("INSERT INTO initiative_pinned_people (initiative_slug, person_name) VALUES ($1, $2) ON CONFLICT DO NOTHING", [slug, body.pinPerson]);
+  }
+  if (body.unpinPerson) {
+    await sql("DELETE FROM initiative_pinned_people WHERE initiative_slug = $1 AND person_name = $2", [slug, body.unpinPerson]);
+  }
 
-  projects[slug] = project;
-  saveJson(PROJECTS_PATH, projects);
-
-  return NextResponse.json({ slug, ...project });
+  const updated = await sqlOne("SELECT * FROM initiatives WHERE slug = $1", [slug]);
+  return NextResponse.json({ slug, ...updated });
 }

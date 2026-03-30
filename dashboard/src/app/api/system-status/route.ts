@@ -3,6 +3,7 @@ import fs from "fs";
 import path from "path";
 import Database from "better-sqlite3";
 import { requireAuth } from "@/lib/require-auth";
+import { sql as pgSql, sqlOne as pgSqlOne } from "@/lib/pg";
 
 const STORE_DIR =
   process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");

@@ -1,111 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
-import { proxiedFetch } from "@/lib/onecli";
 import { requireAuth } from "@/lib/require-auth";
-
-const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
-const TOPIC_INDEX_PATH = path.join(STORE_DIR, "topic-index.json");
-const SUMMARIES_PATH = path.join(STORE_DIR, "webex-summaries.json");
-const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
-
-function loadJson(p: string) {
-  try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return {}; }
-}
-
-interface PersonCandidate {
-  key: string;
-  name: string;
-  email?: string;
-  avatar?: string;
-  meetingCount: number;
-  messageCount: number;
-}
-
-function findPerson(index: Record<string, any>, name: string) {
-  const lower = name.toLowerCase().replace(/[^a-z\s]/g, "").trim();
-  if (index[lower]) return index[lower];
-  for (const entry of Object.values(index)) {
-    const e = entry as any;
-    if (e.name?.toLowerCase().includes(lower) || lower.includes(e.name?.toLowerCase())) return e;
-    // Last name match
-    const parts = lower.split(" ");
-    const eParts = (e.name || "").toLowerCase().split(" ");
-    if (parts.length > 0 && eParts.length > 0 &&
-        parts[parts.length - 1] === eParts[eParts.length - 1] &&
-        parts[parts.length - 1].length > 3) return e;
-  }
-  return null;
-}
-
-function findPersonCandidates(index: Record<string, any>, name: string): PersonCandidate[] {
-  const lower = name.toLowerCase().replace(/[^a-z\s]/g, "").trim();
-  const seen = new Set<string>();
-  const candidates: PersonCandidate[] = [];
-
-  function addCandidate(key: string, e: any) {
-    if (seen.has(key)) return;
-    seen.add(key);
-    candidates.push({
-      key,
-      name: e.name || key,
-      email: e.emails?.[0],
-      avatar: e.avatar,
-      meetingCount: (e.meetings || []).length,
-      messageCount: (e.messageExcerpts || []).length,
-    });
-  }
-
-  // Exact key match
-  if (index[lower]) addCandidate(lower, index[lower]);
-
-  for (const [key, entry] of Object.entries(index)) {
-    const e = entry as any;
-    const eName = (e.name || "").toLowerCase();
-    // Name includes match (bidirectional)
-    if (eName.includes(lower) || lower.includes(eName)) {
-      addCandidate(key, e);
-      continue;
-    }
-    // Last name match
-    const parts = lower.split(" ");
-    const eParts = eName.split(" ");
-    if (parts.length > 0 && eParts.length > 0 &&
-        parts[parts.length - 1] === eParts[eParts.length - 1] &&
-        parts[parts.length - 1].length > 3) {
-      addCandidate(key, e);
-    }
-  }
-
-  // Sort by total interaction count descending
-  candidates.sort((a, b) => (b.meetingCount + b.messageCount) - (a.meetingCount + a.messageCount));
-  return candidates;
-}
+import { sql, sqlOne } from "@/lib/pg";
 
 function extractPersonName(meetingTitle: string, hostName?: string, hostEmail?: string): string {
-  // For 1:1s, extract the other person's name from the title
   const cleaned = meetingTitle
-    .replace(/&/g, "")
-    .replace(/1:1/gi, "")
-    .replace(/Jason/gi, "")
-    .replace(/Shearer/gi, "")
+    .replace(/&/g, "").replace(/1:1/gi, "").replace(/Jason/gi, "").replace(/Shearer/gi, "")
     .replace(/['']s?\s*(meeting|sync|catch up|check in)/gi, "")
-    .replace(/\d{8}/g, "")
-    .replace(/[-–]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .split(",")[0]
-    .trim();
-
+    .replace(/\d{8}/g, "").replace(/[-–]/g, " ").replace(/\s+/g, " ").trim()
+    .split(",")[0].trim();
   return cleaned || (hostEmail !== "jasheare@cisco.com" ? (hostName || "") : "");
 }
 
 /**
- * GET /api/meeting-prep?meetingId=xxx
- * or GET /api/meeting-prep?title=xxx&host=xxx&hostEmail=xxx
- *
- * Returns contextual prep data for a specific meeting.
+ * GET /api/meeting-prep — contextual prep data from PostgreSQL
  */
 export async function GET(req: NextRequest) {
   const auth = await requireAuth();
@@ -117,159 +24,145 @@ export async function GET(req: NextRequest) {
   const hostEmail = searchParams.get("hostEmail") || "";
   const selectedPerson = searchParams.get("selectedPerson") || "";
 
-  const personIndex = loadJson(INDEX_PATH);
-  const topicIndex = loadJson(TOPIC_INDEX_PATH);
-
   const personName = extractPersonName(title, host, hostEmail);
 
+  // Find person in PG
   let person: any = null;
-  let candidates: PersonCandidate[] | undefined;
+  let candidates: any[] | undefined;
 
-  if (selectedPerson && personIndex[selectedPerson]) {
-    // Explicit selection — skip fuzzy matching
-    person = personIndex[selectedPerson];
+  if (selectedPerson) {
+    person = await sqlOne(
+      `SELECT p.*, array_agg(DISTINCT pe.email) FILTER (WHERE pe.email IS NOT NULL) as emails
+       FROM people p LEFT JOIN person_emails pe ON pe.person_id = p.id
+       WHERE p.key = $1 GROUP BY p.id`,
+      [selectedPerson]
+    );
   } else if (personName) {
-    const allCandidates = findPersonCandidates(personIndex, personName);
+    const key = personName.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+    const allCandidates = await sql(
+      `SELECT p.key, p.name, p.avatar, pe.email,
+              COUNT(DISTINCT mp.meeting_id) as meetings,
+              COUNT(DISTINCT me.id) as messages
+       FROM people p
+       LEFT JOIN person_emails pe ON pe.person_id = p.id
+       LEFT JOIN meeting_participants mp ON mp.person_id = p.id
+       LEFT JOIN message_excerpts me ON me.person_id = p.id
+       WHERE p.key = $1 OR p.name ILIKE $2
+         OR (array_length(string_to_array(p.name, ' '), 1) >= 2
+             AND split_part(p.name, ' ', array_length(string_to_array(p.name, ' '), 1)) ILIKE $3
+             AND length($3) > 3)
+       GROUP BY p.key, p.name, p.avatar, pe.email
+       ORDER BY COUNT(DISTINCT mp.meeting_id) + COUNT(DISTINCT me.id) DESC
+       LIMIT 5`,
+      [key, `%${personName}%`, `%${personName.split(" ").pop()}%`]
+    );
     if (allCandidates.length > 1) {
-      candidates = allCandidates;
+      candidates = allCandidates.map((c: any) => ({
+        key: c.key, name: c.name, email: c.email, avatar: c.avatar,
+        meetingCount: parseInt(c.meetings), messageCount: parseInt(c.messages),
+      }));
     }
-    person = allCandidates.length > 0 ? personIndex[allCandidates[0].key] : null;
+    if (allCandidates.length > 0) {
+      person = await sqlOne(
+        `SELECT p.*, array_agg(DISTINCT pe.email) FILTER (WHERE pe.email IS NOT NULL) as emails
+         FROM people p LEFT JOIN person_emails pe ON pe.person_id = p.id
+         WHERE p.key = $1 GROUP BY p.id`,
+        [allCandidates[0].key]
+      );
+    }
   }
 
-  // Match topics
-  const titleLower = title.toLowerCase();
-  const matchedTopics = Object.values(topicIndex)
-    .filter((t: any) => {
-      const tName = (t.name || "").toLowerCase();
-      return titleLower.includes(tName) || tName.split(/[\/\s]/).some((w: string) => w.length > 3 && titleLower.includes(w));
-    })
-    .map((t: any) => ({
-      name: t.name,
-      taskCount: (t.notionTasks || []).length,
-      meetingCount: (t.meetings || []).length,
-      people: (t.people || []).slice(0, 10),
-    }));
-
-  // Get open tasks related to this person or topic
+  // Build prep data from PG
+  let recentMessages: any[] = [];
+  let previousMeetings: any[] = [];
+  let transcriptHighlights: any[] = [];
   let openTasks: any[] = [];
   let followUpsOwed: any[] = [];
-
-  const searchTerms: string[] = [];
-  if (personName) searchTerms.push(personName);
-  // Add topic keywords
-  for (const t of matchedTopics) {
-    searchTerms.push(t.name.split(/[\/\(\)]/)[0].trim());
-  }
-
-  for (const term of searchTerms.slice(0, 3)) {
-    try {
-      const resp = await proxiedFetch(
-        `https://api.notion.com/v1/databases/${NOTION_DB}/query`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Notion-Version": "2022-06-28" },
-          body: JSON.stringify({
-            filter: {
-              and: [
-                { property: "Status", status: { does_not_equal: "Done" } },
-                { or: [
-                  { property: "Task", title: { contains: term } },
-                  { property: "Notes", rich_text: { contains: term } },
-                ]},
-              ],
-            },
-            page_size: 5,
-          }),
-        }
-      );
-      const data = (await resp.json()) as { results?: any[] };
-      for (const page of data.results || []) {
-        const taskTitle = page.properties?.Task?.title?.[0]?.plain_text || "";
-        const status = page.properties?.Status?.status?.name || "";
-        const priority = page.properties?.Priority?.select?.name || "";
-        const delegated = page.properties?.Delegated?.select?.name || "";
-        const id = page.id;
-
-        if (openTasks.find((t) => t.id === id)) continue;
-
-        const task = { id, title: taskTitle, status, priority, delegated };
-        openTasks.push(task);
-
-        // Tasks delegated to Jason or where he's the owner
-        if (delegated === "Jason" || !delegated) {
-          followUpsOwed.push(task);
-        }
-      }
-    } catch {}
-  }
-
-  // Build the prep
-  const prep: Record<string, unknown> = {
-    meetingTitle: title,
-    personName: person?.name || personName || null,
-    personEmail: person?.emails?.[0] || (hostEmail !== "jasheare@cisco.com" ? hostEmail : null),
-    personAvatar: person?.avatar || null,
-  };
+  let aiSummaries: any[] = [];
 
   if (person) {
-    prep.recentMessages = (person.messageExcerpts || [])
-      .sort((a: any, b: any) => b.date.localeCompare(a.date))
-      .slice(0, 5)
-      .map((m: any) => ({ text: m.text, date: m.date }));
+    recentMessages = await sql(
+      `SELECT text, date::text, room_title as "roomTitle" FROM message_excerpts
+       WHERE person_id = $1 ORDER BY date DESC LIMIT 10`,
+      [person.id]
+    );
 
-    prep.previousMeetings = (person.meetings || [])
-      .sort((a: any, b: any) => b.date.localeCompare(a.date))
-      .slice(0, 5)
-      .map((m: any) => ({ topic: m.topic, date: m.date }));
+    previousMeetings = await sql(
+      `SELECT m.id, m.topic, m.date::text, mp.role
+       FROM meetings m JOIN meeting_participants mp ON mp.meeting_id = m.id
+       WHERE mp.person_id = $1 ORDER BY m.date DESC LIMIT 10`,
+      [person.id]
+    );
 
-    prep.transcriptHighlights = (person.transcriptMentions || [])
-      .sort((a: any, b: any) => b.date.localeCompare(a.date))
-      .slice(0, 3)
-      .map((t: any) => ({
-        topic: t.topic,
-        date: t.date,
-        snippets: (t.snippets || []).slice(0, 2),
-      }));
+    transcriptHighlights = await sql(
+      `SELECT m.topic, m.date::text, tm.snippet_count as "snippetCount", tm.snippets
+       FROM transcript_mentions tm JOIN meetings m ON m.id = tm.meeting_id
+       WHERE tm.person_id = $1 ORDER BY m.date DESC LIMIT 5`,
+      [person.id]
+    );
 
-    prep.stats = {
-      meetings: (person.meetings || []).length,
-      transcripts: (person.transcriptMentions || []).length,
-      messages: (person.messageExcerpts || []).length,
-      tasks: (person.notionTasks || []).length,
-      aiSummaries: (person.aiSummaries || []).length,
-    };
+    aiSummaries = await sql(
+      `SELECT s.title, s.date::text, s.summary FROM ai_summaries s
+       JOIN meeting_participants mp ON mp.meeting_id = s.meeting_id
+       WHERE mp.person_id = $1 ORDER BY s.date DESC LIMIT 3`,
+      [person.id]
+    );
 
-    // AI meeting summaries for this person
-    if (person.aiSummaries?.length > 0) {
-      prep.aiSummaries = person.aiSummaries
-        .sort((a: any, b: any) => b.date.localeCompare(a.date))
-        .slice(0, 3)
-        .map((s: any) => ({
-          title: s.title,
-          date: s.date,
-          summary: s.summary,
-          actionItems: s.actionItems,
-        }));
-    }
+    // Open tasks mentioning this person
+    const firstName = person.name.split(" ")[0];
+    openTasks = await sql(
+      `SELECT id, title, priority, status, source, project FROM tasks
+       WHERE status != 'Done' AND (title ILIKE $1 OR notes ILIKE $2)
+       ORDER BY CASE WHEN priority LIKE 'P0%' THEN 0 WHEN priority LIKE 'P1%' THEN 1 ELSE 2 END
+       LIMIT 10`,
+      [`%${firstName}%`, `%${person.name}%`]
+    );
+
+    // Follow-ups owed (tasks with "Reply to" or "Follow up with" + person name)
+    followUpsOwed = await sql(
+      `SELECT id, title, priority, status FROM tasks
+       WHERE status != 'Done'
+         AND (title ILIKE $1 OR title ILIKE $2)
+       LIMIT 5`,
+      [`%Reply%${firstName}%`, `%Follow up%${firstName}%`]
+    );
   }
 
-  // Check for a direct AI summary for this meeting title
-  const summaries = loadJson(SUMMARIES_PATH);
-  const directSummary = Object.values(summaries).find(
-    (s: any) => s.title?.toLowerCase() === title.toLowerCase()
-  ) as { summary?: string; actionItems?: string[]; date?: string } | undefined;
-  if (directSummary) {
-    prep.meetingSummary = {
-      summary: directSummary.summary,
-      actionItems: directSummary.actionItems,
-      date: directSummary.date,
-    };
+  // Matched topics from PG
+  const titleWords = title.toLowerCase().split(/[\s\-&,]+/).filter((w: string) => w.length > 3);
+  let matchedTopics: any[] = [];
+  if (titleWords.length > 0) {
+    const topicCond = titleWords.map((_: string, i: number) => `t.key ILIKE $${i + 1}`).join(" OR ");
+    const topicParams = titleWords.map((w: string) => `%${w}%`);
+    matchedTopics = await sql(
+      `SELECT t.name, COUNT(DISTINCT tm.meeting_id) as meetings, COUNT(DISTINCT tt.task_id) as tasks
+       FROM topics t
+       LEFT JOIN topic_meetings tm ON tm.topic_id = t.id
+       LEFT JOIN topic_tasks tt ON tt.topic_id = t.id
+       WHERE ${topicCond}
+       GROUP BY t.name LIMIT 5`,
+      topicParams
+    );
   }
 
-  prep.matchedTopics = matchedTopics;
-  prep.openTasks = openTasks;
-  prep.followUpsOwed = followUpsOwed;
-  if (candidates) prep.candidates = candidates;
-
-  return NextResponse.json(prep);
+  return NextResponse.json({
+    meetingTitle: title,
+    personName: person?.name || personName,
+    personEmail: person?.emails?.[0] || "",
+    personAvatar: person?.avatar || null,
+    recentMessages,
+    previousMeetings,
+    transcriptHighlights,
+    openTasks: openTasks.map((t: any) => ({ id: t.id, title: t.title, priority: t.priority, status: t.status, source: t.source })),
+    followUpsOwed: followUpsOwed.map((t: any) => ({ id: t.id, title: t.title, priority: t.priority, status: t.status })),
+    aiSummaries,
+    matchedTopics: matchedTopics.map((t: any) => ({ name: t.name, taskCount: parseInt(t.tasks), meetingCount: parseInt(t.meetings) })),
+    stats: {
+      totalMeetings: previousMeetings.length,
+      totalTranscripts: transcriptHighlights.length,
+      totalMessages: recentMessages.length,
+      totalTasks: openTasks.length,
+    },
+    candidates,
+  });
 }
