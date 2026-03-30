@@ -568,6 +568,39 @@ export async function GET() {
 
   if (db) db.close();
 
+  // PostgreSQL status
+  let postgres: any = { status: "unknown" };
+  try {
+    const pgHealth = await pgSql("SELECT 1 as ok");
+    const pgSize = await pgSqlOne("SELECT pg_size_pretty(pg_database_size('nanoclaw')) as size");
+    const pgConns = await pgSqlOne("SELECT count(*) as c FROM pg_stat_activity WHERE datname = 'nanoclaw'");
+    const pgSync = await pgSqlOne(`
+      SELECT
+        (SELECT COUNT(*) FROM tasks WHERE notion_sync_status = 'synced') as synced,
+        (SELECT COUNT(*) FROM tasks WHERE notion_sync_status = 'pending') as pending,
+        (SELECT COUNT(*) FROM tasks WHERE notion_sync_status = 'error') as errors,
+        (SELECT COUNT(*) FROM tasks WHERE triage_status = 'inbox') as triage_inbox,
+        (SELECT MAX(synced_at) FROM notion_sync_log) as last_sync,
+        (SELECT COUNT(*) FROM notion_sync_log WHERE synced_at > now() - interval '1 hour') as sync_last_hour
+    `);
+    postgres = {
+      status: pgHealth.length > 0 ? "connected" : "error",
+      size: pgSize?.size || "?",
+      connections: parseInt(pgConns?.c || "0"),
+      dataBackend: process.env.DATA_BACKEND || "sqlite",
+      notionSync: {
+        synced: parseInt(pgSync?.synced || "0"),
+        pending: parseInt(pgSync?.pending || "0"),
+        errors: parseInt(pgSync?.errors || "0"),
+        lastSync: pgSync?.last_sync || null,
+        syncLastHour: parseInt(pgSync?.sync_last_hour || "0"),
+      },
+      triageInbox: parseInt(pgSync?.triage_inbox || "0"),
+    };
+  } catch (err: any) {
+    postgres = { status: "error", error: err.message };
+  }
+
   return NextResponse.json({
     platform,
     services,
@@ -579,6 +612,7 @@ export async function GET() {
     containers,
     costSummary,
     availableModels,
+    postgres,
   });
 }
 
