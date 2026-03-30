@@ -64,11 +64,24 @@ export default function PlatformDigitalTwin() {
 
   function tooltip(id: string): string {
     if (id === "pg") return `PostgreSQL · ${pg.size || "?"} · ${pg.latencyMs || "?"}ms · ${pg.total_tasks || 0} tasks`;
-    if (id === "core") return `NanoClaw · ${core.uptime ? formatUptime(core.uptime) : "?"} uptime`;
-    if (id === "ollama") return `Ollama · ${ollama.modelCount || 0} models · Mac Studio`;
+    if (id === "core") return `NanoClaw · ${core.uptime ? formatUptime(core.uptime) : "?"} uptime · ${pipelines.length} pipelines`;
+    if (id === "ollama") return `Ollama · ${ollama.modelCount || 0} models · Mac Studio 96GB`;
     if (id === "nginx") return `Nginx · cert ${nginx.certDaysLeft || "?"}d · dashboard.shearer.live`;
     if (id === "notion") return `Notion · ${pg.sync_ok || 0} synced · ${pg.sync_pending || 0} pending`;
     if (id === "dashboard") return `Dashboard · Next.js · PG-native`;
+    // Data sources — show pipeline details
+    const srcMatch: Record<string, string[]> = { webex: ["webex-messages", "webex-transcripts"], plaud: ["plaud"], gmail: ["gmail"], boox: ["boox"], calendar: ["calendar"] };
+    if (srcMatch[id]) {
+      const matched = pipelines.filter((p) => srcMatch[id].some((m) => p.id.includes(m)));
+      if (matched.length > 0) {
+        return matched.map((p) => {
+          const name = p.id.replace("mc-", "");
+          const lastRun = p.lastRun ? new Date(p.lastRun).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "never";
+          return `${name}: ${p.lastStatus || "?"} · last: ${lastRun}`;
+        }).join(" | ");
+      }
+      return `${id} · no pipeline data`;
+    }
     return id;
   }
 
@@ -120,20 +133,24 @@ export default function PlatformDigitalTwin() {
 
         {/* ── Data Source Nodes (left) ────────────── */}
         {[
-          { id: "webex", y: 80, label: "Webex", sub: "Messages · Transcripts · Summaries", icon: "W" },
-          { id: "plaud", y: 160, label: "Plaud", sub: "Recordings · NotePin", icon: "P" },
-          { id: "gmail", y: 240, label: "Gmail", sub: "Emails · OAuth", icon: "G" },
-          { id: "boox", y: 320, label: "Boox", sub: "Handwritten Notes · OCR", icon: "B" },
-          { id: "calendar", y: 400, label: "Calendar", sub: "Google · Outlook", icon: "C" },
+          { id: "webex", y: 80, label: "Webex", sub: "Messages · Transcripts · Summaries", icon: "W", pipelineMatch: ["webex-messages", "webex-transcripts"] },
+          { id: "plaud", y: 160, label: "Plaud", sub: "Recordings · NotePin", icon: "P", pipelineMatch: ["plaud"] },
+          { id: "gmail", y: 240, label: "Gmail", sub: "Emails · OAuth · Local", icon: "G", pipelineMatch: ["gmail"] },
+          { id: "boox", y: 320, label: "Boox", sub: "Handwritten Notes · OCR", icon: "B", pipelineMatch: ["boox"] },
+          { id: "calendar", y: 400, label: "Calendar", sub: "Google Calendar · Local", icon: "C", pipelineMatch: ["calendar"] },
         ].map((src) => {
-          const pipeline = pipelines.find((p) => p.id.includes(src.id.slice(0, 4)));
-          const color = pipeline?.lastStatus === "success" ? "#3fb950" : pipeline?.lastStatus === "error" ? "#f85149" : "#8b949e";
+          const matchedPipelines = pipelines.filter((p) => src.pipelineMatch.some((m) => p.id.includes(m)));
+          const hasError = matchedPipelines.some((p) => p.lastStatus === "error");
+          const hasSuccess = matchedPipelines.some((p) => p.lastStatus === "success");
+          const color = hasError ? "#f85149" : hasSuccess ? "#3fb950" : "#8b949e";
+          const pipelineCount = matchedPipelines.length;
           return (
             <g key={src.id} onMouseEnter={() => setHovered(src.id)} onMouseLeave={() => setHovered(null)} style={{ cursor: "pointer" }}>
               <rect x="30" y={src.y - 20} width="125" height="44" rx="8" fill={hovered === src.id ? "rgba(88,166,255,0.12)" : "rgba(88,166,255,0.06)"} stroke={color} strokeWidth="1.5" />
               <circle cx="48" cy={src.y} r="10" fill={color} opacity="0.2" />
               <text x="48" y={src.y + 4} textAnchor="middle" fill={color} fontSize="10" fontWeight="bold">{src.icon}</text>
               <text x="65" y={src.y - 3} fill="#e6edf3" fontSize="11" fontWeight="600">{src.label}</text>
+              {pipelineCount > 1 && <text x="148" y={src.y - 3} fill="#8b949e" fontSize="8">{pipelineCount}x</text>}
               <text x="65" y={src.y + 11} fill="#8b949e" fontSize="8">{src.sub}</text>
             </g>
           );
