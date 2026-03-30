@@ -40,7 +40,7 @@ import {
   setSession,
   storeChatMetadata,
   storeMessage,
-} from './db.js';
+} from './db-adapter.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';

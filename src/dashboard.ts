@@ -18,7 +18,7 @@ import {
   getRecentRunLogs,
   getRunLogsForTask,
   getAllRegisteredGroups,
-} from './db.js';
+} from './db-adapter.js';
 import { logger } from './logger.js';
 import type { GroupQueue } from './group-queue.js';
 import type { RegisteredGroup } from './types.js';

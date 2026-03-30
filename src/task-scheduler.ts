@@ -15,7 +15,7 @@ import {
   logTaskRun,
   updateTask,
   updateTaskAfterRun,
-} from './db.js';
+} from './db-adapter.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
