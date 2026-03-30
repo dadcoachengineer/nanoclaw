@@ -376,8 +376,19 @@ export default function TaskDetail({
   // Parse Webex deep link IDs from notes
   const webexRoomId = (notes?.match(/webex_room:(\S+)/)?.[1] || "").replace(/[.\s,;]+$/, "");
   const webexMsgId = notes?.match(/webex_msg:(\S+)/)?.[1] || "";
-  // Don't extract email from notes — LLMs hallucinate email addresses.
-  // The person index has verified emails from Webex API.
+  // Look up verified email from PG person index (not from notes — LLMs hallucinate emails)
+  const [webexVerifiedEmail, setWebexVerifiedEmail] = useState<string | null>(null);
+  useEffect(() => {
+    if (!webexRoomId) return;
+    // Find person linked to this room in PG
+    fetch(`/api/people`).then((r) => r.json()).then((people: any[]) => {
+      // Extract person name from notes "From: Name (email) in Room"
+      const fromName = notes?.match(/From:\s*([^(]+)/)?.[1]?.trim();
+      if (!fromName) return;
+      const match = people.find((p: any) => p.name?.toLowerCase().includes(fromName.toLowerCase().split(" ")[0]));
+      if (match?.emails?.[0]) setWebexVerifiedEmail(match.emails[0]);
+    }).catch(() => {});
+  }, [webexRoomId, notes]);
   // Parse source IDs and meeting names for archive links
   const recordingId = notes?.match(/file_id:\s*(\S+)/)?.[1] || notes?.match(/Recording:\s*(\S+)/)?.[1] || "";
   const webexMeetingId = notes?.match(/webex_meeting:(\S+)/)?.[1] || "";
@@ -856,17 +867,15 @@ export default function TaskDetail({
             </a>
             {webexRoomId && (
               <a
-                href={`https://web.webex.com/spaces/${webexRoomId}`}
-                target="_blank"
-                rel="noopener noreferrer"
+                href={webexVerifiedEmail
+                  ? `webexteams://im?email=${encodeURIComponent(webexVerifiedEmail)}`
+                  : `https://web.webex.com/spaces/${webexRoomId}`}
+                {...(webexVerifiedEmail ? {} : { target: "_blank", rel: "noopener noreferrer" })}
                 className="text-xs text-[var(--green)] hover:underline"
-                onClick={(e) => {
-                  // On click, copy the direct URL to clipboard for manual use
-                  // and open the web link which has "Open in app" button
-                  navigator.clipboard?.writeText(`https://web.webex.com/spaces/${webexRoomId}`).catch(() => {});
-                }}
               >
-                Open in Webex &rarr;
+                {webexVerifiedEmail
+                  ? `Open chat with ${webexVerifiedEmail.split("@")[0]} →`
+                  : "Open in Webex →"}
               </a>
             )}
             {provenanceLink && (
