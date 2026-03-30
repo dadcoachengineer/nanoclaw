@@ -1,88 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
 import { proxiedFetch } from "@/lib/onecli";
 import { requireAuth } from "@/lib/require-auth";
+import { sql, sqlOne } from "@/lib/pg";
 
-const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
-
-interface PersonEntry {
-  name: string;
-  emails: string[];
-  webexRoomIds: string[];
-  webexGroupRooms: string[];
-  meetings: { id: string; topic: string; date: string; role: string }[];
-  transcriptMentions: {
-    recordingId: string;
-    topic: string;
-    date: string;
-    snippetCount: number;
-    snippets: string[];
-  }[];
-  notionTasks: { id: string; title: string; status: string }[];
-  messageExcerpts: { text: string; date: string; roomTitle: string }[];
-}
-
-type PersonIndex = Record<string, PersonEntry>;
-
-let indexCache: { data: PersonIndex; loadedAt: number } | null = null;
-
-function loadIndex(): PersonIndex {
-  if (indexCache && Date.now() - indexCache.loadedAt < 60_000) {
-    return indexCache.data;
-  }
-  try {
-    const data = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
-    indexCache = { data, loadedAt: Date.now() };
-    return data;
-  } catch {
-    return {};
-  }
-}
-
-function findPerson(index: PersonIndex, email?: string, name?: string): PersonEntry | null {
-  // Try exact email match first
-  if (email) {
-    for (const entry of Object.values(index)) {
-      if (entry.emails.includes(email)) return entry;
-    }
-  }
-
-  // Try name match
-  if (name) {
-    const lower = name.toLowerCase();
-    // Exact key match
-    const key = lower.replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
-    if (index[key]) return index[key];
-
-    // Partial match — last name or first+last
-    for (const entry of Object.values(index)) {
-      const entryLower = entry.name.toLowerCase();
-      if (entryLower === lower) return entry;
-      if (entryLower.includes(lower) || lower.includes(entryLower)) return entry;
-      // Last name match
-      const parts = lower.split(" ");
-      const entryParts = entryLower.split(" ");
-      if (
-        parts.length > 0 &&
-        entryParts.length > 0 &&
-        parts[parts.length - 1] === entryParts[entryParts.length - 1] &&
-        parts[parts.length - 1].length > 3
-      ) {
-        return entry;
-      }
-    }
-  }
-
-  return null;
-}
 
 /**
  * GET /api/context?email=person@cisco.com&name=Marcela
  *
- * Returns cross-platform context for a person from the person index.
+ * Returns cross-platform context for a person from PostgreSQL.
  */
 export async function GET(req: NextRequest) {
   const auth = await requireAuth();
@@ -96,8 +22,53 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "email or name required" }, { status: 400 });
   }
 
-  const index = loadIndex();
-  const person = findPerson(index, email, name);
+  // Find the person in PG — try email first, then name match
+  let person: { id: string; name: string; emails: string[] } | null = null;
+
+  if (email) {
+    person = await sqlOne<{ id: string; name: string; emails: string[] }>(
+      `SELECT p.id, p.name,
+              array_agg(DISTINCT pe.email) FILTER (WHERE pe.email IS NOT NULL) as emails
+       FROM people p
+       LEFT JOIN person_emails pe ON pe.person_id = p.id
+       WHERE p.id IN (SELECT person_id FROM person_emails WHERE email = $1)
+       GROUP BY p.id
+       LIMIT 1`,
+      [email]
+    );
+  }
+
+  if (!person && name) {
+    const key = name.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+    person = await sqlOne<{ id: string; name: string; emails: string[] }>(
+      `SELECT p.id, p.name,
+              array_agg(DISTINCT pe.email) FILTER (WHERE pe.email IS NOT NULL) as emails
+       FROM people p
+       LEFT JOIN person_emails pe ON pe.person_id = p.id
+       WHERE p.key = $1 OR p.name ILIKE $2
+       GROUP BY p.id
+       LIMIT 1`,
+      [key, `%${name}%`]
+    );
+
+    // If no exact match, try last-name match for names with >3 chars
+    if (!person) {
+      const parts = name.toLowerCase().split(" ");
+      const lastName = parts[parts.length - 1];
+      if (lastName && lastName.length > 3) {
+        person = await sqlOne<{ id: string; name: string; emails: string[] }>(
+          `SELECT p.id, p.name,
+                  array_agg(DISTINCT pe.email) FILTER (WHERE pe.email IS NOT NULL) as emails
+           FROM people p
+           LEFT JOIN person_emails pe ON pe.person_id = p.id
+           WHERE split_part(p.name, ' ', array_length(string_to_array(p.name, ' '), 1)) ILIKE $1
+           GROUP BY p.id
+           LIMIT 1`,
+          [lastName]
+        );
+      }
+    }
+  }
 
   if (!person) {
     // Fallback: live search for basic data
@@ -142,43 +113,60 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(results);
   }
 
-  // Return the full person context from the index
+  // Person found — fetch all related data from PG
+  const [messageExcerpts, meetings, transcriptMentions, relatedTasks] = await Promise.all([
+    sql(
+      `SELECT text, date::text, room_title as "roomTitle"
+       FROM message_excerpts WHERE person_id = $1 ORDER BY date DESC LIMIT 15`,
+      [person.id]
+    ),
+    sql(
+      `SELECT m.topic, m.date::text, mp.role
+       FROM meetings m JOIN meeting_participants mp ON mp.meeting_id = m.id
+       WHERE mp.person_id = $1 ORDER BY m.date DESC LIMIT 10`,
+      [person.id]
+    ),
+    sql(
+      `SELECT tm.snippet_count as "snippetCount", tm.snippets, m.topic, m.date::text
+       FROM transcript_mentions tm JOIN meetings m ON m.id = tm.meeting_id
+       WHERE tm.person_id = $1 ORDER BY m.date DESC LIMIT 5`,
+      [person.id]
+    ),
+    sql(
+      `SELECT t.id, t.title, t.status
+       FROM tasks t JOIN task_people tp ON tp.task_id = t.id
+       WHERE tp.person_id = $1 ORDER BY t.created_at DESC LIMIT 15`,
+      [person.id]
+    ),
+  ]);
+
   return NextResponse.json({
     match: {
       name: person.name,
-      emails: person.emails,
+      emails: person.emails || [],
     },
-    directMessages: person.messageExcerpts
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 15)
-      .map((m) => ({
-        text: m.text,
-        from: m.roomTitle,
-        created: m.date,
-      })),
-    recentMeetings: person.meetings
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 10)
-      .map((m) => ({
-        topic: m.topic,
-        date: m.date,
-        role: m.role,
-      })),
-    transcriptSnippets: person.transcriptMentions
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .slice(0, 5)
-      .map((t) => ({
-        topic: t.topic,
-        date: t.date,
-        snippetCount: t.snippetCount,
-        snippets: t.snippets,
-      })),
-    relatedTasks: person.notionTasks.slice(0, 15),
+    directMessages: messageExcerpts.map((m: any) => ({
+      text: m.text,
+      from: m.roomTitle,
+      created: m.date,
+    })),
+    recentMeetings: meetings.map((m: any) => ({
+      topic: m.topic,
+      date: m.date,
+      role: m.role,
+    })),
+    transcriptSnippets: transcriptMentions.map((t: any) => ({
+      topic: t.topic,
+      date: t.date,
+      snippetCount: t.snippetCount,
+      snippets: t.snippets || [],
+    })),
+    relatedTasks,
     stats: {
-      totalMeetings: person.meetings.length,
-      totalTranscripts: person.transcriptMentions.length,
-      totalMessages: person.messageExcerpts.length,
-      totalTasks: person.notionTasks.length,
+      totalMeetings: meetings.length,
+      totalTranscripts: transcriptMentions.length,
+      totalMessages: messageExcerpts.length,
+      totalTasks: relatedTasks.length,
     },
   });
 }

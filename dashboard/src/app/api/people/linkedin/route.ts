@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/require-auth";
+import { sql, sqlOne } from "@/lib/pg";
 import fs from "fs";
 import path from "path";
 
@@ -63,23 +64,45 @@ export async function POST(req: NextRequest) {
       // Fetch failed — continue with just saving the URL
     }
 
-    // Save to person index
-    const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
+    // Save to PG
     const normalizedKey = key.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
-    const person = index[normalizedKey];
+    const person = await sqlOne<{ id: string; job_title: string | null; company: string | null; avatar: string | null }>(
+      "SELECT id, job_title, company, avatar FROM people WHERE key = $1",
+      [normalizedKey]
+    );
 
+    let saved = false;
     if (person) {
-      person.linkedinUrl = linkedinUrl;
-      if (extracted.title && !person.jobTitle) person.jobTitle = extracted.title;
-      if (extracted.company && !person.company) person.company = extracted.company;
-      if (extracted.headline) person.linkedinHeadline = extracted.headline;
-      if (extracted.image && !person.avatar) person.avatar = extracted.image;
-      if (extracted.location) person.location = extracted.location;
+      const sets: string[] = ["linkedin_url = $1", "updated_at = now()"];
+      const vals: any[] = [linkedinUrl];
+      let idx = 2;
 
-      fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
+      if (extracted.title && !person.job_title) { sets.push(`job_title = $${idx}`); vals.push(extracted.title); idx++; }
+      if (extracted.company && !person.company) { sets.push(`company = $${idx}`); vals.push(extracted.company); idx++; }
+      if (extracted.headline) { sets.push(`linkedin_headline = $${idx}`); vals.push(extracted.headline); idx++; }
+      if (extracted.image && !person.avatar) { sets.push(`avatar = $${idx}`); vals.push(extracted.image); idx++; }
+
+      vals.push(person.id);
+      await sql(`UPDATE people SET ${sets.join(", ")} WHERE id = $${idx}`, vals);
+      saved = true;
     }
 
-    return NextResponse.json({ extracted, saved: !!person });
+    // Backward-compat: also write to JSON
+    try {
+      const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
+      const jsonPerson = index[normalizedKey];
+      if (jsonPerson) {
+        jsonPerson.linkedinUrl = linkedinUrl;
+        if (extracted.title && !jsonPerson.jobTitle) jsonPerson.jobTitle = extracted.title;
+        if (extracted.company && !jsonPerson.company) jsonPerson.company = extracted.company;
+        if (extracted.headline) jsonPerson.linkedinHeadline = extracted.headline;
+        if (extracted.image && !jsonPerson.avatar) jsonPerson.avatar = extracted.image;
+        if (extracted.location) jsonPerson.location = extracted.location;
+        fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
+      }
+    } catch {}
+
+    return NextResponse.json({ extracted, saved });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

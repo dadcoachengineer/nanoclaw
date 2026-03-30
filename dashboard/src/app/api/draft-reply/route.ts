@@ -1,41 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
-import fs from "fs";
-import path from "path";
 import { requireAuth } from "@/lib/require-auth";
-
-const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
-
-function loadPersonIndex() {
-  try {
-    return JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
-  } catch {
-    return {};
-  }
-}
-
-function findPerson(index: Record<string, any>, name?: string, email?: string) {
-  if (email) {
-    for (const entry of Object.values(index)) {
-      if ((entry as any).emails?.includes(email)) return entry;
-    }
-  }
-  if (name) {
-    const lower = name.toLowerCase().replace(/[^a-z\s]/g, "").trim();
-    if (index[lower]) return index[lower];
-    for (const entry of Object.values(index)) {
-      if ((entry as any).name?.toLowerCase().includes(lower)) return entry;
-    }
-  }
-  return null;
-}
+import { sql, sqlOne } from "@/lib/pg";
 
 /**
  * POST /api/draft-reply
  * Body: { message, personName, personEmail, channel, roomId? }
  *
- * Generates a contextual reply using Claude with full person context.
+ * Generates a contextual reply using Claude with full person context from PostgreSQL.
  */
 export async function POST(req: NextRequest) {
   const auth = await requireAuth();
@@ -49,19 +21,48 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "message required" }, { status: 400 });
     }
 
-    // Gather person context
-    const index = loadPersonIndex();
-    const person = findPerson(index, personName, personEmail);
+    // Find person in PG — try email first, then name
+    let person: { id: string; name: string; emails: string[] } | null = null;
 
+    if (personEmail) {
+      person = await sqlOne<{ id: string; name: string; emails: string[] }>(
+        `SELECT p.id, p.name,
+                array_agg(DISTINCT pe.email) FILTER (WHERE pe.email IS NOT NULL) as emails
+         FROM people p
+         LEFT JOIN person_emails pe ON pe.person_id = p.id
+         WHERE p.id IN (SELECT person_id FROM person_emails WHERE email = $1)
+         GROUP BY p.id
+         LIMIT 1`,
+        [personEmail]
+      );
+    }
+
+    if (!person && personName) {
+      const key = personName.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+      person = await sqlOne<{ id: string; name: string; emails: string[] }>(
+        `SELECT p.id, p.name,
+                array_agg(DISTINCT pe.email) FILTER (WHERE pe.email IS NOT NULL) as emails
+         FROM people p
+         LEFT JOIN person_emails pe ON pe.person_id = p.id
+         WHERE p.key = $1 OR p.name ILIKE $2
+         GROUP BY p.id
+         LIMIT 1`,
+        [key, `%${personName}%`]
+      );
+    }
+
+    // Build context block from PG data
     let contextBlock = "";
     if (person) {
       contextBlock += `\n## About ${person.name}\n`;
-      if (person.emails?.length) contextBlock += `Email: ${person.emails.join(", ")}\n`;
+      if (person.emails?.length) contextBlock += `Email: ${(person.emails).join(", ")}\n`;
 
       // Recent messages (last 5)
-      const recentMsgs = (person.messageExcerpts || [])
-        .sort((a: any, b: any) => b.date.localeCompare(a.date))
-        .slice(0, 5);
+      const recentMsgs = await sql(
+        `SELECT text, date::text FROM message_excerpts
+         WHERE person_id = $1 ORDER BY date DESC LIMIT 5`,
+        [person.id]
+      );
       if (recentMsgs.length) {
         contextBlock += `\n### Recent conversation:\n`;
         for (const m of recentMsgs) {
@@ -69,10 +70,13 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Recent meetings
-      const recentMtgs = (person.meetings || [])
-        .sort((a: any, b: any) => b.date.localeCompare(a.date))
-        .slice(0, 5);
+      // Recent meetings (last 5)
+      const recentMtgs = await sql(
+        `SELECT m.topic, m.date::text
+         FROM meetings m JOIN meeting_participants mp ON mp.meeting_id = m.id
+         WHERE mp.person_id = $1 ORDER BY m.date DESC LIMIT 5`,
+        [person.id]
+      );
       if (recentMtgs.length) {
         contextBlock += `\n### Recent meetings together:\n`;
         for (const m of recentMtgs) {
@@ -80,10 +84,13 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // What they said in transcripts (last 3)
-      const recentTrans = (person.transcriptMentions || [])
-        .sort((a: any, b: any) => b.date.localeCompare(a.date))
-        .slice(0, 3);
+      // Transcript mentions (last 3)
+      const recentTrans = await sql(
+        `SELECT tm.snippets, m.topic, m.date::text
+         FROM transcript_mentions tm JOIN meetings m ON m.id = tm.meeting_id
+         WHERE tm.person_id = $1 ORDER BY m.date DESC LIMIT 3`,
+        [person.id]
+      );
       if (recentTrans.length) {
         contextBlock += `\n### What they've said recently:\n`;
         for (const t of recentTrans) {
@@ -94,8 +101,13 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      // Related tasks
-      const tasks = (person.notionTasks || []).slice(0, 5);
+      // Related tasks (last 5)
+      const tasks = await sql(
+        `SELECT t.title, t.status
+         FROM tasks t JOIN task_people tp ON tp.task_id = t.id
+         WHERE tp.person_id = $1 ORDER BY t.created_at DESC LIMIT 5`,
+        [person.id]
+      );
       if (tasks.length) {
         contextBlock += `\n### Related action items:\n`;
         for (const t of tasks) {

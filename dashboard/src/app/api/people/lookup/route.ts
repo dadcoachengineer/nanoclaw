@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
 import { requireAuth } from "@/lib/require-auth";
-import fs from "fs";
-import path from "path";
-
-const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
+import { sql, sqlOne } from "@/lib/pg";
 
 /**
  * GET /api/people/lookup?name=Michael+Parker
@@ -13,8 +9,8 @@ const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
  *
  * Tries multiple strategies to find profile data:
  * 1. Webex People API (by email or displayName)
- * 2. Webex room membership scan (if person has a known room ID)
- * 3. Person index enrichment (existing messages/meetings context)
+ * 2. Webex room membership scan (if person has a known room ID in PG)
+ * 3. Person index enrichment from PG (existing messages/meetings context)
  *
  * Returns: { results: [{ displayName, email, title, company, avatar, source }] }
  */
@@ -63,18 +59,21 @@ export async function GET(req: NextRequest) {
     }
   } catch { /* continue */ }
 
-  // Strategy 2: Check person index for room IDs, then look up room membership
+  // Strategy 2: Check PG for room IDs, then look up room membership
   if (results.length === 0 && name) {
     try {
-      const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
       const key = name.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
-      const person = index[key];
+      const room = await sqlOne<{ room_id: string }>(
+        `SELECT pwr.room_id FROM person_webex_rooms pwr
+         JOIN people p ON p.id = pwr.person_id
+         WHERE p.key = $1 OR p.name ILIKE $2
+         LIMIT 1`,
+        [key, `%${name}%`]
+      );
 
-      if (person?.webexRoomIds?.length) {
-        // Get room membership to find the person's Webex profile
-        const roomId = person.webexRoomIds[0];
+      if (room) {
         const resp = await proxiedFetch(
-          `https://webexapis.com/v1/memberships?roomId=${encodeURIComponent(roomId)}&max=10`,
+          `https://webexapis.com/v1/memberships?roomId=${encodeURIComponent(room.room_id)}&max=10`,
           { headers: { "Content-Type": "application/json" } }
         );
         const data = (await resp.json()) as { items?: any[] };
@@ -106,17 +105,24 @@ export async function GET(req: NextRequest) {
     } catch { /* continue */ }
   }
 
-  // Strategy 3: Enrich from person index context (extract company/role from messages)
+  // Strategy 3: Enrich from PG person data (email, company, job title)
   if (name) {
     try {
-      const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
       const key = name.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
-      const person = index[key];
-      if (person && (person.emails?.length || person.company)) {
+      const person = await sqlOne<{ name: string; email: string | null; job_title: string | null; company: string | null }>(
+        `SELECT p.name, pe.email, p.job_title, p.company
+         FROM people p
+         LEFT JOIN person_emails pe ON pe.person_id = p.id AND pe.is_primary = true
+         WHERE p.key = $1 OR p.name ILIKE $2
+         LIMIT 1`,
+        [key, `%${name}%`]
+      );
+
+      if (person && (person.email || person.company)) {
         results.push({
           displayName: person.name,
-          email: person.emails?.[0] || "",
-          title: person.jobTitle || "",
+          email: person.email || "",
+          title: person.job_title || "",
           company: person.company || "",
           avatar: "",
           source: "index",
