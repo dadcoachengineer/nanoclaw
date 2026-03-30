@@ -21,6 +21,8 @@ const MODEL_COSTS: Record<string, { inputPerM: number; outputPerM: number; label
   "claude-haiku-4-5-20251001": { inputPerM: 0.25, outputPerM: 1.25, label: "Haiku" },
   "local:deepseek-r1:70b": { inputPerM: 0, outputPerM: 0, label: "Local (DeepSeek)" },
   "local:gemma3:27b": { inputPerM: 0, outputPerM: 0, label: "Local (Gemma)" },
+  "local:qwen3-coder:30b": { inputPerM: 0, outputPerM: 0, label: "Local (Qwen)" },
+  "local:qwen3:8b": { inputPerM: 0, outputPerM: 0, label: "Local (Qwen 8B)" },
 };
 
 // --- Helpers ---
@@ -192,8 +194,10 @@ function recommendModel(id: string, avgDurationMs: number): string {
 }
 
 function modelLabel(model: string | null): string {
-  if (!model) return "Sonnet";
-  return MODEL_COSTS[model]?.label || model.split("-")[0] || "Unknown";
+  if (!model) return "Sonnet (default)";
+  if (MODEL_COSTS[model]) return MODEL_COSTS[model].label;
+  if (model.startsWith("local:")) return `Local (${model.replace("local:", "").split(":")[0]})`;
+  return model.split("-")[0] || "Unknown";
 }
 
 // --- Database access ---
