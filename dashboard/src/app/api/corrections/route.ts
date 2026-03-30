@@ -107,6 +107,9 @@ export async function PATCH(req: NextRequest) {
       if (STOP_WORDS.has(ow.toLowerCase()) && STOP_WORDS.has(nw.toLowerCase()))
         continue;
 
+      // Safety: never learn corrections for short common words (caused IBEW, Tim, AEC bugs)
+      if (ow.length <= 3 || nw.length <= 3) continue;
+
       // Only learn if the words are close (likely a transcription error)
       if (areClose(ow, nw)) {
         learned[ow] = nw;
