@@ -855,14 +855,18 @@ export default function TaskDetail({
               Open in Notion &rarr;
             </a>
             {webexRoomId && (
-              <a
-                href={`https://web.webex.com/spaces/${webexRoomId}`}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                onClick={() => {
+                  // Try desktop app first, fall back to web
+                  window.location.href = `webexteams://im?roomId=${webexRoomId}`;
+                  setTimeout(() => {
+                    window.open(`https://web.webex.com/spaces/${webexRoomId}`, "_blank");
+                  }, 1500);
+                }}
                 className="text-xs text-[var(--green)] hover:underline"
               >
                 Open in Webex &rarr;
-              </a>
+              </button>
             )}
             {provenanceLink && (
               <button
