@@ -385,6 +385,15 @@ export default function TaskDetail({
   // Source provenance state — resolved async
   const [provenanceLink, setProvenanceLink] = useState<{ type: string; id: string; title: string } | null>(null);
   useEffect(() => {
+    // For Webex message tasks, search archive by room ID
+    if (webexRoomId && sourceField.includes("Message")) {
+      const roomShort = webexRoomId.slice(-12);
+      fetch(`/api/archive?type=messages&q=${encodeURIComponent(roomShort)}`).then((r) => r.json()).then((data) => {
+        if (data.items?.[0]) setProvenanceLink({ type: "messages", id: data.items[0].id, title: data.items[0].title });
+      }).catch(() => {});
+      return;
+    }
+
     // Try explicit IDs first
     const explicitId = recordingId || webexMeetingId;
     if (explicitId) {
