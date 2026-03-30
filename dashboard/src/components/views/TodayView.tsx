@@ -438,7 +438,7 @@ export default function TodayView() {
         .catch(() => {});
 
       // Fetch independently so one failure doesn't block the others
-      const [taskResult, mtgResult, gcalResult] = await Promise.allSettled([
+      const [taskResult, mtgResult, gcalResult, triageResult] = await Promise.allSettled([
         queryNotion({
           and: [
             { property: "Status", status: { does_not_equal: "Done" } },
@@ -453,11 +453,18 @@ export default function TodayView() {
         }),
         fetchMeetings(localStart.toISOString(), localEnd.toISOString()),
         fetchGoogleCalendarEvents(localStart.toISOString(), localEnd.toISOString()),
+        fetch("/api/triage").then((r) => r.json()),
       ]);
+
+      // Get the set of inbox (unaccepted) task IDs to exclude from main list
+      const inboxIds = new Set<string>(
+        triageResult.status === "fulfilled" ? (triageResult.value.inbox || []).map((t: any) => t.id) : []
+      );
 
       const errors: string[] = [];
       if (taskResult.status === "fulfilled") {
-        setTasks(taskResult.value.sort((a: NotionPage, b: NotionPage) => priorityRank(prop(a, "Priority")) - priorityRank(prop(b, "Priority"))));
+        const accepted = taskResult.value.filter((t: NotionPage) => !inboxIds.has(t.id));
+        setTasks(accepted.sort((a: NotionPage, b: NotionPage) => priorityRank(prop(a, "Priority")) - priorityRank(prop(b, "Priority"))));
       } else {
         errors.push(`Tasks: ${taskResult.reason}`);
       }
@@ -537,6 +544,10 @@ export default function TodayView() {
           {error}
         </div>
       )}
+      {/* Two columns — left: briefing + triage + tasks, right: calendar */}
+      <div className="grid grid-cols-[1fr_380px] gap-6">
+      <div className="space-y-4">
+
       {/* Daily Briefing */}
       <Card>
         <div className="px-5 py-4">
@@ -668,10 +679,7 @@ export default function TodayView() {
         </Card>
       )}
 
-      {/* Two columns */}
-      <div className="grid grid-cols-[1fr_380px] gap-6">
-        {/* Left: Tasks */}
-        <div>
+      {/* Action Items (continues in left column) */}
           <Card>
             <CardHeader
               title="Action Items"
@@ -1094,9 +1102,9 @@ export default function TodayView() {
               )}
             </div>
           </Card>
-        </div>
+      </div>{/* end left column */}
 
-        {/* Right: Calendar + Activity */}
+        {/* Right: Calendar */}
         <div className="space-y-6">
           <Card>
             <CardHeader
