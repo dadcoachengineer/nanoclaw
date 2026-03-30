@@ -1,8 +1,70 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { Card, CardHeader, StatCard } from "@/components/Card";
 import PlatformDigitalTwin from "@/components/PlatformDigitalTwin";
+
+/** Expandable pipeline detail — shows run history, output, and triage stats */
+function PipelineDetail({ pipelineId }: { pipelineId: string }) {
+  const [runs, setRuns] = useState<any[]>([]);
+  const [stats, setStats] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/health").then((r) => r.json()),
+      // Fetch pipeline run history from PG via a lightweight query
+      fetch(`/api/system?path=${encodeURIComponent(`/api/runs/for-task?id=${pipelineId}&limit=8`)}`).then((r) => r.json()).catch(() => []),
+    ]).then(([health, runData]) => {
+      // Get runs from health data
+      const pipeline = health?.checks?.pipelines?.find((p: any) => p.id === pipelineId);
+      setRuns(Array.isArray(runData) ? runData : []);
+      setStats(pipeline);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [pipelineId]);
+
+  if (loading) return <div className="text-xs text-[var(--text-dim)] animate-pulse py-2">Loading run history...</div>;
+
+  // Get the pipeline's name for cleaner display
+  const name = pipelineId.replace("mc-", "").replace(/-/g, " ");
+
+  return (
+    <div className="space-y-3">
+      {/* Run history */}
+      <div>
+        <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] font-medium mb-1.5">Recent Runs</div>
+        {runs.length === 0 ? (
+          <div className="text-xs text-[var(--text-dim)] italic">No run history available — runs will appear after the next scheduled execution</div>
+        ) : (
+          <div className="space-y-1">
+            {runs.map((r: any, i: number) => (
+              <div key={i} className="flex items-center gap-3 text-xs">
+                <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: r.status === "success" ? "var(--green)" : "var(--red)" }} />
+                <span className="text-[var(--text-dim)] w-32 shrink-0">{r.run_at ? new Date(r.run_at).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "?"}</span>
+                <span className="text-[var(--text)]">{r.status}</span>
+                <span className="text-[var(--text-dim)]">{r.duration_ms ? `${Math.round(r.duration_ms / 1000)}s` : ""}</span>
+                {r.error && <span className="text-[var(--red)] truncate max-w-[300px]">{r.error}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Last output */}
+      {stats?.lastRun && (
+        <div>
+          <div className="text-[10px] uppercase tracking-wider text-[var(--text-dim)] font-medium mb-1.5">Pipeline Info</div>
+          <div className="text-xs text-[var(--text-dim)] space-y-0.5">
+            <div>Last run: {new Date(stats.lastRun).toLocaleString()}</div>
+            {stats.nextRun && <div>Next run: {new Date(stats.nextRun).toLocaleString()}</div>}
+            {stats.lastDurationMs && <div>Duration: {Math.round(stats.lastDurationMs / 1000)}s</div>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // --- Dedup types ---
 
@@ -207,6 +269,7 @@ export default function SystemView() {
   const [error, setError] = useState<string | null>(null);
   const [triggeringId, setTriggeringId] = useState<string | null>(null);
   const [updatingModelId, setUpdatingModelId] = useState<string | null>(null);
+  const [expandedPipeline, setExpandedPipeline] = useState<string | null>(null);
   const runsRef = useRef<HTMLDivElement>(null);
 
   // Dedup state
@@ -943,10 +1006,10 @@ export default function SystemView() {
                   </td>
                 </tr>
               )}
-              {sortedPipelines.map((p) => (
+              {sortedPipelines.map((p) => (<React.Fragment key={p.id}>
                 <tr
-                  key={p.id}
-                  className="border-b border-[var(--border)] hover:bg-[rgba(88,166,255,0.03)] transition-colors"
+                  onClick={() => setExpandedPipeline(expandedPipeline === p.id ? null : p.id)}
+                  className="border-b border-[var(--border)] hover:bg-[rgba(88,166,255,0.03)] transition-colors cursor-pointer"
                 >
                   <td className="px-4 py-2.5">
                     <div className="text-[var(--text-bright)] font-medium">
@@ -1003,7 +1066,14 @@ export default function SystemView() {
                     </button>
                   </td>
                 </tr>
-              ))}
+                {expandedPipeline === p.id && (
+                  <tr>
+                    <td colSpan={8} className="bg-[var(--bg)] px-4 py-3">
+                      <PipelineDetail pipelineId={p.id} />
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>))}
             </tbody>
           </table>
         </div>

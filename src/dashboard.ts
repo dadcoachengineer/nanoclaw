@@ -207,6 +207,12 @@ async function handleApi(
     return json(res, getRecentRunLogs(limit));
   }
 
+  if (pathname === '/api/runs/for-task') {
+    const id = searchParams.get('id') || '';
+    const limit = parseInt(searchParams.get('limit') || '10', 10);
+    return json(res, getRunLogsForTask(id, limit));
+  }
+
   if (pathname === '/api/groups') {
     return json(res, getAllRegisteredGroups());
   }
