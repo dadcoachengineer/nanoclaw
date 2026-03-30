@@ -147,9 +147,32 @@ export async function GET() {
       managerConnect: { evidence: managerEvidence, score: null },
     };
 
+    // Meeting engagement — loved/loathed based on meeting patterns
+    const loved: { title: string; date: string; signals: string[] }[] = [];
+    const loathed: { title: string; date: string; signals: string[] }[] = [];
+
+    for (const m of weekMeetings) {
+      const signals: string[] = [];
+      const topic = m.topic || "";
+      // Positive signals
+      if (/1:1|sync|connect/i.test(topic)) signals.push("Direct engagement");
+      if (weekSummaries.some((s: any) => s.title === topic && (s.action_items?.length || 0) > 2)) signals.push("Generated action items");
+      // Negative signals
+      const isLargeGroup = !/1:1|sync/i.test(topic) && /team|all.hands|cadence|roundtable/i.test(topic);
+      if (isLargeGroup) signals.push("Large group meeting");
+
+      if (signals.length > 0) {
+        const entry = { title: topic, date: m.date, signals };
+        if (isLargeGroup) loathed.push(entry);
+        else loved.push(entry);
+      }
+    }
+
     return NextResponse.json({
       weekOf: monday.toISOString().slice(0, 10),
       ratings,
+      loved: loved.slice(0, 5),
+      loathed: loathed.slice(0, 5),
       stats: {
         tasksCompleted: completedTasks.length,
         tasksOpen: openTasks.length,
