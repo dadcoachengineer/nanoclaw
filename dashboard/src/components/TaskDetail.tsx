@@ -376,6 +376,7 @@ export default function TaskDetail({
   // Parse Webex deep link IDs from notes
   const webexRoomId = notes?.match(/webex_room:(\S+)/)?.[1] || "";
   const webexMsgId = notes?.match(/webex_msg:(\S+)/)?.[1] || "";
+  const webexPersonEmail = notes?.match(/\(([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\)/)?.[1] || "";
   // Parse source IDs and meeting names for archive links
   const recordingId = notes?.match(/file_id:\s*(\S+)/)?.[1] || notes?.match(/Recording:\s*(\S+)/)?.[1] || "";
   const webexMeetingId = notes?.match(/webex_meeting:(\S+)/)?.[1] || "";
@@ -852,12 +853,16 @@ export default function TaskDetail({
             >
               Open in Notion &rarr;
             </a>
-            {webexRoomId && (
+            {(webexRoomId || webexPersonEmail) && (
               <a
-                href={`webexteams://im?space=${webexRoomId}`}
+                href={webexPersonEmail
+                  ? `webexteams://im?email=${encodeURIComponent(webexPersonEmail)}`
+                  : `webexteams://im?space=${webexRoomId}`}
                 className="text-xs text-[var(--green)] hover:underline"
               >
-                Open in Webex &rarr;
+                {webexPersonEmail
+                  ? `Open chat with ${webexPersonEmail.split("@")[0]} →`
+                  : "Open in Webex →"}
               </a>
             )}
             {provenanceLink && (
