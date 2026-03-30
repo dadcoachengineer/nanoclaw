@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
 import { requireAuth } from "@/lib/require-auth";
 import { sql, sqlOne } from "@/lib/pg";
-
-const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
 
 /**
  * GET /api/people — list all people with stats (from PostgreSQL)
@@ -159,15 +154,6 @@ export async function POST(req: NextRequest) {
       await sql("INSERT INTO person_emails (person_id, email) VALUES ($1, $2) ON CONFLICT DO NOTHING", [result.id, email.toLowerCase()]);
     }
 
-    // Also write to JSON file for backward compat during transition
-    try {
-      const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
-      if (!index[key]) {
-        index[key] = { name: trimmed, emails: email ? [email] : [], meetings: [], messageExcerpts: [], transcriptMentions: [], notionTasks: [], webexRoomIds: [], webexGroupRooms: [] };
-        fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
-      }
-    } catch {}
-
     return NextResponse.json({ seeded: true, name: trimmed });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
@@ -213,20 +199,6 @@ export async function PATCH(req: NextRequest) {
     if (email) {
       await sql("INSERT INTO person_emails (person_id, email) VALUES ($1, $2) ON CONFLICT DO NOTHING", [person.id, email.trim().toLowerCase()]);
     }
-
-    // Also update JSON file for backward compat
-    try {
-      const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
-      if (index[normalizedKey]) {
-        if (name) index[normalizedKey].name = name.trim();
-        if (email) { if (!index[normalizedKey].emails) index[normalizedKey].emails = []; if (!index[normalizedKey].emails.includes(email.toLowerCase())) index[normalizedKey].emails.unshift(email.toLowerCase()); }
-        if (company !== undefined) index[normalizedKey].company = company;
-        if (jobTitle !== undefined) index[normalizedKey].jobTitle = jobTitle;
-        if (notes !== undefined) index[normalizedKey].profileNotes = notes;
-        if (avatar) index[normalizedKey].avatar = avatar;
-        fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
-      }
-    } catch {}
 
     return NextResponse.json({ updated: true });
   } catch (err) {

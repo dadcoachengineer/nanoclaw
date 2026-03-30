@@ -1,25 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs";
-import path from "path";
 import { requireAuth } from "@/lib/require-auth";
-
-const STORE_DIR =
-  process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const SCORES_PATH = path.join(STORE_DIR, "relevance-scores.json");
-
-type ScoreEntry = { score: number; lastVote: string };
-
-function loadScores(): Record<string, ScoreEntry> {
-  try {
-    return JSON.parse(fs.readFileSync(SCORES_PATH, "utf-8"));
-  } catch {
-    return {};
-  }
-}
-
-function saveScores(scores: Record<string, ScoreEntry>): void {
-  fs.writeFileSync(SCORES_PATH, JSON.stringify(scores, null, 2));
-}
+import { sql, sqlOne } from "@/lib/pg";
 
 /**
  * POST /api/relevance — record an up/down vote
@@ -48,14 +29,17 @@ export async function POST(req: NextRequest) {
     }
 
     const key = `${context}:${itemType}:${itemId}`;
-    const scores = loadScores();
-    const existing = scores[key]?.score ?? 0;
-    const newScore = existing + (vote === "up" ? 1 : -1);
+    const delta = vote === "up" ? 1 : -1;
 
-    scores[key] = { score: newScore, lastVote: new Date().toISOString() };
-    saveScores(scores);
+    const row = await sqlOne<{ score: number }>(
+      `INSERT INTO relevance_scores (key, score, last_vote)
+       VALUES ($1, $2, now())
+       ON CONFLICT (key) DO UPDATE SET score = relevance_scores.score + $2, last_vote = now()
+       RETURNING score`,
+      [key, delta],
+    );
 
-    return NextResponse.json({ ok: true, key, score: newScore });
+    return NextResponse.json({ ok: true, key, score: row!.score });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
@@ -82,14 +66,15 @@ export async function GET(req: NextRequest) {
     }
 
     const prefix = `${context}:`;
-    const allScores = loadScores();
-    const matched: Record<string, number> = {};
+    const rows = await sql<{ key: string; score: number }>(
+      "SELECT key, score FROM relevance_scores WHERE key LIKE $1",
+      [`${prefix}%`],
+    );
 
-    for (const [key, entry] of Object.entries(allScores)) {
-      if (key.startsWith(prefix)) {
-        const suffix = key.slice(prefix.length);
-        matched[suffix] = entry.score;
-      }
+    const matched: Record<string, number> = {};
+    for (const row of rows) {
+      const suffix = row.key.slice(prefix.length);
+      matched[suffix] = row.score;
     }
 
     return NextResponse.json({ scores: matched });

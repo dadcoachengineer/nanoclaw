@@ -2,11 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
 import { requireAuth } from "@/lib/require-auth";
 import { sql, sqlOne } from "@/lib/pg";
-import fs from "fs";
-import path from "path";
-
-const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
 
 // Device/bot name patterns to skip
 const DEVICE_PATTERN = /\b(desk\s*pro|board\s*\d|room\s*kit|webex\s*bot|meeting\s*room|conf\s*room)\b/i;
@@ -215,71 +210,6 @@ export async function PATCH(req: NextRequest) {
         applied++;
       }
     }
-
-    // Backward-compat: also write to JSON
-    try {
-      const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8")) as Record<string, any>;
-      let jsonDirty = false;
-
-      if (body.updates) {
-        for (const u of body.updates as { key: string; email: string; company?: string; jobTitle?: string; avatar?: string }[]) {
-          const person = index[u.key];
-          if (!person) continue;
-          if (u.email) {
-            if (!person.emails) person.emails = [];
-            if (!person.emails.includes(u.email.toLowerCase())) person.emails.unshift(u.email.toLowerCase());
-          }
-          if (u.company) person.company = u.company;
-          if (u.jobTitle) person.jobTitle = u.jobTitle;
-          if (u.avatar) person.avatar = u.avatar;
-          jsonDirty = true;
-        }
-      }
-      if (body.deleteKeys) {
-        for (const key of body.deleteKeys as string[]) {
-          if (index[key]) { delete index[key]; jsonDirty = true; }
-        }
-      }
-      if (body.rename) {
-        const { key, newName } = body.rename as { key: string; newName: string };
-        if (index[key]) {
-          const person = index[key];
-          person.name = newName.trim();
-          const newKey = newName.trim().toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
-          if (newKey !== key) { delete index[key]; index[newKey] = person; }
-          jsonDirty = true;
-        }
-      }
-      if (body.merge) {
-        const { sourceKey, targetKey } = body.merge as { sourceKey: string; targetKey: string };
-        const source = index[sourceKey];
-        const target = index[targetKey];
-        if (source && target) {
-          for (const e of source.emails || []) {
-            if (!target.emails) target.emails = [];
-            if (!target.emails.includes(e)) target.emails.push(e);
-          }
-          for (const field of ["meetings", "messageExcerpts", "transcriptMentions", "notionTasks", "webexRoomIds", "webexGroupRooms"]) {
-            const sourceArr = source[field] || [];
-            const targetArr = target[field] || [];
-            if (sourceArr.length > 0) {
-              const existing = new Set(targetArr.map((x: any) => JSON.stringify(x)));
-              for (const item of sourceArr) {
-                if (!existing.has(JSON.stringify(item))) targetArr.push(item);
-              }
-              target[field] = targetArr;
-            }
-          }
-          for (const f of ["company", "jobTitle", "profileNotes", "avatar"]) {
-            if (!target[f] && source[f]) target[f] = source[f];
-          }
-          delete index[sourceKey];
-          jsonDirty = true;
-        }
-      }
-
-      if (jsonDirty) fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
-    } catch {}
 
     return NextResponse.json({ applied });
   } catch (err) {

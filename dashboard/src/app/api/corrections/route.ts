@@ -1,12 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { proxiedFetch } from "@/lib/onecli";
-import fs from "fs";
-import path from "path";
 import { requireAuth } from "@/lib/require-auth";
-
-const STORE_DIR =
-  process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const CORRECTIONS_PATH = path.join(STORE_DIR, "corrections.json");
+import { sql, sqlOne } from "@/lib/pg";
 
 const STOP_WORDS = new Set([
   "a",
@@ -60,22 +54,10 @@ function areClose(a: string, b: string): boolean {
   return false;
 }
 
-function loadCorrections(): Record<string, string> {
-  try {
-    return JSON.parse(fs.readFileSync(CORRECTIONS_PATH, "utf-8"));
-  } catch {
-    return {};
-  }
-}
-
-function saveCorrections(corrections: Record<string, string>): void {
-  fs.writeFileSync(CORRECTIONS_PATH, JSON.stringify(corrections, null, 2));
-}
-
 /**
  * PATCH /api/corrections
  *
- * Updates a Notion task title and learns word-level corrections
+ * Updates a task title in PG and learns word-level corrections
  * from the diff between old and new titles.
  *
  * Body: { taskId: string, oldTitle: string, newTitle: string }
@@ -94,30 +76,17 @@ export async function PATCH(req: NextRequest) {
       );
     }
 
-    // Update the Notion page title
-    const resp = await proxiedFetch(
-      `https://api.notion.com/v1/pages/${taskId}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          "Notion-Version": "2022-06-28",
-        },
-        body: JSON.stringify({
-          properties: {
-            Task: {
-              title: [{ text: { content: newTitle } }],
-            },
-          },
-        }),
-      }
+    // Update the task title in PG and mark for Notion sync
+    const updated = await sqlOne(
+      `UPDATE tasks SET title = $1, notion_sync_status = 'pending', updated_at = now()
+       WHERE id = $2::uuid RETURNING id`,
+      [newTitle, taskId]
     );
 
-    if (!resp.ok) {
-      const err = await resp.text();
+    if (!updated) {
       return NextResponse.json(
-        { error: `Notion API error: ${err}` },
-        { status: resp.status }
+        { error: "Task not found" },
+        { status: 404 }
       );
     }
 
@@ -144,11 +113,16 @@ export async function PATCH(req: NextRequest) {
       }
     }
 
-    // Merge into stored glossary
+    // Merge into corrections table
     if (Object.keys(learned).length > 0) {
-      const existing = loadCorrections();
-      const merged = { ...existing, ...learned };
-      saveCorrections(merged);
+      for (const [wrong, correct] of Object.entries(learned)) {
+        await sql(
+          `INSERT INTO corrections (wrong, correct)
+           VALUES ($1, $2)
+           ON CONFLICT (wrong) DO UPDATE SET correct = $2`,
+          [wrong, correct]
+        );
+      }
     }
 
     return NextResponse.json({

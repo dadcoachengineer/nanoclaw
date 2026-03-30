@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/require-auth";
 import { sql, sqlOne } from "@/lib/pg";
-import fs from "fs";
-import path from "path";
-
-const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
 
 /**
  * POST /api/people/linkedin
@@ -86,21 +81,6 @@ export async function POST(req: NextRequest) {
       await sql(`UPDATE people SET ${sets.join(", ")} WHERE id = $${idx}`, vals);
       saved = true;
     }
-
-    // Backward-compat: also write to JSON
-    try {
-      const index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8"));
-      const jsonPerson = index[normalizedKey];
-      if (jsonPerson) {
-        jsonPerson.linkedinUrl = linkedinUrl;
-        if (extracted.title && !jsonPerson.jobTitle) jsonPerson.jobTitle = extracted.title;
-        if (extracted.company && !jsonPerson.company) jsonPerson.company = extracted.company;
-        if (extracted.headline) jsonPerson.linkedinHeadline = extracted.headline;
-        if (extracted.image && !jsonPerson.avatar) jsonPerson.avatar = extracted.image;
-        if (extracted.location) jsonPerson.location = extracted.location;
-        fs.writeFileSync(INDEX_PATH, JSON.stringify(index, null, 2));
-      }
-    } catch {}
 
     return NextResponse.json({ extracted, saved });
   } catch (err) {

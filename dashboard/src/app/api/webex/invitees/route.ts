@@ -1,15 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { proxiedFetch } from "@/lib/onecli";
 import { requireAuth } from "@/lib/require-auth";
-import fs from "fs";
-import path from "path";
-
-const STORE_DIR = process.env.NANOCLAW_STORE || path.join(process.cwd(), "..", "store");
-const INDEX_PATH = path.join(STORE_DIR, "person-index.json");
+import { sql, sqlOne } from "@/lib/pg";
 
 /**
  * GET /api/webex/invitees?meetingId=xxx
- * Returns invitees with person index context (interaction counts).
+ * Returns invitees with person context (interaction counts) from PostgreSQL.
  */
 export async function GET(req: NextRequest) {
   const auth = await requireAuth();
@@ -26,38 +22,65 @@ export async function GET(req: NextRequest) {
     const data = (await resp.json()) as { items?: any[] };
     const invitees = data.items || [];
 
-    // Enrich with person index stats
-    let index: Record<string, any> = {};
-    try { index = JSON.parse(fs.readFileSync(INDEX_PATH, "utf-8")); } catch {}
+    const enriched = await Promise.all(
+      invitees
+        .filter((inv: any) => inv.email !== "jasheare@cisco.com") // exclude self
+        .map(async (inv: any) => {
+          const email = inv.email?.toLowerCase();
+          const name = inv.displayName || "";
 
-    const enriched = invitees
-      .filter((inv: any) => inv.email !== "jasheare@cisco.com") // exclude self
-      .map((inv: any) => {
-        const email = inv.email?.toLowerCase();
-        const name = inv.displayName || "";
-        // Find in person index by email or name
-        let person = null;
-        for (const [, p] of Object.entries(index)) {
-          const pe = p as any;
-          if (pe.emails?.includes(email)) { person = pe; break; }
-        }
-        if (!person) {
-          const key = name.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
-          if (index[key]) person = index[key];
-        }
+          // Look up person by email first, then by name
+          let person: any = null;
+          if (email) {
+            person = await sqlOne(
+              `SELECT p.id, p.name, p.avatar, p.company, p.job_title,
+                      COUNT(DISTINCT mp.meeting_id) as meetings,
+                      COUNT(DISTINCT me.id) as messages,
+                      COUNT(DISTINCT tm.id) as transcripts,
+                      COUNT(DISTINCT tp.task_id) as tasks
+               FROM people p
+               JOIN person_emails pe ON pe.person_id = p.id
+               LEFT JOIN meeting_participants mp ON mp.person_id = p.id
+               LEFT JOIN message_excerpts me ON me.person_id = p.id
+               LEFT JOIN transcript_mentions tm ON tm.person_id = p.id
+               LEFT JOIN task_people tp ON tp.person_id = p.id
+               WHERE pe.email = $1
+               GROUP BY p.id`,
+              [email]
+            );
+          }
+          if (!person && name) {
+            const key = name.toLowerCase().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ").trim();
+            person = await sqlOne(
+              `SELECT p.id, p.name, p.avatar, p.company, p.job_title,
+                      COUNT(DISTINCT mp.meeting_id) as meetings,
+                      COUNT(DISTINCT me.id) as messages,
+                      COUNT(DISTINCT tm.id) as transcripts,
+                      COUNT(DISTINCT tp.task_id) as tasks
+               FROM people p
+               LEFT JOIN meeting_participants mp ON mp.person_id = p.id
+               LEFT JOIN message_excerpts me ON me.person_id = p.id
+               LEFT JOIN transcript_mentions tm ON tm.person_id = p.id
+               LEFT JOIN task_people tp ON tp.person_id = p.id
+               WHERE p.key = $1
+               GROUP BY p.id`,
+              [key]
+            );
+          }
 
-        return {
-          name,
-          email,
-          avatar: person?.avatar || null,
-          meetings: (person?.meetings || []).length,
-          messages: (person?.messageExcerpts || []).length,
-          transcripts: (person?.transcriptMentions || []).length,
-          tasks: (person?.notionTasks || []).length,
-          company: person?.company || null,
-          jobTitle: person?.jobTitle || null,
-        };
-      });
+          return {
+            name,
+            email,
+            avatar: person?.avatar || null,
+            meetings: parseInt(person?.meetings || "0"),
+            messages: parseInt(person?.messages || "0"),
+            transcripts: parseInt(person?.transcripts || "0"),
+            tasks: parseInt(person?.tasks || "0"),
+            company: person?.company || null,
+            jobTitle: person?.job_title || null,
+          };
+        })
+    );
 
     return NextResponse.json({ invitees: enriched });
   } catch (err) {

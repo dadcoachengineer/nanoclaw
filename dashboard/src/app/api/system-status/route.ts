@@ -488,72 +488,74 @@ export async function GET() {
     })
   );
 
-  // Indexes
-  const personData = safeJsonParse(path.join(STORE_DIR, "person-index.json"));
-  const topicData = safeJsonParse(path.join(STORE_DIR, "topic-index.json"));
-  const correctionsData = safeJsonParse(
-    path.join(STORE_DIR, "corrections.json")
-  );
-  const relevanceData = safeJsonParse(
-    path.join(STORE_DIR, "relevance-scores.json")
-  );
-  const summariesData = safeJsonParse(
-    path.join(STORE_DIR, "webex-summaries.json")
-  );
-  const initiativesData = safeJsonParse(
-    path.join(STORE_DIR, "initiatives.json")
-  );
-
-  // Vector index: use SQLite page count for chunk estimate
-  let vectorChunks = 0;
+  // Indexes — from PostgreSQL
+  let pgCounts: any = {};
   try {
-    const vecDb = new Database(path.join(STORE_DIR, "vectors.db"), {
-      readonly: true,
-    });
-    const row = vecDb.prepare("SELECT COUNT(*) as cnt FROM vec_chunks").get() as
-      | { cnt: number }
-      | undefined;
-    vectorChunks = row?.cnt ?? 0;
-    vecDb.close();
-  } catch {
-    // Table might not exist or DB might be empty
-  }
+    const counts = await pgSql(`
+      SELECT
+        (SELECT COUNT(*) FROM people) as people,
+        (SELECT COUNT(*) FROM topics) as topics,
+        (SELECT COUNT(*) FROM vector_chunks) as vectors,
+        (SELECT COUNT(*) FROM ai_summaries) as summaries,
+        (SELECT COUNT(*) FROM corrections) as corrections,
+        (SELECT COUNT(*) FROM relevance_scores) as scores,
+        (SELECT COUNT(*) FROM initiatives) as initiatives,
+        (SELECT COUNT(*) FROM tasks) as tasks,
+        (SELECT COUNT(*) FROM archive_items) as archive
+    `);
+    pgCounts = counts[0] || {};
+  } catch {}
 
   const indexes = {
     personIndex: {
-      count: jsonEntryCount(personData),
-      lastBuilt: safeFileMtime(path.join(STORE_DIR, "person-index.json")),
-      sizeKb: fileSizeKb(path.join(STORE_DIR, "person-index.json")),
+      count: parseInt(pgCounts.people || "0"),
+      lastBuilt: null,
+      sizeKb: 0,
+      source: "postgresql",
     },
     topicIndex: {
-      count: jsonEntryCount(topicData),
-      lastBuilt: safeFileMtime(path.join(STORE_DIR, "topic-index.json")),
-      sizeKb: fileSizeKb(path.join(STORE_DIR, "topic-index.json")),
+      count: parseInt(pgCounts.topics || "0"),
+      lastBuilt: null,
+      sizeKb: 0,
+      source: "postgresql",
     },
     vectorIndex: {
-      chunks: vectorChunks,
-      lastBuilt: safeFileMtime(path.join(STORE_DIR, "vectors.db")),
-      sizeKb: fileSizeKb(path.join(STORE_DIR, "vectors.db")),
+      chunks: parseInt(pgCounts.vectors || "0"),
+      lastBuilt: null,
+      sizeKb: 0,
+      source: "postgresql (pgvector)",
     },
     webexSummaries: {
-      count: jsonEntryCount(summariesData),
-      lastBuilt: safeFileMtime(path.join(STORE_DIR, "webex-summaries.json")),
-      sizeKb: fileSizeKb(path.join(STORE_DIR, "webex-summaries.json")),
+      count: parseInt(pgCounts.summaries || "0"),
+      lastBuilt: null,
+      sizeKb: 0,
+      source: "postgresql",
     },
     corrections: {
-      entries: jsonEntryCount(correctionsData),
-      lastBuilt: safeFileMtime(path.join(STORE_DIR, "corrections.json")),
-      sizeKb: fileSizeKb(path.join(STORE_DIR, "corrections.json")),
+      entries: parseInt(pgCounts.corrections || "0"),
+      lastBuilt: null,
+      sizeKb: 0,
+      source: "postgresql",
     },
     relevanceScores: {
-      entries: jsonEntryCount(relevanceData),
-      lastBuilt: safeFileMtime(path.join(STORE_DIR, "relevance-scores.json")),
-      sizeKb: fileSizeKb(path.join(STORE_DIR, "relevance-scores.json")),
+      entries: parseInt(pgCounts.scores || "0"),
+      lastBuilt: null,
+      sizeKb: 0,
+      source: "postgresql",
     },
     initiatives: {
-      count: jsonEntryCount(initiativesData),
-      lastBuilt: safeFileMtime(path.join(STORE_DIR, "initiatives.json")),
-      sizeKb: fileSizeKb(path.join(STORE_DIR, "initiatives.json")),
+      count: parseInt(pgCounts.initiatives || "0"),
+      lastBuilt: null,
+      sizeKb: 0,
+      source: "postgresql",
+    },
+    tasks: {
+      count: parseInt(pgCounts.tasks || "0"),
+      source: "postgresql",
+    },
+    archive: {
+      count: parseInt(pgCounts.archive || "0"),
+      source: "postgresql",
     },
   };
 

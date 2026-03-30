@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { proxiedFetch } from "@/lib/onecli";
 import { requireAuth } from "@/lib/require-auth";
 import { sql, sqlOne } from "@/lib/pg";
 
-const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
 
 /**
  * GET /api/context?email=person@cisco.com&name=Marcela
@@ -71,46 +69,18 @@ export async function GET(req: NextRequest) {
   }
 
   if (!person) {
-    // Fallback: live search for basic data
-    const results: Record<string, unknown> = { match: null };
-
-    // At least try Notion task search
+    // Fallback: search PG tasks directly
     const searchTerm = name || email?.split("@")[0] || "";
+    let relatedTasks: any[] = [];
     if (searchTerm) {
-      try {
-        const resp = await proxiedFetch(
-          `https://api.notion.com/v1/databases/${NOTION_DB}/query`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Notion-Version": "2022-06-28",
-            },
-            body: JSON.stringify({
-              filter: {
-                or: [
-                  { property: "Task", title: { contains: searchTerm } },
-                  { property: "Notes", rich_text: { contains: searchTerm } },
-                ],
-              },
-              page_size: 10,
-            }),
-          }
-        );
-        const data = (await resp.json()) as { results?: { id: string; properties: Record<string, unknown> }[] };
-        results.relatedTasks = (data.results || []).map((p) => {
-          const taskProp = p.properties?.Task as { title?: { plain_text: string }[] };
-          const statusProp = p.properties?.Status as { status?: { name: string } };
-          return {
-            id: p.id,
-            title: taskProp?.title?.[0]?.plain_text || "?",
-            status: statusProp?.status?.name || "?",
-          };
-        });
-      } catch {}
+      relatedTasks = await sql(
+        `SELECT id, title, status FROM tasks
+         WHERE title ILIKE $1 OR notes ILIKE $1
+         ORDER BY created_at DESC LIMIT 10`,
+        [`%${searchTerm}%`]
+      );
     }
-
-    return NextResponse.json(results);
+    return NextResponse.json({ match: null, relatedTasks });
   }
 
   // Person found — fetch all related data from PG
