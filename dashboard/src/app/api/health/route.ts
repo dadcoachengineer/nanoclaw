@@ -120,7 +120,23 @@ export async function GET() {
     checks.notionSync = { status: "unknown" };
   }
 
-  // 6. Pipelines
+  // 6. DefenseClaw (informational — not in critical path, fail-open pattern)
+  const dcChecks = [
+    { key: "defenseClawOllama", port: 9001 },
+    { key: "defenseClawAnthropic", port: 9002 },
+  ];
+  await Promise.all(dcChecks.map(async ({ key, port }) => {
+    const start = Date.now();
+    const resp = await fetchWithTimeout(`http://127.0.0.1:${port}/health/liveliness`);
+    const latencyMs = Date.now() - start;
+    if (resp.ok && resp.data?.status === "healthy") {
+      checks[key] = { status: "healthy", latencyMs, port };
+    } else {
+      checks[key] = { status: "unreachable", port };
+    }
+  }));
+
+  // 7. Pipelines
   try {
     const pipelines = await sql(
       `SELECT id, status, last_run, next_run,

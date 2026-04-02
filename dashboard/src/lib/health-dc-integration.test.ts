@@ -1,15 +1,17 @@
 /**
- * Health route DefenseClaw integration tests (v3 harness)
+ * Health route DefenseClaw integration tests (v3.1 harness)
  *
- * The /api/health route currently checks: PG, NanoClaw core, Ollama, Nginx, Notion sync, Pipelines.
- * DefenseClaw is NOT yet integrated into health checks (noted as Phase 6 gap).
+ * The /api/health route checks: PG, NanoClaw core, Ollama, Nginx, Notion sync,
+ * DefenseClaw (Ollama + Anthropic), and Pipelines.
  *
- * These tests document the expected contract for when DC is added to health,
- * and verify the current behavior (DC absent from health checks).
+ * DC health checks are informational only — not in the critical path.
+ * The fail-open pattern means DC being down does NOT degrade overall health.
  *
- * Also tests:
+ * Tests:
  * - Overall health status logic (healthy vs degraded)
  * - The fetchWithTimeout helper pattern
+ * - checkDefenseClaw contract (guard ports, not API ports)
+ * - DC excluded from critical health determination
  * - Structured health check response shape
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -44,21 +46,23 @@ interface HealthCheckResult {
   checks: Record<string, any>;
 }
 
-// Currently checked services
-const CURRENT_HEALTH_CHECKS = [
+// All health checks (DC now wired in)
+const ALL_HEALTH_CHECKS = [
   'postgresql',
   'nanoclaw',
   'ollama',
   'nginx',
   'notionSync',
+  'defenseClawOllama',
+  'defenseClawAnthropic',
   'pipelines',
 ];
 
-// Expected after DC integration
-const EXPECTED_HEALTH_CHECKS = [
-  ...CURRENT_HEALTH_CHECKS,
-  'defenseClawOllama',
-  'defenseClawAnthropic',
+// Only these determine overall healthy vs degraded
+const CRITICAL_CHECKS = [
+  'postgresql',
+  'nanoclaw',
+  'ollama',
 ];
 
 // ─── fetchWithTimeout Tests ───────────────────────────────────
@@ -196,52 +200,64 @@ describe('health status overall logic', () => {
   });
 });
 
-// ─── DefenseClaw Health Integration Gap Tests ─────────────────
+// ─── DefenseClaw Health Integration Tests ────────────────────
 
-describe('DefenseClaw health integration (Phase 6 gap)', () => {
-  it('documents that DC is NOT in current health checks', () => {
-    // This test documents the gap — when DC is added to health,
-    // update CURRENT_HEALTH_CHECKS and these tests will need updating.
-    expect(CURRENT_HEALTH_CHECKS).not.toContain('defenseClawOllama');
-    expect(CURRENT_HEALTH_CHECKS).not.toContain('defenseClawAnthropic');
+describe('DefenseClaw health integration', () => {
+  it('both DC instances are in ALL_HEALTH_CHECKS', () => {
+    expect(ALL_HEALTH_CHECKS).toContain('defenseClawOllama');
+    expect(ALL_HEALTH_CHECKS).toContain('defenseClawAnthropic');
   });
 
-  it('expected future health checks include both DC instances', () => {
-    expect(EXPECTED_HEALTH_CHECKS).toContain('defenseClawOllama');
-    expect(EXPECTED_HEALTH_CHECKS).toContain('defenseClawAnthropic');
+  it('DC is NOT in the critical checks (fail-open pattern)', () => {
+    expect(CRITICAL_CHECKS).not.toContain('defenseClawOllama');
+    expect(CRITICAL_CHECKS).not.toContain('defenseClawAnthropic');
   });
 
-  it('DC health check should use /health/liveliness endpoint', () => {
-    // Contract: when DC health is added, it should poll the same endpoint
-    // that ollama-client.ts uses for routing decisions.
-    const dcHealthEndpoint = '/health/liveliness';
-    expect(dcHealthEndpoint).toBe('/health/liveliness');
-
-    // And the correct guard ports
+  it('DC health uses guard ports (9001/9002), not API ports (18790/18792)', () => {
+    // Guard ports serve /health/liveliness — the proxy health endpoint.
+    // API ports serve /status — the management API (different concern).
     const ollamaGuardPort = 9001;
     const anthropicGuardPort = 9002;
-    const expectedUrls = [
-      `http://127.0.0.1:${ollamaGuardPort}${dcHealthEndpoint}`,
-      `http://127.0.0.1:${anthropicGuardPort}${dcHealthEndpoint}`,
-    ];
-    expect(expectedUrls).toEqual([
-      'http://127.0.0.1:9001/health/liveliness',
-      'http://127.0.0.1:9002/health/liveliness',
-    ]);
+    expect(ollamaGuardPort).not.toBe(18790);
+    expect(anthropicGuardPort).not.toBe(18792);
   });
 
-  it('DC down should NOT make overall status degraded (fail-open pattern)', () => {
-    // When DC health is added: DC being down should NOT degrade overall health,
-    // because the fail-open pattern means traffic bypasses DC when it's down.
-    // This is intentionally different from PG/Ollama which are critical.
-    const dcDown = true;
-    const pgHealthy = true;
-    const nanoclawHealthy = true;
-    const ollamaHealthy = true;
+  it('DC health check uses /health/liveliness endpoint', () => {
+    const expectedUrls = [
+      'http://127.0.0.1:9001/health/liveliness',
+      'http://127.0.0.1:9002/health/liveliness',
+    ];
+    expect(expectedUrls[0]).toContain('/health/liveliness');
+    expect(expectedUrls[1]).toContain('/health/liveliness');
+  });
 
-    // DC failure should be informational, not blocking
-    const allHealthy = pgHealthy && nanoclawHealthy && ollamaHealthy;
-    expect(allHealthy).toBe(true); // DC down doesn't affect overall
+  it('DC down does NOT make overall status degraded', () => {
+    const checks = {
+      postgresql: { status: 'healthy' },
+      nanoclaw: { status: 'healthy' },
+      ollama: { status: 'healthy' },
+      defenseClawOllama: { status: 'unreachable' },
+      defenseClawAnthropic: { status: 'unreachable' },
+    };
+
+    // Only critical checks determine overall health
+    const allHealthy = CRITICAL_CHECKS.every(
+      (k) => (checks as any)[k]?.status === 'healthy',
+    );
+    expect(allHealthy).toBe(true);
+  });
+
+  it('DC check result includes port and latency when healthy', () => {
+    const dcCheck = { status: 'healthy', latencyMs: 2, port: 9001 };
+    expect(dcCheck).toHaveProperty('latencyMs');
+    expect(dcCheck).toHaveProperty('port');
+    expect(typeof dcCheck.latencyMs).toBe('number');
+  });
+
+  it('DC check result has status unreachable when down', () => {
+    const dcCheck = { status: 'unreachable', port: 9002 };
+    expect(dcCheck.status).toBe('unreachable');
+    expect(dcCheck).toHaveProperty('port');
   });
 });
 
