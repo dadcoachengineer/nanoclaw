@@ -1043,9 +1043,13 @@ export default function SystemView() {
                       <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(63,185,80,0.12)] text-[var(--green)]" title="DefenseClaw guardrail — Ollama path (observe mode)">
                         DC monitor
                       </span>
+                    ) : p.status === "active" ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(88,166,255,0.12)] text-[var(--accent)]" title="DefenseClaw guardrail — Anthropic path (observe mode)">
+                        DC monitor
+                      </span>
                     ) : (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(210,153,34,0.1)] text-[var(--yellow)]" title="DefenseClaw ready but deferred — streaming format mismatch">
-                        pending
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(139,148,158,0.1)] text-[var(--text-dim)]">
+                        —
                       </span>
                     )}
                   </td>

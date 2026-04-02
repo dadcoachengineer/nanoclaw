@@ -231,14 +231,12 @@ async function buildContainerArgs(
     args.push('-e', `CLAUDE_MODEL=${modelOverride}`);
   }
 
-  // DefenseClaw guardrail — Anthropic path ready but deferred.
-  // Non-streaming works (RawResponse passthrough preserves Anthropic format).
-  // Streaming breaks (DefenseClaw normalizes SSE to OpenAI chunk format, SDK expects Anthropic SSE).
-  // Contribution needed: Anthropic SSE passthrough in DefenseClaw streaming handler.
-  // When ready, uncomment:
-  // if (process.env.DEFENSECLAW_ANTHROPIC_URL) {
-  //   args.push('-e', `ANTHROPIC_BASE_URL=${process.env.DEFENSECLAW_ANTHROPIC_URL}`);
-  // }
+  // DefenseClaw guardrail — route Anthropic traffic through security inspection.
+  // Chain: Container → DefenseClaw :9002/v1/messages (inspect) → OneCLI (auth) → Anthropic
+  // Native Anthropic format: no translation, tool_use/tool_result preserved, SSE passthrough.
+  if (process.env.DEFENSECLAW_ANTHROPIC_URL) {
+    args.push('-e', `ANTHROPIC_BASE_URL=${process.env.DEFENSECLAW_ANTHROPIC_URL}`);
+  }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.

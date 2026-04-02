@@ -598,6 +598,14 @@ export default function ObservabilityView() {
   const [expandedHop, setExpandedHop] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const [dcInstances, setDcInstances] = useState<{ id: string; label: string; healthy: boolean; mode: string; uptime: number; state: string }[]>([]);
+  const [dcUpdating, setDcUpdating] = useState<string | null>(null);
+
+  function loadDcInstances() {
+    fetch("/api/defenseclaw").then((r) => r.json()).then((d) => {
+      if (d.instances) setDcInstances(d.instances);
+    }).catch(() => {});
+  }
 
   function load(sample = false) {
     fetch(`/api/observability${sample ? "?sample=true" : ""}`)
@@ -608,9 +616,10 @@ export default function ObservabilityView() {
   }
 
   useEffect(() => {
-    load(true); // First load with sample
+    load(true);
+    loadDcInstances();
     if (autoRefresh) {
-      intervalRef.current = setInterval(() => load(true), 15000);
+      intervalRef.current = setInterval(() => { load(true); loadDcInstances(); }, 15000);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [autoRefresh]);
@@ -702,6 +711,58 @@ export default function ObservabilityView() {
         </Card>
 
       </div>
+
+      {/* Row 3b: DefenseClaw Security */}
+      {dcInstances.length > 0 && (
+        <Card>
+          <CardHeader title="DefenseClaw Security" right={
+            <span className="text-[10px] text-[var(--text-dim)]">
+              {dcInstances.filter((i) => i.healthy).length}/{dcInstances.length} healthy
+            </span>
+          } />
+          <div className="px-4 py-3">
+            <div className="grid grid-cols-2 gap-4">
+              {dcInstances.map((inst) => (
+                <div key={inst.id} className="flex items-center gap-3">
+                  <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: inst.healthy ? "#3fb950" : "#f85149" }} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-medium text-[var(--text-bright)]">{inst.label}</div>
+                    <div className="text-[10px] text-[var(--text-dim)]">
+                      {inst.state === "running" ? `uptime ${formatUptime(inst.uptime)}` : inst.state}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={inst.mode}
+                      onChange={async (e) => {
+                        setDcUpdating(inst.id);
+                        await fetch("/api/defenseclaw", {
+                          method: "PATCH",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ instance: inst.id, mode: e.target.value }),
+                        });
+                        setDcUpdating(null);
+                        loadDcInstances();
+                      }}
+                      disabled={dcUpdating === inst.id || !inst.healthy}
+                      className={`text-[10px] px-2 py-0.5 rounded border cursor-pointer ${
+                        inst.mode === "observe"
+                          ? "border-[var(--yellow)] text-[var(--yellow)] bg-[rgba(210,153,34,0.08)]"
+                          : inst.mode === "action"
+                          ? "border-[var(--green)] text-[var(--green)] bg-[rgba(63,185,80,0.08)]"
+                          : "border-[var(--border)] text-[var(--text-dim)]"
+                      } disabled:opacity-40`}
+                    >
+                      <option value="observe">observe</option>
+                      <option value="action">action</option>
+                    </select>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Row 4: Triage + Notion Sync + AI Models */}
       <div className="grid grid-cols-3 gap-4">
