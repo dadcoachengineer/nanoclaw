@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/require-auth";
 import { sql, sqlOne } from "@/lib/pg";
+import { ollamaChat } from "@/lib/ollama-client";
 import fs from "fs";
 import path from "path";
 
@@ -53,17 +54,13 @@ export async function GET(req: NextRequest) {
           let team = "";
           try { team = JSON.parse(fs.readFileSync(TEAM_PATH, "utf-8"))?.members?.map((m: any) => m.name).join(", ") || ""; } catch {}
 
-          const ollamaResp = await fetch("http://studio.shearer.live:11434/api/chat", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              model: "qwen3-coder:30b", stream: false, options: { num_ctx: 4096 },
-              messages: [{ role: "user", content: `/no_think\nBased on Jason's past triage decisions, suggest an action for each new task.\n\nPast decisions:\n${decisionsText}\n\nTeam: ${team}\n\nNew tasks:\n${inboxSummary}\n\nFor each task ID, respond with one JSON object per line:\n{"id":"<8-char-id>","action":"accept|delegate|dismiss","delegatedTo":"<name or empty>","priority":"P0|P1|P2|P3","confidence":0.0-1.0,"reason":"<brief reason>"}\n\nOutput ONLY JSON lines.` }],
-            }),
+          const triageResult = await ollamaChat({
+            model: "phi4:14b",
+            messages: [{ role: "user", content: `/no_think\nBased on Jason's past triage decisions, suggest an action for each new task.\n\nPast decisions:\n${decisionsText}\n\nTeam: ${team}\n\nNew tasks:\n${inboxSummary}\n\nFor each task ID, respond with one JSON object per line:\n{"id":"<8-char-id>","action":"accept|delegate|dismiss","delegatedTo":"<name or empty>","priority":"P0|P1|P2|P3","confidence":0.0-1.0,"reason":"<brief reason>"}\n\nOutput ONLY JSON lines.` }],
+            options: { num_ctx: 4096 },
           });
-          if (ollamaResp.ok) {
-            const { message } = await ollamaResp.json() as any;
-            for (const line of (message?.content || "").split("\n")) {
+          if (triageResult.content) {
+            for (const line of triageResult.content.split("\n")) {
               try {
                 const parsed = JSON.parse(line.trim());
                 if (parsed.id) {

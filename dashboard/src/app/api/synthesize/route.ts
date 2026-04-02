@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAuth } from "@/lib/require-auth";
+import { ollamaChat } from "@/lib/ollama-client";
 
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://studio.shearer.live:11434";
-const MODEL = "qwen3-coder:30b";
+const MODEL = "phi4:14b";
 
 /**
  * POST /api/synthesize
@@ -18,25 +18,13 @@ export async function POST(req: NextRequest) {
     const { prompt } = await req.json();
     if (!prompt) return NextResponse.json({ error: "prompt required" }, { status: 400 });
 
-    const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: MODEL,
-        stream: false,
-        options: { num_ctx: 4096 },
-        messages: [{ role: "user", content: `/no_think\n${prompt}` }],
-      }),
+    const result = await ollamaChat({
+      model: MODEL,
+      messages: [{ role: "user", content: `/no_think\n${prompt}` }],
+      options: { num_ctx: 4096 },
     });
 
-    if (!resp.ok) {
-      return NextResponse.json({ error: `Ollama returned ${resp.status}` }, { status: 502 });
-    }
-
-    const data = await resp.json();
-    const content = data.message?.content || "";
-
-    return NextResponse.json({ content });
+    return NextResponse.json({ content: result.content });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }

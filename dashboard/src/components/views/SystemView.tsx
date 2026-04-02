@@ -96,6 +96,7 @@ interface Service {
   name: string;
   status: string;
   port: number;
+  binding?: string;
   uptime: number | null;
 }
 
@@ -175,6 +176,7 @@ interface SystemData {
   };
   costSummary: CostSummary;
   availableModels: AvailableModel[];
+  postgres?: any;
 }
 
 // --- Formatting helpers ---
@@ -796,6 +798,11 @@ export default function SystemView() {
                     >
                       {svc.status}
                     </span>
+                    {svc.binding && (
+                      <span className={`ml-1 text-[9px] px-1 py-0.5 rounded ${svc.binding === "localhost" ? "bg-[rgba(63,185,80,0.1)] text-[var(--green)]" : "bg-[rgba(210,153,34,0.1)] text-[var(--yellow)]"}`}>
+                        {svc.binding}
+                      </span>
+                    )}
                     {svc.uptime != null && (
                       <span className="ml-1">({formatUptime(svc.uptime)})</span>
                     )}
@@ -987,6 +994,7 @@ export default function SystemView() {
               <tr className="text-[11px] text-[var(--text-dim)] uppercase tracking-wider bg-[var(--bg)]">
                 <th className="text-left px-4 py-2 font-medium">Pipeline</th>
                 <th className="text-left px-4 py-2 font-medium">Model</th>
+                <th className="text-center px-4 py-2 font-medium">Security</th>
                 <th className="text-left px-4 py-2 font-medium">Schedule</th>
                 <th className="text-left px-4 py-2 font-medium">Last Run</th>
                 <th className="text-left px-4 py-2 font-medium">Status</th>
@@ -1029,6 +1037,17 @@ export default function SystemView() {
                       isUpdating={updatingModelId === p.id}
                       onUpdate={updateModel}
                     />
+                  </td>
+                  <td className="px-4 py-2.5 text-center">
+                    {p.model?.startsWith("local:") ? (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(63,185,80,0.12)] text-[var(--green)]" title="DefenseClaw guardrail — Ollama path (observe mode)">
+                        DC monitor
+                      </span>
+                    ) : (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(210,153,34,0.1)] text-[var(--yellow)]" title="DefenseClaw ready but deferred — streaming format mismatch">
+                        pending
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 text-[var(--text)]">
                     {p.schedule}
@@ -1387,17 +1406,7 @@ function ModelSelector({
             ))}
         </select>
       </div>
-      {showRecommendation && (
-        <span
-          className="text-[10px] px-1.5 py-0.5 rounded-full w-fit"
-          style={{
-            background: "rgba(63,185,80,0.12)",
-            color: "var(--green)",
-          }}
-        >
-          {recommendation.includes("SCRIPT") ? "try Haiku" : "try Haiku"}
-        </span>
-      )}
+      {/* Haiku recommendation removed — local models are Cisco GREEN approved */}
     </div>
   );
 }
