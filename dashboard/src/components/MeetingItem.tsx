@@ -86,21 +86,20 @@ export function scheduleInsights(meetings: WebexMeeting[]): string[] {
     insights.push(`⚠️ ${conflicts.size / 2} overlapping meetings — consider declining or rescheduling one`);
   }
 
-  // Back-to-back streaks (3+ meetings with no gap)
-  let streak = 1;
+  // Back-to-back streaks (3+ meetings with no gap) — only report each streak once
   const sorted = [...timed].sort((a, b) => a.start.localeCompare(b.start));
-  for (let i = 1; i < sorted.length; i++) {
-    const gap = (new Date(sorted[i].start).getTime() - new Date(sorted[i - 1].end).getTime()) / 60000;
-    if (gap < 10) {
-      streak++;
-      if (streak >= 3) {
-        const startTime = fmt12(sorted[i - streak + 1].start);
-        const endTime = fmt12(sorted[i].end);
-        insights.push(`🔥 ${streak} back-to-back meetings ${startTime}–${endTime}`);
-      }
-    } else {
-      streak = 1;
+  const streaks: { count: number; startIdx: number; endIdx: number }[] = [];
+  let streakStart = 0;
+  for (let i = 1; i <= sorted.length; i++) {
+    const gap = i < sorted.length ? (new Date(sorted[i].start).getTime() - new Date(sorted[i - 1].end).getTime()) / 60000 : Infinity;
+    if (gap >= 10) {
+      const count = i - streakStart;
+      if (count >= 3) streaks.push({ count, startIdx: streakStart, endIdx: i - 1 });
+      streakStart = i;
     }
+  }
+  for (const s of streaks) {
+    insights.push(`🔥 ${s.count} back-to-back meetings ${fmt12(sorted[s.startIdx].start)}–${fmt12(sorted[s.endIdx].end)}`);
   }
 
   // Total meeting hours
@@ -114,7 +113,9 @@ export function scheduleInsights(meetings: WebexMeeting[]): string[] {
   if (gaps.length > 0) {
     const largest = gaps.reduce((a, b) => (a.minutes > b.minutes ? a : b));
     if (largest.minutes >= 60) {
-      insights.push(`💡 Largest free block: ${Math.round(largest.minutes / 60)}h ${largest.minutes % 60 > 0 ? `${largest.minutes % 60}m` : ""} (${fmt12(largest.start)}–${fmt12(largest.end)})`);
+      const freeH = Math.floor(largest.minutes / 60);
+      const freeM = Math.round(largest.minutes % 60);
+      insights.push(`💡 Largest free block: ${freeH}h${freeM > 0 ? ` ${freeM}m` : ""} (${fmt12(largest.start)}–${fmt12(largest.end)})`);
     }
   } else if (timed.length > 0) {
     insights.push("⚡ No gaps ≥30min — solid wall of meetings");

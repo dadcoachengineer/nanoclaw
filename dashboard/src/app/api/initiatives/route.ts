@@ -121,9 +121,54 @@ export async function GET(req: NextRequest) {
       summaries.push(...sums.map((s: any) => ({ meetingId: s.meeting_id, title: s.title, date: s.date, summary: s.summary })));
     }
 
+    // Get phases
+    const phases = await sql(
+      "SELECT id, label, sort_order, start_date::text, end_date::text FROM initiative_phases WHERE initiative_slug = $1 ORDER BY sort_order",
+      [slug]
+    );
+
+    // Get pinned task phase assignments
+    const taskPhases = await sql(
+      "SELECT task_id, phase_id FROM initiative_pinned_tasks WHERE initiative_slug = $1 AND phase_id IS NOT NULL",
+      [slug]
+    );
+    const taskPhaseMap: Record<string, string> = {};
+    for (const tp of taskPhases) taskPhaseMap[tp.task_id] = tp.phase_id;
+
+    // Get artifacts linked to any task in this initiative
+    const allTaskIds = tasks.map((t: any) => t.id);
+    let artifacts: any[] = [];
+    if (allTaskIds.length > 0) {
+      const artPlaceholders = allTaskIds.map((_: any, i: number) => `$${i + 1}::uuid`).join(",");
+      artifacts = await sql(
+        `SELECT id, title, intent, task_id, char_count, created_at::text FROM artifacts WHERE task_id IN (${artPlaceholders}) ORDER BY created_at DESC`,
+        allTaskIds
+      );
+    }
+
+    // Task progress
+    const totalTasks = tasks.length;
+    const doneTasks = tasks.filter((t: any) => t.status === "Done").length;
+
+    // Add people's recent message excerpts
+    for (const p of people) {
+      if (p.pinned) {
+        const excerpt = await sqlOne(
+          `SELECT LEFT(text, 150) as text, date::text FROM message_excerpts me
+           JOIN people pp ON pp.id = me.person_id
+           WHERE pp.name ILIKE $1 ORDER BY me.date DESC LIMIT 1`,
+          [`%${p.name}%`]
+        );
+        if (excerpt) p.lastMessage = excerpt.text;
+      }
+    }
+
     return NextResponse.json({
       name: ini.name, description: ini.description, status: ini.status,
-      keywords: ini.keywords, tasks, people, meetings, summaries, activity: [],
+      keywords: ini.keywords, target_date: ini.target_date, tasks, people,
+      meetings, summaries, phases, artifacts, taskPhaseMap,
+      progress: { total: totalTasks, done: doneTasks },
+      activity: [],
     });
   }
 
@@ -199,6 +244,34 @@ export async function PATCH(req: NextRequest) {
   if (body.description) await sql("UPDATE initiatives SET description = $1 WHERE slug = $2", [body.description, slug]);
   if (body.status) await sql("UPDATE initiatives SET status = $1 WHERE slug = $2", [body.status, slug]);
   if (body.keywords) await sql("UPDATE initiatives SET keywords = $1 WHERE slug = $2", [body.keywords, slug]);
+  if (body.target_date !== undefined) await sql("UPDATE initiatives SET target_date = $1 WHERE slug = $2", [body.target_date || null, slug]);
+
+  // Phase management
+  if (body.addPhase) {
+    const { label, sort_order, start_date, end_date } = body.addPhase;
+    const phase = await sqlOne(
+      "INSERT INTO initiative_phases (initiative_slug, label, sort_order, start_date, end_date) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [slug, label, sort_order || 0, start_date || null, end_date || null]
+    );
+    return NextResponse.json({ slug, phase });
+  }
+  if (body.updatePhase) {
+    const { id: phId, label: phLabel, start_date: phStart, end_date: phEnd } = body.updatePhase;
+    if (phLabel) await sql("UPDATE initiative_phases SET label = $1 WHERE id = $2::uuid AND initiative_slug = $3", [phLabel, phId, slug]);
+    if (phStart !== undefined) await sql("UPDATE initiative_phases SET start_date = $1 WHERE id = $2::uuid AND initiative_slug = $3", [phStart || null, phId, slug]);
+    if (phEnd !== undefined) await sql("UPDATE initiative_phases SET end_date = $1 WHERE id = $2::uuid AND initiative_slug = $3", [phEnd || null, phId, slug]);
+  }
+  if (body.removePhase) {
+    await sql("DELETE FROM initiative_phases WHERE id = $1::uuid AND initiative_slug = $2", [body.removePhase, slug]);
+  }
+  if (body.assignTaskPhase) {
+    const { taskId, phaseId } = body.assignTaskPhase;
+    if (phaseId) {
+      await sql("UPDATE initiative_pinned_tasks SET phase_id = $1::uuid WHERE initiative_slug = $2 AND task_id = $3::uuid", [phaseId, slug, taskId]);
+    } else {
+      await sql("UPDATE initiative_pinned_tasks SET phase_id = NULL WHERE initiative_slug = $1 AND task_id = $2::uuid", [slug, taskId]);
+    }
+  }
 
   // Pin/unpin task
   if (body.pinTask) {

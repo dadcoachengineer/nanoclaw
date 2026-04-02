@@ -194,6 +194,20 @@ export default function TaskDetail({
   const [peopleSearchOpen, setPeopleSearchOpen] = useState(false);
   const [peopleQuery, setPeopleQuery] = useState("");
   const [peopleSuggestions, setPeopleSuggestions] = useState<{ name: string; emails: string[] }[]>([]);
+
+  // Artifact rename
+  const [renamingArtifact, setRenamingArtifact] = useState<string | null>(null);
+  const [artifactRename, setArtifactRename] = useState("");
+
+  // Chat about this task
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<{ id: string; role: string; content: string; created_at: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [chatStreaming, setChatStreaming] = useState("");
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const chatInputRef = useRef<HTMLInputElement>(null);
+
   const isRich = isRichPage(title);
 
   // Fetch page blocks for briefing/prep pages
@@ -259,7 +273,7 @@ export default function TaskDetail({
   useEffect(() => {
     // Skip the first render (initial load sets people from existing data)
     if (!peopleInitialized.current) {
-      if (taskPeople.length > 0) peopleInitialized.current = true;
+      peopleInitialized.current = true;
       return;
     }
     const names = taskPeople.map((p) => p.name);
@@ -457,6 +471,85 @@ export default function TaskDetail({
   useEffect(() => {
     if (editingTitle && titleInputRef.current) titleInputRef.current.focus();
   }, [editingTitle]);
+
+  // Load chat history when opened
+  useEffect(() => {
+    if (!chatOpen) return;
+    fetch(`/api/task-chat?taskId=${page.id}`)
+      .then((r) => r.json())
+      .then((data) => { if (data.messages) setChatMessages(data.messages); })
+      .catch(() => {});
+  }, [chatOpen, page.id]);
+
+  // Auto-scroll chat
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, chatStreaming]);
+
+  async function handleChatSend() {
+    const msg = chatInput.trim();
+    if (!msg || chatLoading) return;
+    setChatInput("");
+    setChatLoading(true);
+    setChatMessages((prev) => [...prev, { id: `tmp-${Date.now()}`, role: "user", content: msg, created_at: new Date().toISOString() }]);
+
+    try {
+      const resp = await fetch("/api/task-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId: page.id, message: msg }),
+      });
+      if (!resp.ok) throw new Error("Chat failed");
+
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error);
+      setChatMessages((prev) => [...prev, { id: data.id || `msg-${Date.now()}`, role: "assistant", content: data.content, created_at: data.created_at || new Date().toISOString() }]);
+    } catch (err: any) {
+      setChatStreaming("");
+      setChatMessages((prev) => [...prev, { id: `err-${Date.now()}`, role: "assistant", content: `Error: ${err?.message || "Failed to get response"}`, created_at: new Date().toISOString() }]);
+    } finally {
+      setChatLoading(false);
+      setTimeout(() => chatInputRef.current?.focus(), 100);
+    }
+  }
+
+  async function saveChatAsNote(content: string) {
+    try {
+      const resp = await fetch("/api/notion/update", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pageId: page.id,
+          properties: { Notes: { rich_text: [{ text: { content: `${currentNotes ? currentNotes + "\n\n" : ""}[Chat] ${content.slice(0, 1900)}` } }] } },
+        }),
+      });
+      if (resp.ok) {
+        setCurrentNotes((prev) => `${prev ? prev + "\n\n" : ""}[Chat] ${content.slice(0, 1900)}`);
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function saveChatAsArtifact(content: string) {
+    try {
+      const resp = await fetch("/api/artifacts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: `Chat: ${title.slice(0, 50)}`,
+          content,
+          intent: "chat",
+          taskId: page.id,
+          taskTitle: title,
+        }),
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.id) {
+          setArtifacts((prev) => [...prev, { id: data.id, title: `Chat: ${title.slice(0, 50)}`, intent: "chat", createdAt: new Date().toISOString(), charCount: content.length }]);
+        }
+      }
+    } catch { /* ignore */ }
+  }
 
   async function handleSaveTitle() {
     const trimmed = titleDraft.trim();
@@ -865,14 +958,6 @@ export default function TaskDetail({
 
           {/* Source links */}
           <div className="flex flex-wrap gap-4">
-            <a
-              href={page.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-[var(--accent)] hover:underline"
-            >
-              Open in Notion &rarr;
-            </a>
             {webexVerifiedEmail && (
               <a
                 href={`webexteams://im?email=${encodeURIComponent(webexVerifiedEmail)}`}
@@ -936,7 +1021,36 @@ export default function TaskDetail({
                 >
                   <div className="w-6 h-6 rounded bg-[rgba(63,185,80,0.12)] flex items-center justify-center text-[10px] font-bold text-[var(--green)] shrink-0">A</div>
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium text-[var(--text)] truncate">{a.title}</div>
+                    {renamingArtifact === a.id ? (
+                      <input
+                        autoFocus
+                        value={artifactRename}
+                        onChange={(e) => setArtifactRename(e.target.value)}
+                        onKeyDown={async (e) => {
+                          if (e.key === "Enter") {
+                            const newTitle = artifactRename.trim();
+                            if (newTitle && newTitle !== a.title) {
+                              await fetch("/api/artifacts", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: a.id, title: newTitle }) });
+                              setArtifacts((prev) => prev.map((x) => x.id === a.id ? { ...x, title: newTitle } : x));
+                            }
+                            setRenamingArtifact(null);
+                          }
+                          if (e.key === "Escape") setRenamingArtifact(null);
+                          e.stopPropagation();
+                        }}
+                        onBlur={() => setRenamingArtifact(null)}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full text-xs font-medium text-[var(--text)] bg-[var(--bg)] border border-[var(--accent)] rounded px-1 py-0.5 focus:outline-none"
+                      />
+                    ) : (
+                      <div
+                        className="text-xs font-medium text-[var(--text)] truncate cursor-pointer hover:text-[var(--accent)]"
+                        onDoubleClick={(e) => { e.stopPropagation(); setRenamingArtifact(a.id); setArtifactRename(a.title); }}
+                        title="Double-click to rename"
+                      >
+                        {a.title}
+                      </div>
+                    )}
                     <div className="text-[10px] text-[var(--text-dim)]">
                       {new Date(a.createdAt).toLocaleDateString()} — {a.charCount.toLocaleString()} chars
                     </div>
@@ -954,20 +1068,181 @@ export default function TaskDetail({
                       if (!line.trim()) return <div key={i} className="h-1.5" />;
                       return <p key={i}>{line}</p>;
                     })}
-                    <button
-                      onClick={async () => {
-                        try { await navigator.clipboard.writeText(artifactContent); } catch { /* ignore */ }
-                      }}
-                      className="mt-2 text-[10px] text-[var(--accent)] hover:underline"
-                    >
-                      Copy to clipboard
-                    </button>
+                    <div className="mt-2 flex gap-3">
+                      <button
+                        onClick={async () => {
+                          try { await navigator.clipboard.writeText(artifactContent); } catch { /* ignore */ }
+                        }}
+                        className="text-[10px] text-[var(--accent)] hover:underline"
+                      >
+                        Copy
+                      </button>
+                      <button
+                        onClick={() => { setRenamingArtifact(a.id); setArtifactRename(a.title); }}
+                        className="text-[10px] text-[var(--text-dim)] hover:text-[var(--accent)]"
+                      >
+                        Rename
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try {
+                            const kw = title.split(/\s+/).filter((w: string) => w.length > 3).slice(0, 5);
+                            const resp = await fetch("/api/initiatives", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                name: a.title,
+                                description: `Created from artifact. Source task: ${title}`,
+                                keywords: kw,
+                              }),
+                            });
+                            if (resp.ok) {
+                              const data = await resp.json();
+                              if (data.slug) {
+                                // Pin the source task
+                                await fetch("/api/initiatives", {
+                                  method: "PATCH",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ slug: data.slug, pinTask: page.id }),
+                                });
+
+                                // Parse artifact content for phases (Week N:, Phase N:, Step N:, etc.)
+                                let content = artifactContent || "";
+                                if (!content) {
+                                  try {
+                                    const artResp = await fetch(`/api/artifacts?id=${a.id}`);
+                                    const artData = await artResp.json();
+                                    content = artData.content || "";
+                                  } catch {}
+                                }
+                                if (content) {
+                                  const phaseRegex = /^(?:#{1,3}\s*)?(?:Week|Phase|Step|Stage|Part)\s*(\d+)[:\s—–-]+(.+?)$/gim;
+                                  const phases: { label: string; order: number }[] = [];
+                                  let match;
+                                  while ((match = phaseRegex.exec(content)) !== null) {
+                                    phases.push({ label: `${match[0].replace(/^#{1,3}\s*/, "").split(/[:\n]/)[0].trim()}`, order: phases.length });
+                                  }
+                                  // Create phases sequentially
+                                  for (const ph of phases) {
+                                    await fetch("/api/initiatives", {
+                                      method: "PATCH",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ slug: data.slug, addPhase: { label: ph.label, sort_order: ph.order } }),
+                                    });
+                                  }
+                                }
+                              }
+                              alert(`Initiative "${a.title}" created${data.slug ? " with phases" : ""}. View it in the Initiatives tab.`);
+                            } else {
+                              const err = await resp.json().catch(() => ({}));
+                              alert(err.error || "Failed to create initiative");
+                            }
+                          } catch { /* ignore */ }
+                        }}
+                        className="text-[10px] text-[var(--purple)] hover:underline"
+                      >
+                        Create Initiative
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
             ))}
           </div>
         )}
+
+        {/* Chat about this task */}
+        <div className="px-6 py-3 border-t border-[var(--border)]">
+          <button
+            onClick={() => { setChatOpen(!chatOpen); }}
+            className="flex items-center gap-2 text-xs text-[var(--accent)] hover:underline"
+          >
+            <span>{chatOpen ? "\u25BE" : "\u25B8"}</span>
+            Chat about this task
+            {chatMessages.length > 0 && (
+              <span className="bg-[rgba(88,166,255,0.12)] text-[var(--accent)] text-[10px] px-1.5 py-0.5 rounded-full">
+                {chatMessages.length}
+              </span>
+            )}
+          </button>
+
+          {chatOpen && (
+            <div className="mt-3">
+              {/* Message history */}
+              <div className="max-h-[300px] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden space-y-2 mb-3">
+                {chatMessages.length === 0 && !chatStreaming && (
+                  <div className="text-[10px] text-[var(--text-dim)] italic py-2">
+                    Ask questions, brainstorm, plan next steps, or draft content with full task context.
+                  </div>
+                )}
+                {chatMessages.map((m) => (
+                  <div key={m.id} className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}>
+                    <div
+                      className={`max-w-[85%] rounded-lg px-3 py-2 text-xs leading-relaxed ${
+                        m.role === "user"
+                          ? "bg-[rgba(88,166,255,0.08)] text-[var(--accent)]"
+                          : "bg-[var(--bg)] text-[var(--text)]"
+                      }`}
+                    >
+                      <div className="whitespace-pre-wrap">{m.content}</div>
+                    </div>
+                    {m.role === "assistant" && m.content && !m.id.startsWith("err-") && (
+                      <div className="flex gap-2 mt-0.5">
+                        <button
+                          onClick={() => { saveChatAsNote(m.content); }}
+                          className="text-[10px] text-[var(--text-dim)] hover:text-[var(--accent)]"
+                        >
+                          Save as Note
+                        </button>
+                        <button
+                          onClick={() => { saveChatAsArtifact(m.content); }}
+                          className="text-[10px] text-[var(--text-dim)] hover:text-[var(--green)]"
+                        >
+                          Save as Artifact
+                        </button>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(m.content).catch(() => {}); }}
+                          className="text-[10px] text-[var(--text-dim)] hover:text-[var(--purple)]"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {chatStreaming && (
+                  <div className="flex flex-col items-start">
+                    <div className="max-w-[85%] rounded-lg px-3 py-2 text-xs leading-relaxed bg-[var(--bg)] text-[var(--text)]">
+                      <div className="whitespace-pre-wrap">{chatStreaming.replace(/<think>[\s\S]*?<\/think>/g, "").trim()}<span className="animate-pulse ml-0.5">|</span></div>
+                    </div>
+                  </div>
+                )}
+                <div ref={chatEndRef} />
+              </div>
+
+              {/* Input */}
+              <div className="flex gap-2">
+                <input
+                  ref={chatInputRef}
+                  type="text"
+                  placeholder={chatLoading ? "Thinking..." : "Ask about this task..."}
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleChatSend()}
+                  disabled={chatLoading}
+                  className="flex-1 bg-[var(--bg)] border border-[var(--border)] rounded-md px-3 py-1.5 text-xs text-[var(--text)] placeholder:text-[var(--text-dim)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                />
+                <button
+                  onClick={handleChatSend}
+                  disabled={chatLoading || !chatInput.trim()}
+                  className="px-3 py-1.5 bg-[var(--accent)] text-white text-xs font-medium rounded-md hover:opacity-90 disabled:opacity-50"
+                >
+                  {chatLoading ? "..." : "Send"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Footer: complete action */}
         {!done && (

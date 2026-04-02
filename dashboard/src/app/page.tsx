@@ -11,6 +11,7 @@ import InitiativesView from "@/components/views/ProjectsView";
 import WeeklyCheckinView from "@/components/views/WeeklyCheckinView";
 import SystemView from "@/components/views/SystemView";
 import TeamView from "@/components/views/TeamView";
+import ObservabilityView from "@/components/views/ObservabilityView";
 import SearchBar from "@/components/SearchBar";
 
 const TABS = [
@@ -23,6 +24,7 @@ const TABS = [
   { id: "people", label: "People" },
   { id: "topics", label: "Topics" },
   { id: "system", label: "System" },
+  { id: "o11y", label: "O11y" },
 ] as const;
 
 type Tab = (typeof TABS)[number]["id"];
@@ -32,7 +34,7 @@ export default function Home() {
 
   return (
     <>
-      <header className="flex items-center justify-between px-8 py-5 border-b border-[var(--border)]">
+      <header className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)]">
         <h1 className="text-xl font-semibold text-[var(--text-bright)]">
           Mission Control
         </h1>
@@ -79,6 +81,7 @@ export default function Home() {
         {tab === "people" && <PeopleView />}
         {tab === "topics" && <TopicsView />}
         {tab === "system" && <SystemView />}
+        {tab === "o11y" && <ObservabilityView />}
       </main>
     </>
   );

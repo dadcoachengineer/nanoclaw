@@ -273,7 +273,7 @@ export default function TodayView() {
       if (synthResp.ok) {
         const { content: reply } = await synthResp.json();
         const titleMatch = reply?.match(/TITLE:\s*(.+)/i);
-        const notesMatch = reply?.match(/NOTES:\s*(.+)/is);
+        const notesMatch = reply?.match(/NOTES:\s*([\s\S]+)/i);
         if (titleMatch) synthesizedTitle = titleMatch[1].trim();
         if (notesMatch) synthesizedNotes = notesMatch[1].trim();
       }
@@ -407,7 +407,7 @@ export default function TodayView() {
       const localStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
       const localEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
 
-      // Fetch today's briefing page — handles both "March 30" and "2026-03-30" title formats
+      // Fetch today's briefing page
       const todayLong = now.toLocaleDateString("en-US", { month: "long", day: "numeric" });
       const todayISO = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
       fetch("/api/notion/query", {
@@ -429,7 +429,6 @@ export default function TodayView() {
         .then((data) => {
           const page = data.results?.[0];
           if (page) {
-            setBriefingUrl(page.url);
             return fetch(`/api/notion/blocks?page_id=${page.id}`).then((r) => r.json());
           }
           return null;
@@ -543,14 +542,14 @@ export default function TodayView() {
   const activeMeetings = meetings.filter((m) => m.state !== "missed");
 
   return (
-    <div className="max-w-[1400px] mx-auto px-8 py-6">
+    <div className="w-full px-6 py-6">
       {error && (
         <div className="mb-4 p-3 bg-[rgba(248,81,73,0.1)] border border-[var(--red)] rounded-lg text-sm text-[var(--red)]">
           {error}
         </div>
       )}
       {/* Two columns — left: briefing + triage + tasks, right: calendar */}
-      <div className="grid grid-cols-[1fr_380px] gap-6">
+      <div className="grid grid-cols-[1fr_340px] gap-4">
       <div className="space-y-4">
 
       {/* Daily Briefing */}
@@ -565,11 +564,7 @@ export default function TodayView() {
               <span><span className="font-bold text-[var(--accent)]">{activeMeetings.length}</span> <span className="text-[var(--text-dim)]">meetings</span></span>
               <span><span className="font-bold text-[var(--text-dim)]">{actionableTasks.length}</span> <span className="text-[var(--text-dim)]">open</span></span>
             </div>
-            {briefingUrl && (
-              <a href={briefingUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-[var(--accent)] hover:underline ml-auto">
-                Open in Notion ↗
-              </a>
-            )}
+            {/* Notion link removed — PG is system of record */}
           </div>
 
           {/* Briefing content */}

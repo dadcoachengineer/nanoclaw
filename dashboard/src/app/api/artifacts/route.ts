@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
 
     // Index in vector DB
     try {
-      const chunks = content.match(/.{1,500}/gs) || [content];
+      const chunks = content.match(/[\s\S]{1,500}/g) || [content];
       for (const chunk of chunks.slice(0, 20)) {
         await sql(
           "INSERT INTO vector_chunks (id, source, text, metadata) VALUES ($1, 'artifact', $2, $3::jsonb)",
@@ -122,4 +122,20 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
+}
+
+/** PATCH /api/artifacts — rename artifact */
+export async function PATCH(req: NextRequest) {
+  const auth = await requireAuth();
+  if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { id, title } = await req.json();
+  if (!id || !title) return NextResponse.json({ error: "id and title required" }, { status: 400 });
+
+  const updated = await sqlOne(
+    "UPDATE artifacts SET title = $1 WHERE id = $2 RETURNING id, title",
+    [title.trim(), id]
+  );
+  if (!updated) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json({ ok: true, title: updated.title });
 }
