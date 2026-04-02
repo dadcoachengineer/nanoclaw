@@ -1,5 +1,5 @@
 /**
- * Process Webex messages locally using Ollama (deepseek-r1:70b).
+ * Process Webex messages locally using Ollama (gemma3:27b).
  *
  * Scans DM rooms for actionable messages and group rooms for @mentions,
  * sends them to a local Ollama instance for analysis, applies corrections,
@@ -12,15 +12,15 @@
 import fs from "fs";
 import path from "path";
 import { HttpsProxyAgent } from "https-proxy-agent";
-import { findOrCreateTask, clearTaskCache } from './lib/task-dedup.js';
+import { findOrCreateTask, clearTaskCache, archiveToPg, logPipelineRun } from './lib/task-dedup.js';
+import { ollamaChat } from './lib/ollama-client.js';
 
 const STORE_DIR = path.join(process.cwd(), "store");
 const STATE_PATH = path.join(STORE_DIR, "messages-local-state.json");
 const CORRECTIONS_PATH = path.join(STORE_DIR, "corrections.json");
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
 const MAX_PROCESSED_ROOMS = 500;
-const OLLAMA_URL = "http://studio.shearer.live:11434";
-const OLLAMA_MODEL = "deepseek-r1:70b";
+const OLLAMA_MODEL = "gemma3:27b";
 const OLLAMA_TIMEOUT_MS = 180_000;
 const MY_EMAIL = "jasheare@cisco.com";
 
@@ -33,11 +33,7 @@ const proxyAgent = new HttpsProxyAgent(
   `http://x:${AGENT_TOKEN}@localhost:10255`
 );
 
-// Webex token (direct, not proxied)
-const webexConfig = JSON.parse(
-  fs.readFileSync(path.join(STORE_DIR, "webex-oauth.json"), "utf-8")
-);
-const WEBEX_TOKEN = webexConfig.access_token;
+// Webex auth: via OneCLI proxy (injects Bearer token automatically for webexapis.com)
 
 // --- State types ---
 
@@ -79,9 +75,10 @@ interface RunMetrics {
 // --- Fetch helpers ---
 
 async function webexGet(urlPath: string): Promise<unknown> {
-  const resp = await fetch(`https://webexapis.com/v1${urlPath}`, {
-    headers: { Authorization: `Bearer ${WEBEX_TOKEN}` },
-  });
+  const { default: nodeFetch } = await import("node-fetch");
+  const resp = await nodeFetch(`https://webexapis.com/v1${urlPath}`, {
+    agent: proxyAgent,
+  } as any);
   if (!resp.ok) {
     throw new Error(`Webex API ${resp.status}: ${resp.statusText}`);
   }
@@ -227,50 +224,27 @@ Rules:
 - Include the specific context of what's being asked
 - Each JSON object must reference a SPECIFIC message from the conversation
 - If no action is needed, output nothing (empty response is valid)
-- Output ONLY JSON lines, no other text`;
+- Output ONLY JSON lines, no other text
+
+CRITICAL: You MUST respond with ONLY valid JSON lines. No explanatory text before or after. No markdown code fences. Start your response with {.`;
 
   const userPrompt = `Room: ${roomTitle}\n\nMessages:\n${messagesText}`;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
-
-  const startMs = Date.now();
-
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        stream: false,
-        options: { num_ctx: 16384, temperature: 0.3 },
-      }),
-      signal: controller.signal,
+    const result = await ollamaChat({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      options: { num_ctx: 16384, temperature: 0.3 },
+      timeoutMs: OLLAMA_TIMEOUT_MS,
     });
 
-    const latencyMs = Date.now() - startMs;
-    clearTimeout(timeout);
-
-    if (!resp.ok) {
-      throw new Error(`Ollama ${resp.status}: ${resp.statusText}`);
-    }
-
-    const data = (await resp.json()) as {
-      message?: { content?: string };
-      prompt_eval_count?: number;
-      eval_count?: number;
-    };
-
-    const rawContent = data.message?.content || "";
-    const tokensIn = data.prompt_eval_count || 0;
-    const tokensOut = data.eval_count || 0;
-
-    // Strip <think> tags from DeepSeek-R1 output
-    const cleaned = stripThinkTags(rawContent);
+    const latencyMs = result.latencyMs;
+    const tokensIn = result.promptTokens;
+    const tokensOut = result.completionTokens;
+    const cleaned = result.content; // think tags already stripped by ollamaChat
 
     // Parse JSON lines
     const items: MessageAction[] = [];
@@ -307,10 +281,9 @@ Rules:
       tokensIn,
       tokensOut,
       parseErrors,
-      rawResponse: rawContent,
+      rawResponse: cleaned,
     };
   } catch (err: unknown) {
-    clearTimeout(timeout);
     const msg = err instanceof Error ? err.message : String(err);
 
     if (msg.includes("abort")) {
@@ -444,20 +417,17 @@ async function main() {
   console.log("Processing Webex messages locally...\n");
 
   // Check Ollama connectivity first
+  const ollamaHealthUrl = process.env.OLLAMA_URL || process.env.OLLAMA_BASE_URL || "http://studio.shearer.live:11434";
   try {
-    const healthResp = await fetch(`${OLLAMA_URL}/api/tags`, {
+    const healthResp = await fetch(`${ollamaHealthUrl}/api/tags`, {
       signal: AbortSignal.timeout(10_000),
     });
     if (!healthResp.ok) {
-      console.warn(
-        `WARNING: Ollama returned ${healthResp.status}. Exiting gracefully.`
-      );
+      console.warn(`WARNING: Ollama returned ${healthResp.status}. Exiting gracefully.`);
       return;
     }
   } catch (err) {
-    console.warn(
-      `WARNING: Ollama unreachable at ${OLLAMA_URL}. Exiting gracefully.`
-    );
+    console.warn(`WARNING: Ollama unreachable at ${ollamaHealthUrl}. Exiting gracefully.`);
     console.warn(`  ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
@@ -641,6 +611,11 @@ async function main() {
         content: messagesText,
         archivedAt: new Date().toISOString(),
       }, null, 2));
+      await archiveToPg({
+        id: archiveId, sourceType: "messages", title: `DM: ${roomLabel}`,
+        date: new Date().toISOString(), content: messagesText,
+        metadata: { roomId: room.id, roomTitle: roomLabel, messageCount: contextMessages.length },
+      });
     } catch { /* archive is best-effort */ }
 
     // Send to Ollama for analysis
@@ -1042,9 +1017,18 @@ async function main() {
   console.log(
     `Cumulative: ${state.metrics.totalRuns} runs, ${state.metrics.totalRooms} rooms, ${state.metrics.totalTasks} tasks, avg latency ${(state.metrics.avgLatencyMs / 1000).toFixed(0)}s`
   );
+
+  // Log to PG so dashboard shows current status
+  await logPipelineRun({
+    taskId: "mc-webex-messages",
+    durationMs: Math.round(totalLatency),
+    status: "success",
+    result: `${metrics.roomsProcessed} rooms, ${metrics.tasksCreated} tasks`,
+  });
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("Fatal:", err);
+  await logPipelineRun({ taskId: "mc-webex-messages", durationMs: 0, status: "error", error: String(err) }).catch(() => {});
   process.exit(1);
 });

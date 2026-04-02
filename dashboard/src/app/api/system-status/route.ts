@@ -10,7 +10,6 @@ const STORE_DIR =
 const SYSTEM_API = process.env.NANOCLAW_API || "http://127.0.0.1:3939";
 const OLLAMA_URL =
   process.env.OLLAMA_BASE_URL || "http://studio.shearer.live:11434";
-const SHIM_PORT = parseInt(process.env.SHIM_PORT || "8089", 10);
 
 const DEFAULT_MODEL = "claude-sonnet-4-20250514";
 
@@ -19,10 +18,9 @@ const DEFAULT_MODEL = "claude-sonnet-4-20250514";
 const MODEL_COSTS: Record<string, { inputPerM: number; outputPerM: number; label: string }> = {
   "claude-sonnet-4-20250514": { inputPerM: 3, outputPerM: 15, label: "Sonnet" },
   "claude-haiku-4-5-20251001": { inputPerM: 0.25, outputPerM: 1.25, label: "Haiku" },
-  "local:deepseek-r1:70b": { inputPerM: 0, outputPerM: 0, label: "Local (DeepSeek)" },
-  "local:gemma3:27b": { inputPerM: 0, outputPerM: 0, label: "Local (Gemma)" },
-  "local:qwen3-coder:30b": { inputPerM: 0, outputPerM: 0, label: "Local (Qwen)" },
-  "local:qwen3:8b": { inputPerM: 0, outputPerM: 0, label: "Local (Qwen 8B)" },
+  "local:gemma3:27b": { inputPerM: 0, outputPerM: 0, label: "Local (Gemma 27B)" },
+  "local:phi4:14b": { inputPerM: 0, outputPerM: 0, label: "Local (Phi 4 14B)" },
+  "local:granite3.3:8b": { inputPerM: 0, outputPerM: 0, label: "Local (Granite 8B)" },
 };
 
 // --- Helpers ---
@@ -238,7 +236,7 @@ export async function GET() {
   if (!auth) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   // Fetch all data sources in parallel
-  const [healthResult, statsResult, runsResult, ollamaResult, shimResult] =
+  const [healthResult, statsResult, runsResult, ollamaResult] =
     await Promise.allSettled([
       fetchWithTimeout(`${SYSTEM_API}/api/health`, 3000).then((r) => r.json()),
       fetchWithTimeout(`${SYSTEM_API}/api/stats`, 3000).then((r) => r.json()),
@@ -246,9 +244,6 @@ export async function GET() {
         (r) => r.json()
       ),
       fetchWithTimeout(`${OLLAMA_URL}/api/tags`, 3000).then((r) => r.json()),
-      fetchWithTimeout(`http://127.0.0.1:${SHIM_PORT}/health`, 1000).then(
-        (r) => r.json()
-      ),
     ]);
 
   const health =
@@ -258,7 +253,6 @@ export async function GET() {
     runsResult.status === "fulfilled" ? runsResult.value : [];
   const ollamaData =
     ollamaResult.status === "fulfilled" ? ollamaResult.value : null;
-  const shimReachable = shimResult.status === "fulfilled";
 
   // Read package.json for version
   let version = "unknown";
@@ -284,36 +278,35 @@ export async function GET() {
       name: "NanoClaw",
       status: nanoclawRunning ? "running" : "stopped",
       port: 3939,
+      binding: "localhost",
       uptime: health?.uptime ?? null,
     },
     {
       name: "Dashboard",
       status: "running",
       port: 3940,
+      binding: "localhost",
       uptime: null,
     },
     {
       name: "Nginx",
-      status: "running", // If the dashboard is reachable, Nginx is serving
+      status: "running",
       port: 443,
+      binding: "LAN",
       uptime: null,
     },
     {
       name: "OneCLI Proxy",
-      status: "running", // Presence implied by dashboard working
+      status: "running",
       port: 10255,
+      binding: "localhost",
       uptime: null,
     },
     {
-      name: "Ollama",
+      name: "Ollama Studio",
       status: ollamaData ? "running" : "stopped",
       port: 11434,
-      uptime: null,
-    },
-    {
-      name: "Ollama Shim",
-      status: shimReachable ? "running" : "stopped",
-      port: SHIM_PORT,
+      binding: "LAN",
       uptime: null,
     },
   ];
@@ -378,37 +371,29 @@ export async function GET() {
     }
 
     try {
-      const rows = db
-        .prepare(
-          "SELECT id, prompt, schedule_type, schedule_value, status, last_run, last_result, next_run, model FROM scheduled_tasks WHERE status = 'active' OR status = 'paused' ORDER BY next_run"
-        )
-        .all() as PipelineRow[];
+      // Read pipeline data from PostgreSQL (system of record)
+      const rows = (await pgSql(
+        "SELECT id, prompt, schedule_type, schedule_value, status, last_run::text as last_run, last_result, next_run::text as next_run, model FROM scheduled_tasks WHERE status IN ('active', 'paused') ORDER BY next_run NULLS LAST"
+      )) as PipelineRow[];
 
-      // Get last run status for each task from run logs
-      const lastStatusStmt = db.prepare(
-        "SELECT status FROM task_run_logs WHERE task_id = ? ORDER BY run_at DESC LIMIT 1"
-      );
+      pipelines = await Promise.all(rows.map(async (row) => {
+        // Get last run status from PG task_run_logs
+        const lastRunLog = await pgSqlOne(
+          "SELECT status FROM task_run_logs WHERE task_id = $1 ORDER BY run_at DESC LIMIT 1",
+          [row.id]
+        ) as { status: string } | null;
 
-      // Get average duration from last 10 runs
-      const avgDurationStmt = db.prepare(
-        "SELECT AVG(duration_ms) as avg_ms FROM (SELECT duration_ms FROM task_run_logs WHERE task_id = ? AND status = 'success' ORDER BY run_at DESC LIMIT 10)"
-      );
+        // Get average duration from last 10 successful runs
+        const avgRow = await pgSqlOne(
+          "SELECT AVG(duration_ms)::int as avg_ms FROM (SELECT duration_ms FROM task_run_logs WHERE task_id = $1 AND status = 'success' ORDER BY run_at DESC LIMIT 10) sub",
+          [row.id]
+        ) as { avg_ms: number | null } | null;
 
-      // Get total runs count for cost estimation
-      const totalRunsStmt = db.prepare(
-        "SELECT COUNT(*) as cnt FROM task_run_logs WHERE task_id = ? AND status = 'success'"
-      );
-
-      pipelines = rows.map((row) => {
-        const lastRunLog = lastStatusStmt.get(row.id) as
-          | { status: string }
-          | undefined;
-        const avgRow = avgDurationStmt.get(row.id) as
-          | { avg_ms: number | null }
-          | undefined;
-        const totalRow = totalRunsStmt.get(row.id) as
-          | { cnt: number }
-          | undefined;
+        // Get total successful runs count
+        const totalRow = await pgSqlOne(
+          "SELECT COUNT(*)::int as cnt FROM task_run_logs WHERE task_id = $1 AND status = 'success'",
+          [row.id]
+        ) as { cnt: number } | null;
 
         const schedule =
           row.schedule_type === "cron"
@@ -440,7 +425,7 @@ export async function GET() {
           runsPerDay: Math.round(rpd * 100) / 100,
           recommendation: recommendModel(row.id, avgMs),
         };
-      });
+      }));
     } catch {}
   }
 

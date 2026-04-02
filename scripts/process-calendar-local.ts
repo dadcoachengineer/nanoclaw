@@ -1,5 +1,5 @@
 /**
- * Process Google Calendar locally using Ollama (qwen3:8b).
+ * Process Google Calendar locally using Ollama (granite3.3:8b).
  *
  * Fetches events for the next 7 days from personal and family calendars,
  * saves them for briefing/meeting prep agents, identifies conflicts and
@@ -10,14 +10,14 @@
 import fs from "fs";
 import path from "path";
 import { HttpsProxyAgent } from "https-proxy-agent";
+import { logPipelineRun } from './lib/task-dedup.js';
+import { ollamaChat } from './lib/ollama-client.js';
 
 const STORE_DIR = path.join(process.cwd(), "store");
-const TOKEN_PATH = path.join(STORE_DIR, "google-oauth.json");
 const EVENTS_PATH = path.join(STORE_DIR, "google-calendar-events.json");
 const CORRECTIONS_PATH = path.join(STORE_DIR, "corrections.json");
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
-const OLLAMA_URL = "http://studio.shearer.live:11434";
-const OLLAMA_MODEL = "qwen3:8b";
+const OLLAMA_MODEL = "granite3.3:8b";
 const OLLAMA_TIMEOUT_MS = 120_000;
 
 // OneCLI proxy for Notion
@@ -81,58 +81,15 @@ interface RunMetrics {
 
 // --- Google token management ---
 
-async function ensureGoogleToken(): Promise<string> {
-  const tokenData = JSON.parse(fs.readFileSync(TOKEN_PATH, "utf-8"));
-  if (new Date(tokenData.token_expiry) > new Date()) {
-    return tokenData.access_token;
-  }
-
-  console.log("Google token expired, refreshing...");
-
-  const resp = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: tokenData.client_id,
-      client_secret: tokenData.client_secret,
-      refresh_token: tokenData.refresh_token,
-      grant_type: "refresh_token",
-    }),
-  });
-
-  const tokens = (await resp.json()) as {
-    access_token?: string;
-    expires_in?: number;
-    error?: string;
-    error_description?: string;
-  };
-
-  if (tokens.error) {
-    throw new Error(
-      `Token refresh failed: ${tokens.error} - ${tokens.error_description || ""}`
-    );
-  }
-
-  tokenData.access_token = tokens.access_token;
-  tokenData.token_expiry = new Date(
-    Date.now() + (tokens.expires_in || 3600) * 1000
-  ).toISOString();
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokenData, null, 2));
-  console.log(`Token refreshed. Expires: ${tokenData.token_expiry}`);
-  return tokenData.access_token;
-}
-
-// --- Google Calendar API helpers ---
+// --- Google Calendar API helpers (auth via OneCLI proxy) ---
 
 async function calendarGet(
   urlPath: string,
-  token: string
 ): Promise<unknown> {
-  const resp = await fetch(
+  const { default: nodeFetch } = await import("node-fetch");
+  const resp = await nodeFetch(
     `https://www.googleapis.com/calendar/v3${urlPath}`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    }
+    { agent: proxyAgent } as any,
   );
   if (!resp.ok) {
     throw new Error(`Calendar API ${resp.status}: ${resp.statusText}`);
@@ -233,10 +190,6 @@ function inferProject(eventSummary: string, description: string): string {
 
 // --- Ollama interaction ---
 
-function stripThinkTags(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-}
-
 async function analyzeCalendar(
   eventsText: string
 ): Promise<{
@@ -268,46 +221,21 @@ Rules:
 
   const userPrompt = `Calendar events for the next 7 days:\n\n${eventsText}`;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
-
-  const startMs = Date.now();
-
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        stream: false,
-        options: { num_ctx: 8192, temperature: 0.2 },
-      }),
-      signal: controller.signal,
+    const result = await ollamaChat({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      options: { num_ctx: 8192, temperature: 0.2 },
+      timeoutMs: OLLAMA_TIMEOUT_MS,
     });
 
-    const latencyMs = Date.now() - startMs;
-    clearTimeout(timeout);
-
-    if (!resp.ok) {
-      throw new Error(`Ollama ${resp.status}: ${resp.statusText}`);
-    }
-
-    const data = (await resp.json()) as {
-      message?: { content?: string };
-      prompt_eval_count?: number;
-      eval_count?: number;
-    };
-
-    const rawContent = data.message?.content || "";
-    const tokensIn = data.prompt_eval_count || 0;
-    const tokensOut = data.eval_count || 0;
-
-    // Strip <think> tags (some models include reasoning blocks)
-    const cleaned = stripThinkTags(rawContent);
+    const latencyMs = result.latencyMs;
+    const tokensIn = result.promptTokens;
+    const tokensOut = result.completionTokens;
+    const cleaned = result.content; // think tags already stripped by ollamaChat
 
     // Extract JSON from response (may be wrapped in code fences)
     let jsonStr = cleaned;
@@ -349,10 +277,9 @@ Rules:
       tokensIn,
       tokensOut,
       parseErrors,
-      rawResponse: rawContent,
+      rawResponse: cleaned,
     };
   } catch (err: unknown) {
-    clearTimeout(timeout);
     const msg = err instanceof Error ? err.message : String(err);
 
     if (msg.includes("abort")) {
@@ -445,8 +372,9 @@ async function main() {
   console.log("Processing Google Calendar locally...\n");
 
   // Check Ollama connectivity first
+  const ollamaHealthUrl = process.env.OLLAMA_URL || process.env.OLLAMA_BASE_URL || "http://studio.shearer.live:11434";
   try {
-    const healthResp = await fetch(`${OLLAMA_URL}/api/tags`, {
+    const healthResp = await fetch(`${ollamaHealthUrl}/api/tags`, {
       signal: AbortSignal.timeout(10_000),
     });
     if (!healthResp.ok) {
@@ -457,7 +385,7 @@ async function main() {
     }
   } catch (err) {
     console.warn(
-      `WARNING: Ollama unreachable at ${OLLAMA_URL}. Exiting gracefully.`
+      `WARNING: Ollama unreachable at ${ollamaHealthUrl}. Exiting gracefully.`
     );
     console.warn(
       `  ${err instanceof Error ? err.message : String(err)}`
@@ -465,16 +393,7 @@ async function main() {
     return;
   }
 
-  // Ensure valid Google token
-  let token: string;
-  try {
-    token = await ensureGoogleToken();
-  } catch (err) {
-    console.error(
-      `Google auth error: ${err instanceof Error ? err.message : String(err)}`
-    );
-    process.exit(1);
-  }
+  // Google auth handled by OneCLI proxy — no token management needed
 
   const corrections = loadCorrections();
 
@@ -520,7 +439,6 @@ async function main() {
 
       const data = (await calendarGet(
         `/calendars/${encodeURIComponent(cal.id)}/events?${params}`,
-        token
       )) as {
         items?: {
           id: string;
@@ -730,6 +648,14 @@ async function main() {
   // Print report
   // ============================================================
   printReport(metrics);
+
+  // Log to PG so dashboard shows current status
+  await logPipelineRun({
+    taskId: "mc-calendar-sync",
+    durationMs: Math.round(metrics.ollamaLatencyMs),
+    status: "success",
+    result: `${metrics.eventsFetched} events, ${metrics.tasksCreated} tasks`,
+  });
 }
 
 function printReport(metrics: RunMetrics) {
@@ -757,7 +683,8 @@ function printReport(metrics: RunMetrics) {
   console.log(`Notion errors: ${metrics.notionErrors}`);
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("Fatal:", err);
+  await logPipelineRun({ taskId: "mc-calendar-sync", durationMs: 0, status: "error", error: String(err) }).catch(() => {});
   process.exit(1);
 });

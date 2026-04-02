@@ -14,6 +14,33 @@ const STOP_WORDS = new Set([
   "on",
   "in",
   "of",
+  "at",
+  "by",
+  "from",
+  "about",
+  "into",
+  "that",
+  "this",
+  "is",
+  "are",
+  "was",
+  "were",
+  "be",
+  "been",
+  "has",
+  "have",
+  "had",
+  "do",
+  "does",
+  "did",
+  "will",
+  "can",
+  "not",
+  "but",
+  "if",
+  "we",
+  "our",
+  "my",
 ]);
 
 /** Simple edit-distance (Levenshtein) for short strings. */
@@ -103,8 +130,8 @@ export async function PATCH(req: NextRequest) {
       // Skip identical words
       if (ow === nw) continue;
 
-      // Skip stop words
-      if (STOP_WORDS.has(ow.toLowerCase()) && STOP_WORDS.has(nw.toLowerCase()))
+      // Skip if EITHER word is a stop word (was &&, caused with→Story bug)
+      if (STOP_WORDS.has(ow.toLowerCase()) || STOP_WORDS.has(nw.toLowerCase()))
         continue;
 
       // Safety: never learn corrections for short common words (caused IBEW, Tim, AEC bugs)

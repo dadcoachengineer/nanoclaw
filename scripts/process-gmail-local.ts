@@ -1,5 +1,5 @@
 /**
- * Process Gmail inbox locally using Ollama (deepseek-r1:70b).
+ * Process Gmail inbox locally using Ollama (gemma3:27b).
  *
  * Fetches unread inbox emails via Gmail API, filters noise, sends
  * actionable messages to a local Ollama instance for analysis, applies
@@ -10,19 +10,18 @@
 import fs from "fs";
 import path from "path";
 import { HttpsProxyAgent } from "https-proxy-agent";
-import { findOrCreateTask, clearTaskCache } from './lib/task-dedup.js';
+import { findOrCreateTask, clearTaskCache, logPipelineRun } from './lib/task-dedup.js';
+import { ollamaChat } from './lib/ollama-client.js';
 
 const STORE_DIR = path.join(process.cwd(), "store");
 const STATE_PATH = path.join(STORE_DIR, "gmail-local-state.json");
-const TOKEN_PATH = path.join(STORE_DIR, "google-oauth.json");
 const CORRECTIONS_PATH = path.join(STORE_DIR, "corrections.json");
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
-const OLLAMA_URL = "http://studio.shearer.live:11434";
-const OLLAMA_MODEL = "deepseek-r1:70b";
+const OLLAMA_MODEL = "gemma3:27b";
 const OLLAMA_TIMEOUT_MS = 180_000;
 const MAX_PROCESSED_IDS = 500;
 
-// OneCLI proxy for Notion
+// OneCLI proxy — handles auth for Notion, Gmail, and all external APIs
 const AGENT_TOKEN = process.env.ONECLI_AGENT_TOKEN;
 if (!AGENT_TOKEN) {
   throw new Error("ONECLI_AGENT_TOKEN environment variable is required");
@@ -111,60 +110,15 @@ interface RunMetrics {
   notionErrors: number;
 }
 
-// --- Google token management ---
-
-async function ensureGoogleToken(): Promise<string> {
-  const tokenData = JSON.parse(fs.readFileSync(TOKEN_PATH, "utf-8"));
-  if (new Date(tokenData.token_expiry) > new Date()) {
-    return tokenData.access_token;
-  }
-
-  console.log("Google token expired, refreshing...");
-
-  const resp = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: tokenData.client_id,
-      client_secret: tokenData.client_secret,
-      refresh_token: tokenData.refresh_token,
-      grant_type: "refresh_token",
-    }),
-  });
-
-  const tokens = (await resp.json()) as {
-    access_token?: string;
-    expires_in?: number;
-    error?: string;
-    error_description?: string;
-  };
-
-  if (tokens.error) {
-    throw new Error(
-      `Token refresh failed: ${tokens.error} - ${tokens.error_description || ""}`
-    );
-  }
-
-  tokenData.access_token = tokens.access_token;
-  tokenData.token_expiry = new Date(
-    Date.now() + (tokens.expires_in || 3600) * 1000
-  ).toISOString();
-  fs.writeFileSync(TOKEN_PATH, JSON.stringify(tokenData, null, 2));
-  console.log(`Token refreshed. Expires: ${tokenData.token_expiry}`);
-  return tokenData.access_token;
-}
-
-// --- Gmail API helpers ---
+// --- Gmail API helpers (auth via OneCLI proxy) ---
 
 async function gmailGet(
   urlPath: string,
-  token: string
 ): Promise<unknown> {
-  const resp = await fetch(
+  const { default: nodeFetch } = await import("node-fetch");
+  const resp = await nodeFetch(
     `https://gmail.googleapis.com/gmail/v1/users/me${urlPath}`,
-    {
-      headers: { Authorization: `Bearer ${token}` },
-    }
+    { agent: proxyAgent } as any,
   );
   if (!resp.ok) {
     throw new Error(`Gmail API ${resp.status}: ${resp.statusText}`);
@@ -341,10 +295,6 @@ function hasListUnsubscribe(
 
 // --- Ollama interaction ---
 
-function stripThinkTags(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-}
-
 async function analyzeEmails(
   emailSummaries: string
 ): Promise<{
@@ -368,50 +318,27 @@ Rules:
 - Base analysis ONLY on the email content provided. Do not invent or assume information.
 - Each JSON object must reference a SPECIFIC email from the batch
 - If no action is needed, output nothing (empty response is valid)
-- Output ONLY JSON lines, no other text`;
+- Output ONLY JSON lines, no other text
+
+CRITICAL: You MUST respond with ONLY valid JSON lines. No explanatory text before or after. No markdown code fences. Start your response with {.`;
 
   const userPrompt = `Recent inbox emails:\n\n${emailSummaries}`;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
-
-  const startMs = Date.now();
-
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        stream: false,
-        options: { num_ctx: 16384, temperature: 0.3 },
-      }),
-      signal: controller.signal,
+    const result = await ollamaChat({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      options: { num_ctx: 16384, temperature: 0.3 },
+      timeoutMs: OLLAMA_TIMEOUT_MS,
     });
 
-    const latencyMs = Date.now() - startMs;
-    clearTimeout(timeout);
-
-    if (!resp.ok) {
-      throw new Error(`Ollama ${resp.status}: ${resp.statusText}`);
-    }
-
-    const data = (await resp.json()) as {
-      message?: { content?: string };
-      prompt_eval_count?: number;
-      eval_count?: number;
-    };
-
-    const rawContent = data.message?.content || "";
-    const tokensIn = data.prompt_eval_count || 0;
-    const tokensOut = data.eval_count || 0;
-
-    // Strip <think> tags from DeepSeek-R1 output
-    const cleaned = stripThinkTags(rawContent);
+    const latencyMs = result.latencyMs;
+    const tokensIn = result.promptTokens;
+    const tokensOut = result.completionTokens;
+    const cleaned = result.content; // think tags already stripped by ollamaChat
 
     // Parse JSON lines
     const items: EmailAction[] = [];
@@ -448,10 +375,9 @@ Rules:
       tokensIn,
       tokensOut,
       parseErrors,
-      rawResponse: rawContent,
+      rawResponse: cleaned,
     };
   } catch (err: unknown) {
-    clearTimeout(timeout);
     const msg = err instanceof Error ? err.message : String(err);
 
     if (msg.includes("abort")) {
@@ -549,8 +475,9 @@ async function main() {
   console.log("Processing Gmail inbox locally...\n");
 
   // Check Ollama connectivity first
+  const ollamaHealthUrl = process.env.OLLAMA_URL || process.env.OLLAMA_BASE_URL || "http://studio.shearer.live:11434";
   try {
-    const healthResp = await fetch(`${OLLAMA_URL}/api/tags`, {
+    const healthResp = await fetch(`${ollamaHealthUrl}/api/tags`, {
       signal: AbortSignal.timeout(10_000),
     });
     if (!healthResp.ok) {
@@ -561,7 +488,7 @@ async function main() {
     }
   } catch (err) {
     console.warn(
-      `WARNING: Ollama unreachable at ${OLLAMA_URL}. Exiting gracefully.`
+      `WARNING: Ollama unreachable at ${ollamaHealthUrl}. Exiting gracefully.`
     );
     console.warn(
       `  ${err instanceof Error ? err.message : String(err)}`
@@ -569,16 +496,7 @@ async function main() {
     return;
   }
 
-  // Ensure valid Google token
-  let token: string;
-  try {
-    token = await ensureGoogleToken();
-  } catch (err) {
-    console.error(
-      `Google auth error: ${err instanceof Error ? err.message : String(err)}`
-    );
-    process.exit(1);
-  }
+  // Google auth handled by OneCLI proxy — no token management needed
 
   clearTaskCache();
 
@@ -618,7 +536,6 @@ async function main() {
   try {
     const listData = (await gmailGet(
       "/messages?maxResults=30&q=is:inbox+is:unread+newer_than:1d+category:primary",
-      token
     )) as { messages?: { id: string; threadId: string }[] };
 
     messageIds = (listData.messages || []).map((m) => m.id);
@@ -670,7 +587,6 @@ async function main() {
     try {
       const msgData = (await gmailGet(
         `/messages/${msgId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=To&metadataHeaders=List-Unsubscribe`,
-        token
       )) as {
         id: string;
         snippet?: string;
@@ -951,6 +867,15 @@ async function main() {
   state.lastCheckTimestamp = now.toISOString();
   saveState(state);
   printReport(metrics, state);
+
+  // Log to PG so dashboard shows current status
+  const totalLatency = metrics.ollamaLatencies.reduce((a, b) => a + b, 0);
+  await logPipelineRun({
+    taskId: "mc-gmail-local",
+    durationMs: Math.round(totalLatency),
+    status: "success",
+    result: `${metrics.emailsAnalyzed} emails, ${metrics.tasksCreated} tasks`,
+  });
 }
 
 function printReport(metrics: RunMetrics, state: GmailLocalState) {
@@ -996,7 +921,8 @@ function printReport(metrics: RunMetrics, state: GmailLocalState) {
   );
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("Fatal:", err);
+  await logPipelineRun({ taskId: "mc-gmail-local", durationMs: 0, status: "error", error: String(err) }).catch(() => {});
   process.exit(1);
 });

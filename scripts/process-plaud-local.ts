@@ -1,5 +1,5 @@
 /**
- * Process Plaud NotePin recordings locally using Ollama (deepseek-r1:70b).
+ * Process Plaud NotePin recordings locally using Ollama (gemma3:27b).
  *
  * Fetches recordings from the Plaud API (via OneCLI proxy for auth),
  * extracts action items from pre-transcribed text using local Ollama,
@@ -12,7 +12,8 @@
 import fs from "fs";
 import path from "path";
 import { HttpsProxyAgent } from "https-proxy-agent";
-import { findOrCreateTask, clearTaskCache } from './lib/task-dedup.js';
+import { findOrCreateTask, clearTaskCache, archiveToPg, logPipelineRun } from './lib/task-dedup.js';
+import { ollamaChat } from './lib/ollama-client.js';
 
 const STORE_DIR = path.join(process.cwd(), "store");
 const STATE_PATH = path.join(STORE_DIR, "plaud-local-state.json");
@@ -20,8 +21,7 @@ const SUMMARIES_PATH = path.join(STORE_DIR, "plaud-summaries.json");
 const CORRECTIONS_PATH = path.join(STORE_DIR, "corrections.json");
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
 const MAX_PROCESSED_RECORDINGS = 500;
-const OLLAMA_URL = "http://studio.shearer.live:11434";
-const OLLAMA_MODEL = "deepseek-r1:70b";
+const OLLAMA_MODEL = "gemma3:27b";
 const OLLAMA_TIMEOUT_MS = 180_000;
 
 // Plaud API
@@ -322,11 +322,6 @@ function saveSummaries(summaries: PlaudSummariesStore): void {
 
 // --- Ollama interaction ---
 
-function stripThinkTags(text: string): string {
-  // DeepSeek-R1 outputs <think>...</think> blocks before the actual response
-  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-}
-
 async function extractActionItems(
   title: string,
   date: string,
@@ -339,8 +334,16 @@ async function extractActionItems(
   parseErrors: number;
   rawResponse?: string;
 }> {
-  const systemPrompt = `You analyze meeting recordings to extract action items. For each action item, output a JSON object on its own line:
-{"task": "actionable verb phrase", "assignee": "person name or null", "priority": "P0/P1/P2/P3", "context": "Quick Win/Deep Work/Research"}
+  const systemPrompt = `You analyze meeting recordings to extract action items for Jason Shearer. For each action item, output a JSON object on its own line:
+{"task": "[Verb] [who/what] about [specific topic from transcript]", "assignee": "person name or null", "priority": "P0/P1/P2/P3", "context": "Quick Win/Deep Work/Research"}
+
+Task title rules:
+- MUST include WHO is involved and WHAT specifically needs to happen
+- MUST reference the specific topic or decision from the transcript
+- Good: "Follow up with Kevin Whelan about Splunk deployment timeline for Q3"
+- Good: "Schedule call with Bob Coyle to finalize IBEW engagement playbook"
+- Bad: "Assign dashboard builders" (too vague — who? which dashboard? for what?)
+- Bad: "Configure Splunk ingest" (too vague — what ingest? for which system?)
 
 Rules:
 - Base analysis ONLY on the transcript text provided
@@ -348,53 +351,28 @@ Rules:
 - Extract concrete, actionable tasks — not summaries or observations
 - Priority: P0 = must do today, P1 = this week, P2 = this month, P3 = backlog
 - Assignee should be the person responsible (if mentioned)
-- Task should start with an action verb
-- Each task must reference specific content from the transcript
 - If no clear action items exist, output nothing
-- Output ONLY JSON lines, no other text`;
+- Output ONLY JSON lines, no other text
+
+CRITICAL: You MUST respond with ONLY valid JSON lines. No explanatory text before or after. No markdown code fences. Start your response with {.`;
 
   const userPrompt = `Recording: ${title}\nDate: ${date}\n\nTranscript:\n${transcriptText}`;
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
-
-  const startMs = Date.now();
-
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        stream: false,
-        options: { num_ctx: 16384, temperature: 0.3 },
-      }),
-      signal: controller.signal,
+    const result = await ollamaChat({
+      model: OLLAMA_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      options: { num_ctx: 16384, temperature: 0.3 },
+      timeoutMs: OLLAMA_TIMEOUT_MS,
     });
 
-    const latencyMs = Date.now() - startMs;
-    clearTimeout(timeout);
-
-    if (!resp.ok) {
-      throw new Error(`Ollama ${resp.status}: ${resp.statusText}`);
-    }
-
-    const data = (await resp.json()) as {
-      message?: { content?: string };
-      prompt_eval_count?: number;
-      eval_count?: number;
-    };
-
-    const rawContent = data.message?.content || "";
-    const tokensIn = data.prompt_eval_count || 0;
-    const tokensOut = data.eval_count || 0;
-
-    // Strip <think> tags from DeepSeek-R1 output
-    const cleaned = stripThinkTags(rawContent);
+    const latencyMs = result.latencyMs;
+    const tokensIn = result.promptTokens;
+    const tokensOut = result.completionTokens;
+    const cleaned = result.content; // think tags already stripped by ollamaChat
 
     // Parse JSON lines
     const items: ActionItem[] = [];
@@ -424,9 +402,8 @@ Rules:
       }
     }
 
-    return { items, latencyMs, tokensIn, tokensOut, parseErrors, rawResponse: rawContent };
+    return { items, latencyMs, tokensIn, tokensOut, parseErrors, rawResponse: cleaned };
   } catch (err: unknown) {
-    clearTimeout(timeout);
     const msg = err instanceof Error ? err.message : String(err);
 
     if (msg.includes("abort")) {
@@ -669,8 +646,9 @@ async function main() {
   console.log("Processing Plaud recordings locally...\n");
 
   // Check Ollama connectivity first
+  const ollamaHealthUrl = process.env.OLLAMA_URL || process.env.OLLAMA_BASE_URL || "http://studio.shearer.live:11434";
   try {
-    const healthResp = await fetch(`${OLLAMA_URL}/api/tags`, {
+    const healthResp = await fetch(`${ollamaHealthUrl}/api/tags`, {
       signal: AbortSignal.timeout(10_000),
     });
     if (!healthResp.ok) {
@@ -681,7 +659,7 @@ async function main() {
     }
   } catch (err) {
     console.warn(
-      `WARNING: Ollama unreachable at ${OLLAMA_URL}. Exiting gracefully.`
+      `WARNING: Ollama unreachable at ${ollamaHealthUrl}. Exiting gracefully.`
     );
     console.warn(`  ${err instanceof Error ? err.message : String(err)}`);
     return;
@@ -814,6 +792,11 @@ async function main() {
         charCount: transcriptText.length,
         archivedAt: new Date().toISOString(),
       }, null, 2));
+      await archiveToPg({
+        id: file.id, sourceType: "plaud", title: plaudTitle(file),
+        date: recDate, content: transcriptText,
+        metadata: { folder: folderName, charCount: transcriptText.length },
+      });
     } catch { /* archive is best-effort */ }
 
     // 5. Get Plaud AI summary (if available)
@@ -1072,9 +1055,18 @@ async function main() {
   console.log(
     `Cumulative: ${state.metrics.totalRuns} runs, ${state.metrics.totalRecordings} recordings, ${state.metrics.totalTasks} tasks, avg latency ${(state.metrics.avgLatencyMs / 1000).toFixed(0)}s`
   );
+
+  // Log to PG so dashboard shows current status
+  await logPipelineRun({
+    taskId: "mc-plaud-processor",
+    durationMs: Math.round(totalLatency),
+    status: "success",
+    result: `${metrics.recordingsProcessed} recordings, ${metrics.tasksCreated} tasks`,
+  });
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("Fatal:", err);
+  await logPipelineRun({ taskId: "mc-plaud-processor", durationMs: 0, status: "error", error: String(err) }).catch(() => {});
   process.exit(1);
 });

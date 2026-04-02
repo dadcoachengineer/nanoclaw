@@ -104,7 +104,7 @@ export const SHIM_PORT = parseInt(process.env.SHIM_PORT || '8089', 10);
 export const OLLAMA_BASE_URL =
   process.env.OLLAMA_BASE_URL || 'http://studio.shearer.live:11434';
 export const OLLAMA_DEFAULT_MODEL =
-  process.env.OLLAMA_DEFAULT_MODEL || 'qwen3-coder:30b';
+  process.env.OLLAMA_DEFAULT_MODEL || 'phi4:14b';
 export const OLLAMA_TIMEOUT_MS = parseInt(
   process.env.OLLAMA_TIMEOUT_MS || '120000',
   10,

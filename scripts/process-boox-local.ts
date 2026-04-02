@@ -13,14 +13,14 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { HttpsProxyAgent } from "https-proxy-agent";
-import { findOrCreateTask, clearTaskCache } from './lib/task-dedup.js';
+import { findOrCreateTask, clearTaskCache, logPipelineRun } from './lib/task-dedup.js';
+import { ollamaChat } from './lib/ollama-client.js';
 
 const STORE_DIR = path.join(process.cwd(), "store");
 const STATE_PATH = path.join(STORE_DIR, "boox-local-state.json");
 const CORRECTIONS_PATH = path.join(STORE_DIR, "corrections.json");
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
 const MAX_PAGES_PER_PDF = 10;
-const OLLAMA_URL = "http://studio.shearer.live:11434";
 const OLLAMA_MODEL = "gemma3:27b";
 const OLLAMA_TIMEOUT_MS = 120_000;
 
@@ -422,10 +422,6 @@ function saveState(state: BooxLocalState): void {
 
 // --- Ollama vision interaction ---
 
-function stripThinkTags(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
-}
-
 async function ocrAndExtractPage(
   imageBase64: string
 ): Promise<{
@@ -450,63 +446,35 @@ Jason's notation conventions:
 - Circled text = P1 (high priority) action item
 - Regular unboxed text = notes/context (do NOT create tasks for these)
 
-Output your findings as JSON lines (one JSON object per line):
-{"type": "text", "content": "the extracted text from the page"}
-{"type": "action", "task": "the action item text", "priority": "P1", "context": "Quick Win"}
-{"type": "action", "task": "another action item", "priority": "P2", "context": "Deep Work"}
+Output your findings as JSON lines (one JSON object per line). Use EXACTLY this format:
+{"type": "text", "content": "<actual text you read from the image>"}
+{"type": "action", "task": "<actual action item from the image>", "priority": "P1", "context": "Quick Win"}
 
-Priority rules:
-- Circled items = P1
-- Boxed but not circled = P2
-Context rules:
-- Short/simple tasks = "Quick Win"
-- Complex/multi-step tasks = "Deep Work"
+Priority: Circled items = P1. Boxed but not circled = P2.
+Context: Short/simple = "Quick Win". Complex/multi-step = "Deep Work".
 
-Output ONLY JSON lines. Base analysis ONLY on what you see in the image.`;
+CRITICAL: Do NOT echo these instructions or examples back. Do NOT output placeholder text like "the extracted text" or "the action item text" or "another action item". Every task must contain SPECIFIC content from the handwriting in the image. If you cannot read specific text, use {"type": "blank"}.
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
-
-  const startMs = Date.now();
+Output ONLY JSON lines. No explanatory text. No markdown. Start your response with {.`;
 
   try {
-    const resp = await fetch(`${OLLAMA_URL}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-            images: [imageBase64],
-          },
-        ],
-        stream: false,
-        options: { num_ctx: 8192 },
-      }),
-      signal: controller.signal,
+    const result = await ollamaChat({
+      model: OLLAMA_MODEL,
+      messages: [
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      images: [imageBase64],
+      options: { num_ctx: 8192 },
+      timeoutMs: OLLAMA_TIMEOUT_MS,
     });
 
-    const latencyMs = Date.now() - startMs;
-    clearTimeout(timeout);
-
-    if (!resp.ok) {
-      throw new Error(`Ollama ${resp.status}: ${resp.statusText}`);
-    }
-
-    const data = (await resp.json()) as {
-      message?: { content?: string };
-      prompt_eval_count?: number;
-      eval_count?: number;
-    };
-
-    const rawContent = data.message?.content || "";
-    const tokensIn = data.prompt_eval_count || 0;
-    const tokensOut = data.eval_count || 0;
-
-    // Strip <think> tags if present
-    const cleaned = stripThinkTags(rawContent);
+    const latencyMs = result.latencyMs;
+    const tokensIn = result.promptTokens;
+    const tokensOut = result.completionTokens;
+    const cleaned = result.content; // think tags already stripped by ollamaChat
 
     // Parse JSON lines
     let fullText = "";
@@ -540,9 +508,10 @@ Output ONLY JSON lines. Base analysis ONLY on what you see in the image.`;
           const task = parsed.task.trim();
           const wordCount = task.split(/\s+/).length;
           const isAllCaps = task === task.toUpperCase() && task.length < 20;
-          const isGenericLabel = /^(network|vision|customers?|hazel|skyway|software|bills?|resolve|agenda|notes?|goals?|ideas?|misc|overview|summary|action items?|the action item text)$/i.test(task);
-          const isPromptLeak = /read only what|do not add text|if the page is blank|output only json|base analysis only|boxed text.*action|circled text.*p1|priority rules|context rules|critical rules|jason.*notation/i.test(task);
-          if (wordCount < 2 || isAllCaps || isGenericLabel || isPromptLeak) {
+          const isGenericLabel = /^(network|vision|customers?|hazel|skyway|software|bills?|resolve|agenda|notes?|goals?|ideas?|misc|overview|summary|action items?|the action item text|another action item|schedule a follow-up meeting|notation conventions?)$/i.test(task);
+          const isPromptLeak = /read only what|do not add text|if the page is blank|output only json|base analysis only|boxed text.*action|circled text.*p1|priority rules|context rules|critical rules|jason.*notation|the extracted text|mark it as \[illegible\]|if text is illegible|actual text you read|actual action item/i.test(task);
+          const isJustAName = wordCount <= 3 && /^[A-Z][a-z]+ [A-Z][a-z]+( [A-Z][a-z]+)?$/.test(task);
+          if (wordCount < 2 || isAllCaps || isGenericLabel || isPromptLeak || isJustAName) {
             // Treat as context text, not an action item
             fullText += (fullText ? "\n" : "") + `[heading] ${task}`;
           } else {
@@ -577,10 +546,9 @@ Output ONLY JSON lines. Base analysis ONLY on what you see in the image.`;
       tokensIn,
       tokensOut,
       parseErrors,
-      rawResponse: rawContent,
+      rawResponse: cleaned,
     };
   } catch (err: unknown) {
-    clearTimeout(timeout);
     const msg = err instanceof Error ? err.message : String(err);
 
     if (msg.includes("abort")) {
@@ -692,8 +660,9 @@ async function main() {
   console.log("Processing Boox handwritten notes locally...\n");
 
   // Check Ollama connectivity first
+  const ollamaHealthUrl = process.env.OLLAMA_URL || process.env.OLLAMA_BASE_URL || "http://studio.shearer.live:11434";
   try {
-    const healthResp = await fetch(`${OLLAMA_URL}/api/tags`, {
+    const healthResp = await fetch(`${ollamaHealthUrl}/api/tags`, {
       signal: AbortSignal.timeout(10_000),
     });
     if (!healthResp.ok) {
@@ -719,7 +688,7 @@ async function main() {
     }
   } catch (err) {
     console.warn(
-      `WARNING: Ollama unreachable at ${OLLAMA_URL}. Exiting gracefully.`
+      `WARNING: Ollama unreachable at ${ollamaHealthUrl}. Exiting gracefully.`
     );
     console.warn(`  ${err instanceof Error ? err.message : String(err)}`);
     return;
@@ -1086,9 +1055,18 @@ async function main() {
   console.log(
     `Cumulative: ${state.metrics.totalRuns} runs, ${state.metrics.totalPages} pages, ${state.metrics.totalTasks} tasks, avg latency ${(state.metrics.avgLatencyMs / 1000).toFixed(0)}s`
   );
+
+  // Log to PG so dashboard shows current status
+  await logPipelineRun({
+    taskId: "mc-boox-processor",
+    durationMs: Math.round(totalLatency),
+    status: "success",
+    result: `${metrics.pagesProcessed} pages, ${metrics.tasksCreated} tasks`,
+  });
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("Fatal:", err);
+  await logPipelineRun({ taskId: "mc-boox-processor", durationMs: 0, status: "error", error: String(err) }).catch(() => {});
   process.exit(1);
 });

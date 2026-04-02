@@ -320,7 +320,7 @@ export function translateResponse(
  * - Translates messages, tools, and tool_choice.
  *
  * @param anthropicReq - The incoming Anthropic-formatted request.
- * @param ollamaModel - The Ollama model tag to use (e.g. "qwen3-coder:30b").
+ * @param ollamaModel - The Ollama model tag to use (e.g. "phi4:14b").
  * @param numCtx - Context window size in tokens for Ollama.
  * @returns An OpenAI-formatted request body ready to POST to Ollama.
  */
