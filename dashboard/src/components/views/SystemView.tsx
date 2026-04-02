@@ -1041,11 +1041,11 @@ export default function SystemView() {
                   <td className="px-4 py-2.5 text-center">
                     {p.model?.startsWith("local:") ? (
                       <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(63,185,80,0.12)] text-[var(--green)]" title="DefenseClaw guardrail — Ollama path (observe mode)">
-                        DC monitor
+                        DefenseClaw
                       </span>
                     ) : p.status === "active" ? (
                       <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(88,166,255,0.12)] text-[var(--accent)]" title="DefenseClaw guardrail — Anthropic path (observe mode)">
-                        DC monitor
+                        DefenseClaw
                       </span>
                     ) : (
                       <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[rgba(139,148,158,0.1)] text-[var(--text-dim)]">

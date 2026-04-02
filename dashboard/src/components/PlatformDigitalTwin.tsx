@@ -167,10 +167,10 @@ export default function PlatformDigitalTwin() {
           <text x="355" y="273" textAnchor="middle" fill="#8b949e" fontSize="8">{core.containers?.active || 0} containers · {pipelines.length} pipelines</text>
         </g>
 
-        {/* ── DC Anthropic (between Core and Anthropic API) ────────────── */}
+        {/* ── DefenseClaw Anthropic (between Core and Anthropic API) ──── */}
         <g>
-          <rect x="320" y="135" width="70" height="25" rx="6" fill="rgba(210,153,34,0.08)" stroke="#d29922" strokeWidth="1" />
-          <text x="355" y="151" textAnchor="middle" fill="#d29922" fontSize="8" fontWeight="600">DC :9002</text>
+          <rect x="300" y="135" width="110" height="25" rx="6" fill="rgba(210,153,34,0.08)" stroke="#d29922" strokeWidth="1" />
+          <text x="355" y="151" textAnchor="middle" fill="#d29922" fontSize="8" fontWeight="600">DefenseClaw :9002</text>
         </g>
 
         {/* ── Anthropic API (top center) ────────────── */}
@@ -180,10 +180,10 @@ export default function PlatformDigitalTwin() {
           <text x="355" y="103" textAnchor="middle" fill="#8b949e" fontSize="8">Sonnet · Opus</text>
         </g>
 
-        {/* ── DC Ollama (between Core and Ollama) ────────────── */}
+        {/* ── DefenseClaw Ollama (between Core and Ollama) ──────────── */}
         <g>
-          <rect x="320" y="340" width="70" height="25" rx="6" fill="rgba(210,153,34,0.08)" stroke="#d29922" strokeWidth="1" />
-          <text x="355" y="356" textAnchor="middle" fill="#d29922" fontSize="8" fontWeight="600">DC :9001</text>
+          <rect x="300" y="340" width="110" height="25" rx="6" fill="rgba(210,153,34,0.08)" stroke="#d29922" strokeWidth="1" />
+          <text x="355" y="356" textAnchor="middle" fill="#d29922" fontSize="8" fontWeight="600">DefenseClaw :9001</text>
         </g>
 
         {/* ── Ollama / Mac Studio (bottom center) ────────────── */}

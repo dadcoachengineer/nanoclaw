@@ -270,23 +270,27 @@ const TOPOLOGY_EDGES: [string, string, string][] = [
   ["onecli", "google-api", "HTTPS"],
 ];
 
-// Verified service positions — 4 columns, accurate connections
-// INGRESS | CORE | INFRA | EXTERNAL
+// Verified service positions — 5 columns, accurate connections
+// ENTRY | CORE | SECURITY | UPSTREAM | EXTERNAL
+// Layout: nodes on the same traffic path share the same row (left-to-right).
+//   Row 1 (y=45):  Ollama path:    Dashboard/NanoClaw → DC :9001 → Ollama
+//   Row 2 (y=115): Core + PG
+//   Row 3 (y=185): Anthropic path: Docker → DC :9002 → OneCLI → Anthropic
 const TOPOLOGY_POSITIONS: Record<string, { x: number; y: number; color: string }> = {
-  // Column 1: Ingress
+  // Column 1: Entry
   "browser":        { x: 70,  y: 45,  color: "#8b949e" },
   "nginx":          { x: 70,  y: 115, color: "#3fb950" },
   // Column 2: Core services
   "dashboard":      { x: 240, y: 45,  color: "#58a6ff" },
   "nanoclaw-core":  { x: 240, y: 115, color: "#58a6ff" },
-  // Column 3: Security + Infrastructure
+  "docker":                { x: 240, y: 185, color: "#bc8cff" },
+  // Column 3: Security
   "defenseclaw-ollama":    { x: 420, y: 45,  color: "#d29922" },
-  "defenseclaw-anthropic": { x: 420, y: 115, color: "#d29922" },
-  "docker":                { x: 420, y: 185, color: "#bc8cff" },
-  "onecli":                { x: 240, y: 185, color: "#d29922" },
-  // Column 4: Upstream
-  "postgresql":     { x: 560, y: 45,  color: "#3fb950" },
-  "ollama-studio":  { x: 560, y: 115, color: "#3fb950" },
+  "defenseclaw-anthropic": { x: 420, y: 185, color: "#d29922" },
+  // Column 4: Upstream / Infrastructure
+  "ollama-studio":  { x: 560, y: 45,  color: "#3fb950" },
+  "postgresql":     { x: 560, y: 115, color: "#3fb950" },
+  "onecli":                { x: 560, y: 185, color: "#d29922" },
   // Column 5: External APIs
   "notion-api":     { x: 700, y: 35,  color: "#8b949e" },
   "webex-api":      { x: 700, y: 75,  color: "#8b949e" },
@@ -300,11 +304,11 @@ const TOPOLOGY_LABELS: Record<string, string> = {
   "nginx": "Nginx :443",
   "dashboard": "Dashboard :3940",
   "nanoclaw-core": "NanoClaw :3939",
-  "defenseclaw-ollama": "DC :9001",
-  "defenseclaw-anthropic": "DC :9002",
+  "defenseclaw-ollama": "DefenseClaw :9001",
+  "defenseclaw-anthropic": "DefenseClaw :9002",
   "docker": "Docker",
   "onecli": "OneCLI :10255",
-  "postgresql": "PG :5432",
+  "postgresql": "Postgres :5432",
   "ollama-studio": "Ollama :11434",
   "notion-api": "Notion",
   "webex-api": "Webex",
@@ -597,7 +601,9 @@ export default function ObservabilityView() {
   const [expandedHop, setExpandedHop] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
-  const [dcInstances, setDcInstances] = useState<{ id: string; label: string; healthy: boolean; mode: string; uptime: number; state: string }[]>([]);
+  type DcVerdict = { time: string; direction: string; model: string; severity: string; tokens?: string; latency?: string; messages?: number; preview?: string };
+  type DcInstance = { id: string; label: string; healthy: boolean; mode: string; scannerMode?: string; uptime: number; state: string; verdicts?: DcVerdict[] };
+  const [dcInstances, setDcInstances] = useState<DcInstance[]>([]);
   const [dcUpdating, setDcUpdating] = useState<string | null>(null);
 
   function loadDcInstances() {
@@ -720,44 +726,94 @@ export default function ObservabilityView() {
             </span>
           } />
           <div className="px-4 py-3">
+            {/* Two-column layout: each instance's status + verdicts aligned vertically */}
             <div className="grid grid-cols-2 gap-4">
-              {dcInstances.map((inst) => (
-                <div key={inst.id} className="flex items-center gap-3">
-                  <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: inst.healthy ? "#3fb950" : "#f85149" }} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-medium text-[var(--text-bright)]">{inst.label}</div>
-                    <div className="text-[10px] text-[var(--text-dim)]">
-                      {inst.state === "running" ? `uptime ${formatUptime(inst.uptime)}` : inst.state}
+              {dcInstances.map((inst) => {
+                const verdicts = inst.verdicts || [];
+                const severityColor = (s: string) =>
+                  s === "NONE" ? "#3fb950" :
+                  s === "LOW" ? "var(--yellow)" :
+                  s === "MEDIUM" ? "#d29922" :
+                  s === "HIGH" || s === "CRITICAL" ? "#f85149" : "var(--text-dim)";
+                const severityLabel = (s: string) =>
+                  s === "NONE" ? "pass" : s;
+                const gridCols = "48px 64px 130px 1fr 42px 52px 30px";
+                return (
+                  <div key={inst.id}>
+                    {/* Instance status row */}
+                    <div className="flex items-center gap-3 pb-2">
+                      <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: inst.healthy ? "#3fb950" : "#f85149" }} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-[var(--text-bright)]">{inst.label}</div>
+                        <div className="text-[10px] text-[var(--text-dim)]">
+                          {inst.state === "running" ? `uptime ${formatUptime(inst.uptime)}` : inst.state}
+                          {verdicts.length > 0 && <span className="ml-2">{verdicts.length} inspections</span>}
+                        </div>
+                      </div>
+                      <select
+                        value={inst.mode}
+                        onChange={async (e) => {
+                          const newMode = e.target.value;
+                          setDcUpdating(inst.id);
+                          setDcInstances((prev) => prev.map((i) => i.id === inst.id ? { ...i, mode: newMode } : i));
+                          try {
+                            await fetch("/api/defenseclaw", {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ instance: inst.id, mode: newMode }),
+                            });
+                          } catch { /* revert on next poll */ }
+                          setDcUpdating(null);
+                          setTimeout(loadDcInstances, 2000);
+                        }}
+                        disabled={dcUpdating === inst.id || !inst.healthy}
+                        className={`text-[10px] px-2 py-0.5 rounded border cursor-pointer ${
+                          inst.mode === "observe"
+                            ? "border-[var(--yellow)] text-[var(--yellow)] bg-[rgba(210,153,34,0.08)]"
+                            : inst.mode === "action"
+                            ? "border-[var(--green)] text-[var(--green)] bg-[rgba(63,185,80,0.08)]"
+                            : "border-[var(--border)] text-[var(--text-dim)]"
+                        } disabled:opacity-40`}
+                      >
+                        <option value="observe">observe</option>
+                        <option value="action">action</option>
+                      </select>
                     </div>
+
+                    {/* Verdict table for this instance */}
+                    {verdicts.length > 0 && (
+                      <div className="border-t border-[var(--border)] pt-1">
+                        <div className="grid gap-x-1 text-[9px] text-[var(--text-dim)] uppercase tracking-wider pb-1 border-b border-[var(--border)] font-mono" style={{ gridTemplateColumns: gridCols }}>
+                          <span>Time</span>
+                          <span>Type</span>
+                          <span>Model</span>
+                          <span>Content</span>
+                          <span className="text-right">Verdict</span>
+                          <span className="text-right">Tokens</span>
+                          <span className="text-right">Scan</span>
+                        </div>
+                        <div className="max-h-[280px] overflow-y-auto">
+                          {verdicts.slice(-15).map((v, i) => (
+                            <div key={i} className="border-b border-[var(--border)] last:border-0">
+                              <div className="grid gap-x-1 text-[10px] font-mono py-0.5 items-center" style={{ gridTemplateColumns: gridCols }}>
+                                <span className="text-[var(--text-dim)]">{v.time}</span>
+                                <span className={v.direction === "prompt" ? "text-[var(--accent)]" : "text-[var(--green)]"}>
+                                  {v.direction}
+                                </span>
+                                <span className="text-[var(--text)] truncate">{v.model}</span>
+                                <span className="text-[var(--text-dim)] truncate">{v.preview || "—"}</span>
+                                <span style={{ color: severityColor(v.severity) }} className="text-right">{severityLabel(v.severity)}</span>
+                                <span className="text-[var(--text-dim)] text-right">{v.tokens || "—"}</span>
+                                <span className="text-[var(--text-dim)] text-right">{v.latency || "—"}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={inst.mode}
-                      onChange={async (e) => {
-                        setDcUpdating(inst.id);
-                        await fetch("/api/defenseclaw", {
-                          method: "PATCH",
-                          headers: { "Content-Type": "application/json" },
-                          body: JSON.stringify({ instance: inst.id, mode: e.target.value }),
-                        });
-                        setDcUpdating(null);
-                        loadDcInstances();
-                      }}
-                      disabled={dcUpdating === inst.id || !inst.healthy}
-                      className={`text-[10px] px-2 py-0.5 rounded border cursor-pointer ${
-                        inst.mode === "observe"
-                          ? "border-[var(--yellow)] text-[var(--yellow)] bg-[rgba(210,153,34,0.08)]"
-                          : inst.mode === "action"
-                          ? "border-[var(--green)] text-[var(--green)] bg-[rgba(63,185,80,0.08)]"
-                          : "border-[var(--border)] text-[var(--text-dim)]"
-                      } disabled:opacity-40`}
-                    >
-                      <option value="observe">observe</option>
-                      <option value="action">action</option>
-                    </select>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </Card>

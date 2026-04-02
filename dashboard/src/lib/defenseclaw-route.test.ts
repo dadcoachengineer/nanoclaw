@@ -16,8 +16,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // ─── DC Instance config (mirrors route.ts) ───────────────────
 
 const DC_INSTANCES = [
-  { id: 'defenseclaw-ollama', label: 'DC Ollama', apiPort: 18790, guardPort: 9001 },
-  { id: 'defenseclaw-anthropic', label: 'DC Anthropic', apiPort: 18792, guardPort: 9002 },
+  { id: 'defenseclaw-ollama', label: 'DefenseClaw Ollama', apiPort: 18790, guardPort: 9001 },
+  { id: 'defenseclaw-anthropic', label: 'DefenseClaw Anthropic', apiPort: 18792, guardPort: 9002 },
 ];
 
 // ─── Extracted functions under test ───────────────────────────
