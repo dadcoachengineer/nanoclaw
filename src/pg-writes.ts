@@ -134,8 +134,8 @@ export async function pgUpdateTaskAfterRun(
   const now = new Date().toISOString();
   await query(
     `UPDATE scheduled_tasks
-     SET next_run = $1, last_run = $2, last_result = $3,
-         status = CASE WHEN $1 IS NULL THEN 'completed' ELSE status END
+     SET next_run = $1::timestamptz, last_run = $2, last_result = $3,
+         status = CASE WHEN $1::timestamptz IS NULL THEN 'completed' ELSE status END
      WHERE id = $4`,
     [nextRun, now, lastResult, id],
   );
