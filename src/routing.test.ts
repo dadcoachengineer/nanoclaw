@@ -27,7 +27,7 @@ describe('JID ownership patterns', () => {
 // --- getAvailableGroups ---
 
 describe('getAvailableGroups', () => {
-  it('returns only groups, excludes DMs', () => {
+  it('returns only groups, excludes DMs', async () => {
     storeChatMetadata(
       'group1@g.us',
       '2024-01-01T00:00:01.000Z',
@@ -50,14 +50,14 @@ describe('getAvailableGroups', () => {
       true,
     );
 
-    const groups = getAvailableGroups();
+    const groups = await getAvailableGroups();
     expect(groups).toHaveLength(2);
     expect(groups.map((g) => g.jid)).toContain('group1@g.us');
     expect(groups.map((g) => g.jid)).toContain('group2@g.us');
     expect(groups.map((g) => g.jid)).not.toContain('user@s.whatsapp.net');
   });
 
-  it('excludes __group_sync__ sentinel', () => {
+  it('excludes __group_sync__ sentinel', async () => {
     storeChatMetadata('__group_sync__', '2024-01-01T00:00:00.000Z');
     storeChatMetadata(
       'group@g.us',
@@ -67,12 +67,12 @@ describe('getAvailableGroups', () => {
       true,
     );
 
-    const groups = getAvailableGroups();
+    const groups = await getAvailableGroups();
     expect(groups).toHaveLength(1);
     expect(groups[0].jid).toBe('group@g.us');
   });
 
-  it('marks registered groups correctly', () => {
+  it('marks registered groups correctly', async () => {
     storeChatMetadata(
       'reg@g.us',
       '2024-01-01T00:00:01.000Z',
@@ -97,7 +97,7 @@ describe('getAvailableGroups', () => {
       },
     });
 
-    const groups = getAvailableGroups();
+    const groups = await getAvailableGroups();
     const reg = groups.find((g) => g.jid === 'reg@g.us');
     const unreg = groups.find((g) => g.jid === 'unreg@g.us');
 
@@ -105,7 +105,7 @@ describe('getAvailableGroups', () => {
     expect(unreg?.isRegistered).toBe(false);
   });
 
-  it('returns groups ordered by most recent activity', () => {
+  it('returns groups ordered by most recent activity', async () => {
     storeChatMetadata(
       'old@g.us',
       '2024-01-01T00:00:01.000Z',
@@ -128,13 +128,13 @@ describe('getAvailableGroups', () => {
       true,
     );
 
-    const groups = getAvailableGroups();
+    const groups = await getAvailableGroups();
     expect(groups[0].jid).toBe('new@g.us');
     expect(groups[1].jid).toBe('mid@g.us');
     expect(groups[2].jid).toBe('old@g.us');
   });
 
-  it('excludes non-group chats regardless of JID format', () => {
+  it('excludes non-group chats regardless of JID format', async () => {
     // Unknown JID format stored without is_group should not appear
     storeChatMetadata(
       'unknown-format-123',
@@ -158,13 +158,13 @@ describe('getAvailableGroups', () => {
       true,
     );
 
-    const groups = getAvailableGroups();
+    const groups = await getAvailableGroups();
     expect(groups).toHaveLength(1);
     expect(groups[0].jid).toBe('group@g.us');
   });
 
-  it('returns empty array when no chats exist', () => {
-    const groups = getAvailableGroups();
+  it('returns empty array when no chats exist', async () => {
+    const groups = await getAvailableGroups();
     expect(groups).toHaveLength(0);
   });
 });

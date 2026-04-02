@@ -172,6 +172,94 @@ async function syncOutbound(): Promise<{
   return result;
 }
 
+// ── Inbound sync: Notion → PG (import agent-created pages) ──
+
+async function syncInbound(): Promise<{ imported: number }> {
+  const result = { imported: 0 };
+
+  try {
+    // Query Notion for pages created in the last 24 hours
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const resp = await notionFetch(
+      `https://api.notion.com/v1/databases/${NOTION_DB}/query`,
+      'POST',
+      {
+        filter: {
+          timestamp: 'created_time',
+          created_time: { on_or_after: dayAgo },
+        },
+        page_size: 50,
+      },
+    );
+
+    const pages = resp.results || [];
+    if (pages.length === 0) return result;
+
+    for (const page of pages) {
+      // Check if this page is already in PG (by notion_page_id)
+      const existing = await query(
+        'SELECT id FROM tasks WHERE notion_page_id = $1',
+        [page.id],
+      );
+      if (existing.rows.length > 0) continue;
+
+      // Extract properties from Notion page
+      const props = page.properties || {};
+      const title =
+        (props.Task?.title || []).map((t: any) => t.plain_text).join('') ||
+        'Untitled';
+      const priority = props.Priority?.select?.name || null;
+      const status = props.Status?.status?.name || 'Not started';
+      const source = props.Source?.select?.name || null;
+      const project = props.Project?.select?.name || null;
+      const context = props.Context?.select?.name || null;
+      const zone = props.Zone?.select?.name || null;
+      const delegatedTo = props['Delegated To']?.select?.name || null;
+      const notes =
+        (props.Notes?.rich_text || []).map((t: any) => t.plain_text).join('') ||
+        null;
+
+      // Insert into PG with notion_page_id so we don't re-sync outbound
+      await query(
+        `INSERT INTO tasks (id, title, priority, status, source, project, context, zone,
+           delegated_to, notes, notion_page_id, notion_sync_status, triage_status, created_at, updated_at)
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'synced', 'accepted', $11, now())`,
+        [
+          title,
+          priority,
+          status,
+          source,
+          project,
+          context,
+          zone,
+          delegatedTo,
+          notes,
+          page.id,
+          page.created_time,
+        ],
+      );
+
+      result.imported++;
+      logger.info(
+        `Notion inbound: imported "${title.slice(0, 50)}" (${page.id.slice(0, 8)})`,
+      );
+
+      // Log sync
+      await query(
+        `INSERT INTO notion_sync_log (entity_type, entity_id, direction, status)
+         VALUES ('task', gen_random_uuid(), 'from_notion', 'success')`,
+      );
+
+      await new Promise((r) => setTimeout(r, 350));
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.warn(`Notion inbound sync error: ${msg}`);
+  }
+
+  return result;
+}
+
 // ── Sync loop ──────────────────────────────────────────
 
 async function runSyncCycle(): Promise<void> {
@@ -180,9 +268,13 @@ async function runSyncCycle(): Promise<void> {
 
   try {
     const outbound = await syncOutbound();
-    if (outbound.created + outbound.updated + outbound.errors > 0) {
+    const inbound = await syncInbound();
+    if (
+      outbound.created + outbound.updated + outbound.errors + inbound.imported >
+      0
+    ) {
       logger.info(
-        `Notion sync complete: ${outbound.created} created, ${outbound.updated} updated, ${outbound.errors} errors`,
+        `Notion sync: out=${outbound.created}c/${outbound.updated}u/${outbound.errors}e, in=${inbound.imported}`,
       );
     }
   } catch (err: unknown) {

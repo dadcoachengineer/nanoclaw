@@ -16,13 +16,13 @@ import Database from "better-sqlite3";
 import * as sqliteVec from "sqlite-vec";
 import fs from "fs";
 import path from "path";
+import { ollamaEmbed } from './lib/ollama-client.js';
 
 const STORE_DIR = path.join(process.cwd(), "store");
 const VECTOR_DB_PATH = path.join(STORE_DIR, "vectors.db");
 const PERSON_INDEX_PATH = path.join(STORE_DIR, "person-index.json");
 const TOPIC_INDEX_PATH = path.join(STORE_DIR, "topic-index.json");
 const WEBEX_OAUTH_PATH = path.join(STORE_DIR, "webex-oauth.json");
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const EMBED_MODEL = "nomic-embed-text";
 const DIMENSIONS = 768;
 const BATCH_SIZE = 20;
@@ -39,16 +39,10 @@ interface Chunk {
   metadata: Record<string, string>;
 }
 
-// --- Ollama embeddings ---
+// --- Ollama embeddings (via shared client) ---
 
 async function embed(texts: string[]): Promise<number[][]> {
-  const resp = await fetch(`${OLLAMA_URL}/api/embed`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
-  });
-  const data = (await resp.json()) as { embeddings: number[][] };
-  return data.embeddings;
+  return ollamaEmbed({ model: EMBED_MODEL, input: texts });
 }
 
 // --- Webex helpers ---

@@ -7,7 +7,7 @@ import { requireAuth } from "@/lib/require-auth";
 function getProjectRoot() {
   return process.env.NANOCLAW_ROOT || path.join(process.cwd(), "..");
 }
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://studio.shearer.live:11434";
 
 /**
  * GET /api/search?q=sustainability+strategy&limit=10&source=transcript

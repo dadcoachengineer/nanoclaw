@@ -1,18 +1,24 @@
 /**
- * Database adapter — wraps SQLite (db.ts) and PostgreSQL (pg-writes.ts).
+ * Database adapter — two databases with distinct roles:
  *
- * When DATA_BACKEND is:
- * - 'sqlite':   all reads and writes go to SQLite only (current behavior)
- * - 'dual':     writes go to BOTH SQLite and PostgreSQL; reads come from SQLite
- * - 'postgres': all reads and writes go to PostgreSQL only (future state)
+ * SQLite (messages.db): NanoClaw's internal message bus — chats, messages,
+ * sessions, registered groups, router state. Synchronous, embedded, fast
+ * for real-time message polling. Core process reads and writes here.
  *
- * This adapter wraps the WRITE functions. Read functions still come directly
- * from db.ts (they'll be migrated in Phase 6 when we switch reads to PG).
+ * PostgreSQL: Mission Control application database — tasks, people,
+ * initiatives, artifacts, archive, vectors, triage. Dashboard reads
+ * exclusively from here.
+ *
+ * Bridge: scheduled_tasks and task_run_logs write to BOTH — SQLite for
+ * the core's internal scheduling, PG for dashboard visibility.
+ *
+ * DATA_BACKEND='dual' is the permanent architecture, not a migration state.
  */
 import { DATA_BACKEND } from './config.js';
 import { logger } from './logger.js';
 import * as sqlite from './db.js';
 import * as pg from './pg-writes.js';
+import * as pgReads from './pg-reads.js';
 import type {
   NewMessage,
   RegisteredGroup,
@@ -20,41 +26,156 @@ import type {
   TaskRunLog,
 } from './types.js';
 
-const dual = DATA_BACKEND === 'dual' || DATA_BACKEND === 'postgres';
+const usePg = DATA_BACKEND === 'postgres';
+const dual = DATA_BACKEND === 'dual';
 
 /** Fire-and-forget PG write — never blocks the SQLite path */
 function pgWrite(fn: () => Promise<void>, label: string): void {
-  if (!dual) return;
   fn().catch((err) => {
-    logger.warn(`PG dual-write failed (${label}): ${err.message}`);
+    logger.warn(`PG write failed (${label}): ${err.message}`);
   });
 }
 
-// ── Re-export all READ functions directly from SQLite ──
-// These will be swapped to PG reads in Phase 6
-export {
-  initDatabase,
-  _initTestDatabase,
-  getAllChats,
-  getLastGroupSync,
-  getNewMessages,
-  getMessagesSince,
-  getTaskById,
-  getTasksForGroup,
-  getAllTasks,
-  getDueTasks,
-  getRecentRunLogs,
-  getRunLogsForTask,
-  getRouterState,
-  getSession,
-  getAllSessions,
-  getRegisteredGroup,
-  getAllRegisteredGroups,
-} from './db.js';
+// ── Types ──────────────────────────────────────────────
+// Define adapter-level types that are compatible with both SQLite and PG returns.
+// SQLite uses number for booleans and non-nullable strings; PG uses real booleans
+// and nullable strings. The union covers both.
+export interface ChatInfo {
+  jid: string;
+  name: string | null;
+  last_message_time: string;
+  channel: string | null;
+  is_group: boolean | number;
+}
 
-export type { ChatInfo, TaskRunLogRow } from './db.js';
+export interface TaskRunLogRow extends TaskRunLog {
+  id?: number;
+}
 
-// ── WRITE functions — dual-write when enabled ──────────
+// ── Database init ──────────────────────────────────────
+export function initDatabase(): void {
+  // Always init SQLite — the framework's native db layer expects it to exist.
+  // In postgres mode we don't write to it, but it prevents null reference
+  // crashes if any code path reaches db.ts directly.
+  sqlite.initDatabase();
+}
+
+export function _initTestDatabase(): void {
+  sqlite._initTestDatabase();
+}
+
+// ── READ functions ──────────────────────────────────────
+// When postgres: async PG reads
+// When sqlite/dual: sync SQLite reads
+
+export async function getAllChats(): Promise<ChatInfo[]> {
+  if (usePg) return pgReads.pgGetAllChats();
+  return sqlite.getAllChats();
+}
+
+export async function getLastGroupSync(): Promise<string | null> {
+  if (usePg) return pgReads.pgGetLastGroupSync();
+  return sqlite.getLastGroupSync();
+}
+
+export async function getNewMessages(
+  jids: string[],
+  lastTimestamp: string,
+  botPrefix: string,
+  limit?: number,
+): Promise<{ messages: NewMessage[]; newTimestamp: string }> {
+  if (usePg)
+    return pgReads.pgGetNewMessages(jids, lastTimestamp, botPrefix, limit);
+  return sqlite.getNewMessages(jids, lastTimestamp, botPrefix, limit);
+}
+
+export async function getMessagesSince(
+  chatJid: string,
+  sinceTimestamp: string,
+  botPrefix: string,
+  limit?: number,
+): Promise<NewMessage[]> {
+  if (usePg)
+    return pgReads.pgGetMessagesSince(
+      chatJid,
+      sinceTimestamp,
+      botPrefix,
+      limit,
+    );
+  return sqlite.getMessagesSince(chatJid, sinceTimestamp, botPrefix, limit);
+}
+
+export async function getTaskById(
+  id: string,
+): Promise<ScheduledTask | undefined> {
+  if (usePg) return pgReads.pgGetTaskById(id);
+  return sqlite.getTaskById(id);
+}
+
+export async function getTasksForGroup(
+  groupFolder: string,
+): Promise<ScheduledTask[]> {
+  if (usePg) return pgReads.pgGetTasksForGroup(groupFolder);
+  return sqlite.getTasksForGroup(groupFolder);
+}
+
+export async function getAllTasks(): Promise<ScheduledTask[]> {
+  if (usePg) return pgReads.pgGetAllTasks();
+  return sqlite.getAllTasks();
+}
+
+export async function getDueTasks(): Promise<ScheduledTask[]> {
+  if (usePg) return pgReads.pgGetDueTasks();
+  return sqlite.getDueTasks();
+}
+
+export async function getRecentRunLogs(
+  limit?: number,
+): Promise<TaskRunLogRow[]> {
+  if (usePg) return pgReads.pgGetRecentRunLogs(limit);
+  return sqlite.getRecentRunLogs(limit);
+}
+
+export async function getRunLogsForTask(
+  taskId: string,
+  limit?: number,
+): Promise<TaskRunLogRow[]> {
+  if (usePg) return pgReads.pgGetRunLogsForTask(taskId, limit);
+  return sqlite.getRunLogsForTask(taskId, limit);
+}
+
+export async function getRouterState(key: string): Promise<string | undefined> {
+  if (usePg) return pgReads.pgGetRouterState(key);
+  return sqlite.getRouterState(key);
+}
+
+export async function getSession(
+  groupFolder: string,
+): Promise<string | undefined> {
+  if (usePg) return pgReads.pgGetSession(groupFolder);
+  return sqlite.getSession(groupFolder);
+}
+
+export async function getAllSessions(): Promise<Record<string, string>> {
+  if (usePg) return pgReads.pgGetAllSessions();
+  return sqlite.getAllSessions();
+}
+
+export async function getRegisteredGroup(
+  jid: string,
+): Promise<(RegisteredGroup & { jid: string }) | undefined> {
+  if (usePg) return pgReads.pgGetRegisteredGroup(jid);
+  return sqlite.getRegisteredGroup(jid);
+}
+
+export async function getAllRegisteredGroups(): Promise<
+  Record<string, RegisteredGroup>
+> {
+  if (usePg) return pgReads.pgGetAllRegisteredGroups();
+  return sqlite.getAllRegisteredGroups();
+}
+
+// ── WRITE functions ──────────────────────────────────────
 
 export function storeChatMetadata(
   chatJid: string,
@@ -63,26 +184,29 @@ export function storeChatMetadata(
   channel?: string,
   isGroup?: boolean,
 ): void {
-  sqlite.storeChatMetadata(chatJid, timestamp, name, channel, isGroup);
-  pgWrite(
-    () => pg.pgStoreChatMetadata(chatJid, timestamp, name, channel, isGroup),
-    'storeChatMetadata',
-  );
+  if (!usePg)
+    sqlite.storeChatMetadata(chatJid, timestamp, name, channel, isGroup);
+  if (usePg || dual)
+    pgWrite(
+      () => pg.pgStoreChatMetadata(chatJid, timestamp, name, channel, isGroup),
+      'storeChatMetadata',
+    );
 }
 
 export function updateChatName(chatJid: string, name: string): void {
-  sqlite.updateChatName(chatJid, name);
-  pgWrite(() => pg.pgUpdateChatName(chatJid, name), 'updateChatName');
+  if (!usePg) sqlite.updateChatName(chatJid, name);
+  if (usePg || dual)
+    pgWrite(() => pg.pgUpdateChatName(chatJid, name), 'updateChatName');
 }
 
 export function setLastGroupSync(): void {
-  sqlite.setLastGroupSync();
-  pgWrite(() => pg.pgSetLastGroupSync(), 'setLastGroupSync');
+  if (!usePg) sqlite.setLastGroupSync();
+  if (usePg || dual) pgWrite(() => pg.pgSetLastGroupSync(), 'setLastGroupSync');
 }
 
 export function storeMessage(msg: NewMessage): void {
-  sqlite.storeMessage(msg);
-  pgWrite(() => pg.pgStoreMessage(msg), 'storeMessage');
+  if (!usePg) sqlite.storeMessage(msg);
+  if (usePg || dual) pgWrite(() => pg.pgStoreMessage(msg), 'storeMessage');
 }
 
 export function storeMessageDirect(msg: {
@@ -95,8 +219,9 @@ export function storeMessageDirect(msg: {
   is_from_me: boolean;
   is_bot_message?: boolean;
 }): void {
-  sqlite.storeMessageDirect(msg);
-  pgWrite(() => pg.pgStoreMessage(msg as NewMessage), 'storeMessageDirect');
+  if (!usePg) sqlite.storeMessageDirect(msg);
+  if (usePg || dual)
+    pgWrite(() => pg.pgStoreMessage(msg as NewMessage), 'storeMessageDirect');
 }
 
 export function createTask(
@@ -104,8 +229,8 @@ export function createTask(
     model?: string | null;
   },
 ): void {
-  sqlite.createTask(task);
-  pgWrite(() => pg.pgCreateTask(task), 'createTask');
+  if (!usePg) sqlite.createTask(task);
+  if (usePg || dual) pgWrite(() => pg.pgCreateTask(task), 'createTask');
 }
 
 export function updateTask(
@@ -117,13 +242,13 @@ export function updateTask(
     >
   >,
 ): void {
-  sqlite.updateTask(id, updates);
-  pgWrite(() => pg.pgUpdateTask(id, updates), 'updateTask');
+  if (!usePg) sqlite.updateTask(id, updates);
+  if (usePg || dual) pgWrite(() => pg.pgUpdateTask(id, updates), 'updateTask');
 }
 
 export function deleteTask(id: string): void {
-  sqlite.deleteTask(id);
-  pgWrite(() => pg.pgDeleteTask(id), 'deleteTask');
+  if (!usePg) sqlite.deleteTask(id);
+  if (usePg || dual) pgWrite(() => pg.pgDeleteTask(id), 'deleteTask');
 }
 
 export function updateTaskAfterRun(
@@ -131,29 +256,33 @@ export function updateTaskAfterRun(
   nextRun: string | null,
   lastResult: string,
 ): void {
-  sqlite.updateTaskAfterRun(id, nextRun, lastResult);
-  pgWrite(
-    () => pg.pgUpdateTaskAfterRun(id, nextRun, lastResult),
-    'updateTaskAfterRun',
-  );
+  if (!usePg) sqlite.updateTaskAfterRun(id, nextRun, lastResult);
+  if (usePg || dual)
+    pgWrite(
+      () => pg.pgUpdateTaskAfterRun(id, nextRun, lastResult),
+      'updateTaskAfterRun',
+    );
 }
 
 export function logTaskRun(log: TaskRunLog): void {
-  sqlite.logTaskRun(log);
-  pgWrite(() => pg.pgLogTaskRun(log), 'logTaskRun');
+  if (!usePg) sqlite.logTaskRun(log);
+  if (usePg || dual) pgWrite(() => pg.pgLogTaskRun(log), 'logTaskRun');
 }
 
 export function setRouterState(key: string, value: string): void {
-  sqlite.setRouterState(key, value);
-  pgWrite(() => pg.pgSetRouterState(key, value), 'setRouterState');
+  if (!usePg) sqlite.setRouterState(key, value);
+  if (usePg || dual)
+    pgWrite(() => pg.pgSetRouterState(key, value), 'setRouterState');
 }
 
 export function setSession(groupFolder: string, sessionId: string): void {
-  sqlite.setSession(groupFolder, sessionId);
-  pgWrite(() => pg.pgSetSession(groupFolder, sessionId), 'setSession');
+  if (!usePg) sqlite.setSession(groupFolder, sessionId);
+  if (usePg || dual)
+    pgWrite(() => pg.pgSetSession(groupFolder, sessionId), 'setSession');
 }
 
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
-  sqlite.setRegisteredGroup(jid, group);
-  pgWrite(() => pg.pgSetRegisteredGroup(jid, group), 'setRegisteredGroup');
+  if (!usePg) sqlite.setRegisteredGroup(jid, group);
+  if (usePg || dual)
+    pgWrite(() => pg.pgSetRegisteredGroup(jid, group), 'setRegisteredGroup');
 }

@@ -169,7 +169,7 @@ async function handleApi(
   }
 
   if (pathname === '/api/tasks') {
-    const tasks = getAllTasks();
+    const tasks = await getAllTasks();
     const status = searchParams.get('status');
     const filtered = status ? tasks.filter((t) => t.status === status) : tasks;
     return json(
@@ -191,7 +191,7 @@ async function handleApi(
 
   const taskMatch = pathname.match(/^\/api\/tasks\/([^/]+)$/);
   if (taskMatch) {
-    const task = getTaskById(taskMatch[1]);
+    const task = await getTaskById(taskMatch[1]);
     if (!task) return json(res, { error: 'Not found' }, 404);
     return json(res, task);
   }
@@ -199,27 +199,27 @@ async function handleApi(
   const runsMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/runs$/);
   if (runsMatch) {
     const limit = parseInt(searchParams.get('limit') || '20', 10);
-    return json(res, getRunLogsForTask(runsMatch[1], limit));
+    return json(res, await getRunLogsForTask(runsMatch[1], limit));
   }
 
   if (pathname === '/api/runs/recent') {
     const limit = parseInt(searchParams.get('limit') || '50', 10);
-    return json(res, getRecentRunLogs(limit));
+    return json(res, await getRecentRunLogs(limit));
   }
 
   if (pathname === '/api/runs/for-task') {
     const id = searchParams.get('id') || '';
     const limit = parseInt(searchParams.get('limit') || '10', 10);
-    return json(res, getRunLogsForTask(id, limit));
+    return json(res, await getRunLogsForTask(id, limit));
   }
 
   if (pathname === '/api/groups') {
-    return json(res, getAllRegisteredGroups());
+    return json(res, await getAllRegisteredGroups());
   }
 
   if (pathname === '/api/stats') {
-    const tasks = getAllTasks();
-    const runs = getRecentRunLogs(100);
+    const tasks = await getAllTasks();
+    const runs = await getRecentRunLogs(100);
     const today = new Date().toISOString().slice(0, 10);
     const todayRuns = runs.filter((r) => r.run_at.startsWith(today));
     return json(res, {

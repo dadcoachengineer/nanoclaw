@@ -95,6 +95,55 @@ export function clearTaskCache(): void {
   cacheTime = 0;
 }
 
+/**
+ * Log a pipeline run to task_run_logs so the dashboard shows current status.
+ * Maps local script IDs to their scheduled_task counterparts.
+ */
+export async function logPipelineRun(opts: {
+  taskId: string;
+  durationMs: number;
+  status: "success" | "error";
+  result?: string;
+  error?: string;
+}): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO task_run_logs (task_id, run_at, duration_ms, status, result, error)
+       VALUES ($1, now(), $2, $3, $4, $5)`,
+      [opts.taskId, opts.durationMs, opts.status, opts.result || null, opts.error || null]
+    );
+    // Also update last_run on the scheduled task
+    await query(
+      `UPDATE scheduled_tasks SET last_run = now(), last_result = $1 WHERE id = $2`,
+      [opts.status === "success" ? opts.result?.slice(0, 500) || "success" : opts.error?.slice(0, 500) || "error", opts.taskId]
+    );
+  } catch { /* best-effort */ }
+}
+
+/**
+ * Upsert an archive item into PG for provenance linking.
+ * Best-effort — errors are swallowed so pipelines aren't blocked.
+ */
+export async function archiveToPg(item: {
+  id: string;
+  sourceType: string;
+  title: string;
+  date: string;
+  content: string;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  try {
+    await query(
+      `INSERT INTO archive_items (id, source_type, title, date, content, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (id, source_type) DO UPDATE SET
+         title = EXCLUDED.title, content = EXCLUDED.content,
+         metadata = EXCLUDED.metadata, archived_at = now()`,
+      [item.id, item.sourceType, item.title, item.date, item.content, JSON.stringify(item.metadata || {})]
+    );
+  } catch { /* best-effort — don't break pipeline */ }
+}
+
 // ---------------------------------------------------------------------------
 // Similarity
 // ---------------------------------------------------------------------------

@@ -85,7 +85,7 @@ export default function PeopleView() {
   const [lookupResults, setLookupResults] = useState<{ displayName: string; email?: string; title?: string; company?: string; source: string }[]>([]);
   const [showEnrich, setShowEnrich] = useState(false);
   const [enrichCandidates, setEnrichCandidates] = useState<{ key: string; name: string; interactions: number }[]>([]);
-  const [enrichResults, setEnrichResults] = useState<Record<string, { displayName: string; email: string; title: string; company: string }[]>>({});
+  const [enrichResults, setEnrichResults] = useState<Record<string, { displayName: string; email: string; title: string; company: string; avatar?: string }[]>>({});
   const [enriching, setEnriching] = useState(false);
   const [enrichApplied, setEnrichApplied] = useState<Set<string>>(new Set());
   const [enrichAction, setEnrichAction] = useState<{ key: string; type: "rename" | "merge" } | null>(null);

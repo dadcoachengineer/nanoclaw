@@ -20,14 +20,14 @@ export interface IpcDeps {
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
-  getAvailableGroups: () => AvailableGroup[];
+  getAvailableGroups: () => Promise<AvailableGroup[]>;
   writeGroupsSnapshot: (
     groupFolder: string,
     isMain: boolean,
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
-  onTasksChanged: () => void;
+  onTasksChanged: () => void | Promise<void>;
 }
 
 let ipcWatcherRunning = false;
@@ -282,7 +282,7 @@ export async function processTaskIpc(
 
     case 'pause_task':
       if (data.taskId) {
-        const task = getTaskById(data.taskId);
+        const task = await getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'paused' });
           logger.info(
@@ -301,7 +301,7 @@ export async function processTaskIpc(
 
     case 'resume_task':
       if (data.taskId) {
-        const task = getTaskById(data.taskId);
+        const task = await getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'active' });
           logger.info(
@@ -320,7 +320,7 @@ export async function processTaskIpc(
 
     case 'cancel_task':
       if (data.taskId) {
-        const task = getTaskById(data.taskId);
+        const task = await getTaskById(data.taskId);
         if (task && (isMain || task.group_folder === sourceGroup)) {
           deleteTask(data.taskId);
           logger.info(
@@ -339,7 +339,7 @@ export async function processTaskIpc(
 
     case 'update_task':
       if (data.taskId) {
-        const task = getTaskById(data.taskId);
+        const task = await getTaskById(data.taskId);
         if (!task) {
           logger.warn(
             { taskId: data.taskId, sourceGroup },
@@ -411,7 +411,7 @@ export async function processTaskIpc(
         );
         await deps.syncGroups(true);
         // Write updated snapshot immediately
-        const availableGroups = deps.getAvailableGroups();
+        const availableGroups = await deps.getAvailableGroups();
         deps.writeGroupsSnapshot(
           sourceGroup,
           true,

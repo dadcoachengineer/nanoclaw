@@ -96,17 +96,17 @@ function ensureOneCLIAgent(jid: string, group: RegisteredGroup): void {
   );
 }
 
-function loadState(): void {
-  lastTimestamp = getRouterState('last_timestamp') || '';
-  const agentTs = getRouterState('last_agent_timestamp');
+async function loadState(): Promise<void> {
+  lastTimestamp = (await getRouterState('last_timestamp')) || '';
+  const agentTs = await getRouterState('last_agent_timestamp');
   try {
     lastAgentTimestamp = agentTs ? JSON.parse(agentTs) : {};
   } catch {
     logger.warn('Corrupted last_agent_timestamp in DB, resetting');
     lastAgentTimestamp = {};
   }
-  sessions = getAllSessions();
-  registeredGroups = getAllRegisteredGroups();
+  sessions = await getAllSessions();
+  registeredGroups = await getAllRegisteredGroups();
   logger.info(
     { groupCount: Object.keys(registeredGroups).length },
     'State loaded',
@@ -149,15 +149,17 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
  * Get available groups list for the agent.
  * Returns groups ordered by most recent activity.
  */
-export function getAvailableGroups(): import('./container-runner.js').AvailableGroup[] {
-  const chats = getAllChats();
+export async function getAvailableGroups(): Promise<
+  import('./container-runner.js').AvailableGroup[]
+> {
+  const chats = await getAllChats();
   const registeredJids = new Set(Object.keys(registeredGroups));
 
   return chats
-    .filter((c) => c.jid !== '__group_sync__' && c.is_group)
+    .filter((c) => c.jid !== '__group_sync__' && !!c.is_group)
     .map((c) => ({
       jid: c.jid,
-      name: c.name,
+      name: c.name || '',
       lastActivity: c.last_message_time,
       isRegistered: registeredJids.has(c.jid),
     }));
@@ -187,7 +189,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const isMainGroup = group.isMain === true;
 
   const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-  const missedMessages = getMessagesSince(
+  const missedMessages = await getMessagesSince(
     chatJid,
     sinceTimestamp,
     ASSISTANT_NAME,
@@ -301,7 +303,7 @@ async function runAgent(
   const sessionId = sessions[group.folder];
 
   // Update tasks snapshot for container to read (filtered by group)
-  const tasks = getAllTasks();
+  const tasks = await getAllTasks();
   writeTasksSnapshot(
     group.folder,
     isMain,
@@ -317,7 +319,7 @@ async function runAgent(
   );
 
   // Update available groups snapshot (main group only can see all groups)
-  const availableGroups = getAvailableGroups();
+  const availableGroups = await getAvailableGroups();
   writeGroupsSnapshot(
     group.folder,
     isMain,
@@ -384,7 +386,7 @@ async function startMessageLoop(): Promise<void> {
   while (true) {
     try {
       const jids = Object.keys(registeredGroups);
-      const { messages, newTimestamp } = getNewMessages(
+      const { messages, newTimestamp } = await getNewMessages(
         jids,
         lastTimestamp,
         ASSISTANT_NAME,
@@ -437,7 +439,7 @@ async function startMessageLoop(): Promise<void> {
 
           // Pull all messages since lastAgentTimestamp so non-trigger
           // context that accumulated between triggers is included.
-          const allPending = getMessagesSince(
+          const allPending = await getMessagesSince(
             chatJid,
             lastAgentTimestamp[chatJid] || '',
             ASSISTANT_NAME,
@@ -477,10 +479,14 @@ async function startMessageLoop(): Promise<void> {
  * Startup recovery: check for unprocessed messages in registered groups.
  * Handles crash between advancing lastTimestamp and processing messages.
  */
-function recoverPendingMessages(): void {
+async function recoverPendingMessages(): Promise<void> {
   for (const [chatJid, group] of Object.entries(registeredGroups)) {
     const sinceTimestamp = lastAgentTimestamp[chatJid] || '';
-    const pending = getMessagesSince(chatJid, sinceTimestamp, ASSISTANT_NAME);
+    const pending = await getMessagesSince(
+      chatJid,
+      sinceTimestamp,
+      ASSISTANT_NAME,
+    );
     if (pending.length > 0) {
       logger.info(
         { group: group.name, pendingCount: pending.length },
@@ -500,7 +506,7 @@ async function main(): Promise<void> {
   ensureContainerSystemRunning();
   initDatabase();
   logger.info('Database initialized');
-  loadState();
+  await loadState();
 
   // Ensure OneCLI agents exist for all registered groups.
   // Recovers from missed creates (e.g. OneCLI was down at registration time).
@@ -671,8 +677,8 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
-    onTasksChanged: () => {
-      const tasks = getAllTasks();
+    onTasksChanged: async () => {
+      const tasks = await getAllTasks();
       const taskRows = tasks.map((t) => ({
         id: t.id,
         groupFolder: t.group_folder,
@@ -688,7 +694,7 @@ async function main(): Promise<void> {
     },
   });
   queue.setProcessMessagesFn(processGroupMessages);
-  recoverPendingMessages();
+  await recoverPendingMessages();
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);

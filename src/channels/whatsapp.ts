@@ -314,7 +314,7 @@ export class WhatsAppChannel implements Channel {
    */
   async syncGroupMetadata(force = false): Promise<void> {
     if (!force) {
-      const lastSync = getLastGroupSync();
+      const lastSync = await getLastGroupSync();
       if (lastSync) {
         const lastSyncTime = new Date(lastSync).getTime();
         if (Date.now() - lastSyncTime < GROUP_SYNC_INTERVAL_MS) {

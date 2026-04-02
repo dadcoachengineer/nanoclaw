@@ -52,11 +52,11 @@ export default function PlatformDigitalTwin() {
   }, []);
 
   const c = health?.checks || {};
-  const pg = c.postgresql || {};
-  const core = c.nanoclaw || {};
-  const ollama = c.ollama || {};
-  const nginx = c.nginx || {};
-  const sync = c.notionSync || {};
+  const pg = c.postgresql || {} as NonNullable<HealthData["checks"]["postgresql"]>;
+  const core = c.nanoclaw || {} as NonNullable<HealthData["checks"]["nanoclaw"]>;
+  const ollama = c.ollama || {} as NonNullable<HealthData["checks"]["ollama"]>;
+  const nginx = c.nginx || {} as NonNullable<HealthData["checks"]["nginx"]>;
+  const sync = c.notionSync || {} as NonNullable<HealthData["checks"]["notionSync"]>;
   const pipelines = c.pipelines || [];
 
   // Animated dash offset for data flow lines
@@ -222,13 +222,16 @@ export default function PlatformDigitalTwin() {
           <text x="760" y="349" textAnchor="middle" fill="#8b949e" fontSize="8">{pg.sync_ok || 0} synced · {pg.sync_pending || 0} pending</text>
         </g>
 
-        {/* ── User (far right) ────────────── */}
+        {/* ── Access Flow: Browser → Nginx → Dashboard ────────────── */}
         <g>
-          <circle cx="895" cy="175" r="18" fill="rgba(88,166,255,0.1)" stroke="#58a6ff" strokeWidth="1" />
-          <text x="895" y="172" textAnchor="middle" fill="#58a6ff" fontSize="16">👤</text>
-          <text x="895" y="200" textAnchor="middle" fill="#8b949e" fontSize="8">Jason</text>
+          <rect x="850" y="155" width="90" height="35" rx="6" fill="rgba(88,166,255,0.06)" stroke="#58a6ff" strokeWidth="1" />
+          <text x="895" y="172" textAnchor="middle" fill="#58a6ff" fontSize="9" fontWeight="600">Browser</text>
+          <text x="895" y="183" textAnchor="middle" fill="#8b949e" fontSize="7">LAN only</text>
         </g>
-        <path d="M 820 165 L 877 172" stroke="#58a6ff" strokeWidth="1" fill="none" opacity="0.3" />
+        {/* Browser → Nginx */}
+        <path d="M 895 155 L 895 135" stroke="#58a6ff" strokeWidth="1.5" fill="none" opacity="0.4" strokeDasharray="4 3" strokeDashoffset={dashOffset} markerEnd="url(#arrowhead)" />
+        {/* Nginx → Dashboard */}
+        <path d="M 850 110 L 820 165" stroke="#58a6ff" strokeWidth="1.5" fill="none" opacity="0.4" strokeDasharray="4 3" strokeDashoffset={dashOffset} markerEnd="url(#arrowhead)" />
 
         {/* ── OneCLI (bottom right) ────────────── */}
         <g>
