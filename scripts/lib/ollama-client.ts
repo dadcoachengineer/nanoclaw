@@ -65,11 +65,8 @@ export async function ollamaChat(opts: OllamaChatOptions): Promise<OllamaChatRes
   const timeout = opts.timeoutMs || 120000;
   const useDefenseClaw = DEFENSECLAW_URL && defenseClawHealthy;
 
-  if (DEFENSECLAW_URL && !defenseClawHealthy) {
-    if (!DEFENSECLAW_FAIL_OPEN) {
-      throw new Error("DefenseClaw is unhealthy and DEFENSECLAW_FAIL_OPEN is not set");
-    }
-    // Fail-open: bypass DefenseClaw, go direct to Ollama
+  if (DEFENSECLAW_URL && !defenseClawHealthy && !DEFENSECLAW_FAIL_OPEN) {
+    throw new Error("DefenseClaw is unhealthy and DEFENSECLAW_FAIL_OPEN is not set");
   }
 
   if (useDefenseClaw) {
