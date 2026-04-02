@@ -258,16 +258,15 @@ const TOPOLOGY_EDGES: [string, string, string][] = [
   ["nanoclaw-core", "docker", "Docker API"],
   ["nanoclaw-core", "onecli", "HTTPS :10255"],
   // DefenseClaw → upstream
-  ["defenseclaw-ollama", "ollama-studio", "HTTP :11434"], // DC inspects then forwards to Ollama
-  // Container agents → cloud (DefenseClaw pending — streaming format mismatch)
-  ["docker", "onecli", "HTTPS :10255"],
-  // Notion bidirectional sync
-  // OneCLI → external APIs (only Notion, Plaud, Boox/Nextcloud)
+  ["defenseclaw-ollama", "ollama-studio", "HTTP :11434"],   // DC inspects → forwards to Ollama
+  // Container agents → DefenseClaw → OneCLI → Anthropic (Phase 3 complete)
+  ["docker", "defenseclaw-anthropic", "HTTP :9002"],        // agents → DC /v1/messages
+  ["defenseclaw-anthropic", "onecli", "HTTPS :10255"],      // DC forwards → OneCLI injects key
+  // OneCLI → external APIs
+  ["onecli", "anthropic-api", "HTTPS"],
   ["onecli", "notion-api", "HTTPS"],
   ["onecli", "plaud-api", "HTTPS"],
-  // ALL external API calls now route through OneCLI (as of 2026-04-01)
   ["onecli", "webex-api", "HTTPS"],
-  ["onecli", "anthropic-api", "HTTPS"],
   ["onecli", "google-api", "HTTPS"],
 ];
 

@@ -87,7 +87,7 @@ export default function PlatformDigitalTwin() {
 
   return (
     <div className="relative">
-      <svg viewBox="0 0 960 520" className="w-full" style={{ maxHeight: "520px" }}>
+      <svg viewBox="0 0 960 560" className="w-full" style={{ maxHeight: "560px" }}>
         <defs>
           {/* Animated flow pattern */}
           <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
@@ -113,11 +113,13 @@ export default function PlatformDigitalTwin() {
         {/* Core → PostgreSQL */}
         <path d="M 415 240 L 510 240" stroke="#3fb950" strokeWidth="2" fill="none" opacity="0.5" strokeDasharray="6 4" strokeDashoffset={dashOffset} markerEnd="url(#arrowhead)" />
 
-        {/* Core → Ollama */}
-        <path d="M 360 290 L 360 370" stroke="#bc8cff" strokeWidth="1.5" fill="none" opacity="0.3" strokeDasharray="6 4" strokeDashoffset={dashOffset} />
+        {/* Core → DC Ollama :9001 → Ollama */}
+        <path d="M 360 290 L 360 340" stroke="#d29922" strokeWidth="1.5" fill="none" opacity="0.4" strokeDasharray="6 4" strokeDashoffset={dashOffset} markerEnd="url(#arrowhead)" />
+        <path d="M 360 365 L 360 400" stroke="#bc8cff" strokeWidth="1.5" fill="none" opacity="0.3" strokeDasharray="6 4" strokeDashoffset={dashOffset} markerEnd="url(#arrowhead)" />
 
-        {/* Core → Anthropic */}
-        <path d="M 360 195 L 360 130" stroke="#bc8cff" strokeWidth="1.5" fill="none" opacity="0.3" strokeDasharray="6 4" strokeDashoffset={dashOffset} />
+        {/* Core → DC Anthropic :9002 → Anthropic API */}
+        <path d="M 360 195 L 360 160" stroke="#d29922" strokeWidth="1.5" fill="none" opacity="0.4" strokeDasharray="6 4" strokeDashoffset={dashOffset} markerEnd="url(#arrowhead)" />
+        <path d="M 360 135 L 360 110" stroke="#bc8cff" strokeWidth="1.5" fill="none" opacity="0.3" strokeDasharray="6 4" strokeDashoffset={dashOffset} markerEnd="url(#arrowhead)" />
 
         {/* PostgreSQL → Dashboard */}
         <path d="M 620 220 L 710 180" stroke="#3fb950" strokeWidth="2" fill="none" opacity="0.5" strokeDasharray="6 4" strokeDashoffset={dashOffset} markerEnd="url(#arrowhead)" />
@@ -165,19 +167,31 @@ export default function PlatformDigitalTwin() {
           <text x="355" y="273" textAnchor="middle" fill="#8b949e" fontSize="8">{core.containers?.active || 0} containers · {pipelines.length} pipelines</text>
         </g>
 
+        {/* ── DC Anthropic (between Core and Anthropic API) ────────────── */}
+        <g>
+          <rect x="320" y="135" width="70" height="25" rx="6" fill="rgba(210,153,34,0.08)" stroke="#d29922" strokeWidth="1" />
+          <text x="355" y="151" textAnchor="middle" fill="#d29922" fontSize="8" fontWeight="600">DC :9002</text>
+        </g>
+
         {/* ── Anthropic API (top center) ────────────── */}
         <g onMouseEnter={() => setHovered("anthropic")} onMouseLeave={() => setHovered(null)} style={{ cursor: "pointer" }}>
-          <rect x="305" y="80" width="100" height="45" rx="8" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" strokeWidth="1" strokeDasharray="4 2" />
-          <text x="355" y="100" textAnchor="middle" fill="#bc8cff" fontSize="10" fontWeight="600">Anthropic API</text>
-          <text x="355" y="115" textAnchor="middle" fill="#8b949e" fontSize="8">Opus · Sonnet · Haiku</text>
+          <rect x="305" y="70" width="100" height="40" rx="8" fill="rgba(188,140,255,0.08)" stroke="#bc8cff" strokeWidth="1" strokeDasharray="4 2" />
+          <text x="355" y="90" textAnchor="middle" fill="#bc8cff" fontSize="10" fontWeight="600">Anthropic API</text>
+          <text x="355" y="103" textAnchor="middle" fill="#8b949e" fontSize="8">Sonnet · Opus</text>
+        </g>
+
+        {/* ── DC Ollama (between Core and Ollama) ────────────── */}
+        <g>
+          <rect x="320" y="340" width="70" height="25" rx="6" fill="rgba(210,153,34,0.08)" stroke="#d29922" strokeWidth="1" />
+          <text x="355" y="356" textAnchor="middle" fill="#d29922" fontSize="8" fontWeight="600">DC :9001</text>
         </g>
 
         {/* ── Ollama / Mac Studio (bottom center) ────────────── */}
         <g onMouseEnter={() => setHovered("ollama")} onMouseLeave={() => setHovered(null)} style={{ cursor: "pointer" }}>
-          <rect x="290" y="370" width="130" height="55" rx="8" fill={hovered === "ollama" ? "rgba(188,140,255,0.12)" : "rgba(188,140,255,0.06)"} stroke={statusColor(ollama.status)} strokeWidth="1.5" />
-          <text x="355" y="393" textAnchor="middle" fill="#e6edf3" fontSize="11" fontWeight="600">Ollama</text>
-          <text x="355" y="407" textAnchor="middle" fill="#8b949e" fontSize="8">Mac Studio · 96GB</text>
-          <text x="355" y="419" textAnchor="middle" fill={statusColor(ollama.status)} fontSize="8">{ollama.modelCount || 0} models loaded</text>
+          <rect x="290" y="400" width="130" height="50" rx="8" fill={hovered === "ollama" ? "rgba(188,140,255,0.12)" : "rgba(188,140,255,0.06)"} stroke={statusColor(ollama.status)} strokeWidth="1.5" />
+          <text x="355" y="420" textAnchor="middle" fill="#e6edf3" fontSize="11" fontWeight="600">Ollama</text>
+          <text x="355" y="434" textAnchor="middle" fill="#8b949e" fontSize="8">Mac Studio · 96GB</text>
+          <text x="355" y="446" textAnchor="middle" fill={statusColor(ollama.status)} fontSize="8">{ollama.modelCount || 0} models loaded</text>
         </g>
 
         {/* ── PostgreSQL (center) ────────────── */}
