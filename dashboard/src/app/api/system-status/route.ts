@@ -625,29 +625,41 @@ export async function POST(req: NextRequest) {
   const id = searchParams.get("id");
 
   if (action === "trigger" && id) {
-    const db = openDb();
-    if (!db) {
-      return NextResponse.json(
-        { error: "Database not available" },
-        { status: 503 }
-      );
+    // Map pipeline IDs to launchd job labels for local script pipelines
+    const LAUNCHD_JOBS: Record<string, string> = {
+      "mc-webex-messages": "com.nanoclaw.messages-local",
+      "mc-boox-processor": "com.nanoclaw.boox-local",
+      "mc-gmail-local": "com.nanoclaw.gmail-local",
+      "mc-calendar-sync": "com.nanoclaw.calendar-local",
+      "mc-plaud-processor": "com.nanoclaw.plaud-local",
+      "mc-webex-transcripts": "com.nanoclaw.transcripts-local",
+    };
+
+    const launchdJob = LAUNCHD_JOBS[id];
+    if (launchdJob) {
+      // Local script pipeline — trigger via launchctl
+      try {
+        const { execSync } = await import("child_process");
+        execSync(`launchctl start ${launchdJob}`, { timeout: 5000 });
+        return NextResponse.json({ ok: true, message: `Started ${launchdJob}` });
+      } catch (err) {
+        return NextResponse.json({ error: `launchctl failed: ${err}` }, { status: 500 });
+      }
     }
+
+    // Container agent task — update next_run so NanoClaw scheduler picks it up
     try {
-      // Update both SQLite and PG so scheduler picks it up
       const now = new Date().toISOString();
       try {
         const writableDb = new Database(path.join(STORE_DIR, "messages.db"));
         writableDb.prepare("UPDATE scheduled_tasks SET next_run = ? WHERE id = ?").run(now, id);
         writableDb.close();
       } catch {}
-      // Also update PG
       try {
         await pgSql("UPDATE scheduled_tasks SET next_run = $1 WHERE id = $2", [now, id]);
       } catch {}
-      db.close();
       return NextResponse.json({ ok: true, message: `Triggered ${id}` });
     } catch (err) {
-      db.close();
       return NextResponse.json({ error: String(err) }, { status: 500 });
     }
   }

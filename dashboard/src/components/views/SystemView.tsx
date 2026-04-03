@@ -311,14 +311,23 @@ export default function SystemView() {
     }
   }, [data?.recentRuns]);
 
+  const [triggeredMsg, setTriggeredMsg] = useState<string | null>(null);
+
   async function triggerPipeline(id: string) {
     setTriggeringId(id);
     try {
-      await fetch(`/api/system-status?action=trigger&id=${encodeURIComponent(id)}`, {
+      const resp = await fetch(`/api/system-status?action=trigger&id=${encodeURIComponent(id)}`, {
         method: "POST",
       });
-      // Refresh data after a brief delay to let the scheduler pick it up
-      setTimeout(fetchData, 2000);
+      const data = await resp.json();
+      if (data.ok) {
+        setTriggeredMsg(data.message || `Triggered ${id}`);
+        setTimeout(() => setTriggeredMsg(null), 5000);
+      }
+      // Refresh data after a brief delay
+      setTimeout(fetchData, 3000);
+      // And again after typical script completes
+      setTimeout(fetchData, 15000);
     } catch {}
     setTriggeringId(null);
   }
@@ -988,6 +997,11 @@ export default function SystemView() {
             </span>
           }
         />
+        {triggeredMsg && (
+          <div className="mx-4 mb-2 px-3 py-1.5 rounded bg-[rgba(63,185,80,0.1)] border border-[var(--green)] text-[var(--green)] text-xs">
+            {triggeredMsg}
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full text-[13px]">
             <thead>

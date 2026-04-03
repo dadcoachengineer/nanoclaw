@@ -235,7 +235,10 @@ async function buildContainerArgs(
   // Chain: Container → DefenseClaw :9002/v1/messages (inspect) → OneCLI (auth) → Anthropic
   // Native Anthropic format: no translation, tool_use/tool_result preserved, SSE passthrough.
   if (process.env.DEFENSECLAW_ANTHROPIC_URL) {
-    args.push('-e', `ANTHROPIC_BASE_URL=${process.env.DEFENSECLAW_ANTHROPIC_URL}`);
+    args.push(
+      '-e',
+      `ANTHROPIC_BASE_URL=${process.env.DEFENSECLAW_ANTHROPIC_URL}`,
+    );
   }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
@@ -251,6 +254,13 @@ async function buildContainerArgs(
       { containerName },
       'OneCLI gateway not reachable — container will have no credentials',
     );
+  }
+
+  // Override ANTHROPIC_API_KEY with the DC master key AFTER OneCLI applies its
+  // config. OneCLI sets ANTHROPIC_API_KEY=placeholder; we need the DC key so
+  // the container authenticates to DefenseClaw. Docker uses the last -e flag.
+  if (process.env.DEFENSECLAW_ANTHROPIC_URL && process.env.DEFENSECLAW_KEY) {
+    args.push('-e', `ANTHROPIC_API_KEY=${process.env.DEFENSECLAW_KEY}`);
   }
 
   // Runtime-specific args for host gateway resolution

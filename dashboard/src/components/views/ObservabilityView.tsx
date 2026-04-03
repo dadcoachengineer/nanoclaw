@@ -601,7 +601,7 @@ export default function ObservabilityView() {
   const [expandedHop, setExpandedHop] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
-  type DcVerdict = { time: string; direction: string; model: string; severity: string; tokens?: string; latency?: string; messages?: number; preview?: string };
+  type DcVerdict = { time: string; direction: string; model: string; severity: string; tokens?: string; latency?: string; messages?: number; preview?: string; source?: string };
   type DcInstance = { id: string; label: string; healthy: boolean; mode: string; scannerMode?: string; uptime: number; state: string; verdicts?: DcVerdict[] };
   const [dcInstances, setDcInstances] = useState<DcInstance[]>([]);
   const [dcUpdating, setDcUpdating] = useState<string | null>(null);
@@ -737,7 +737,7 @@ export default function ObservabilityView() {
                   s === "HIGH" || s === "CRITICAL" ? "#f85149" : "var(--text-dim)";
                 const severityLabel = (s: string) =>
                   s === "NONE" ? "pass" : s;
-                const gridCols = "48px 64px 130px 1fr 42px 52px 30px";
+                const gridCols = "48px 64px 130px 72px 1fr 42px 52px 30px";
                 return (
                   <div key={inst.id}>
                     {/* Instance status row */}
@@ -787,13 +787,14 @@ export default function ObservabilityView() {
                           <span>Time</span>
                           <span>Type</span>
                           <span>Model</span>
+                          <span>Source</span>
                           <span>Content</span>
                           <span className="text-right">Verdict</span>
                           <span className="text-right">Tokens</span>
                           <span className="text-right">Scan</span>
                         </div>
                         <div className="max-h-[280px] overflow-y-auto">
-                          {verdicts.slice(-15).map((v, i) => (
+                          {[...verdicts].reverse().slice(0, 50).map((v, i) => (
                             <div key={i} className="border-b border-[var(--border)] last:border-0">
                               <div className="grid gap-x-1 text-[10px] font-mono py-0.5 items-center" style={{ gridTemplateColumns: gridCols }}>
                                 <span className="text-[var(--text-dim)]">{v.time}</span>
@@ -801,6 +802,7 @@ export default function ObservabilityView() {
                                   {v.direction}
                                 </span>
                                 <span className="text-[var(--text)] truncate">{v.model}</span>
+                                <span className="text-[var(--text-dim)] truncate">{v.source || "—"}</span>
                                 <span className="text-[var(--text-dim)] truncate">{v.preview || "—"}</span>
                                 <span style={{ color: severityColor(v.severity) }} className="text-right">{severityLabel(v.severity)}</span>
                                 <span className="text-[var(--text-dim)] text-right">{v.tokens || "—"}</span>

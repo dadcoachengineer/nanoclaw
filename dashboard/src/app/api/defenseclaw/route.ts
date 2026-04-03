@@ -23,10 +23,29 @@ interface Verdict {
   latency?: string;
   messages?: number;
   preview?: string;
+  source?: string;
+}
+
+// Infer pipeline source from system prompt or user content patterns
+function inferSource(lines: string[], startIdx: number): string | undefined {
+  for (let j = startIdx + 1; j < Math.min(startIdx + 6, lines.length); j++) {
+    const line = lines[j].trim();
+    if (line.includes("analyze Webex messages")) return "Webex Msgs";
+    if (line.includes("extract action items from meeting transcripts") || line.includes("action items from meeting transcript")) return "Transcripts";
+    if (line.includes("analyze meeting recordings")) return "Plaud";
+    if (line.includes("analyze a week of calendar")) return "Calendar";
+    if (line.includes("Meeting Prep Agent") || line.includes("meeting prep")) return "Meeting Prep";
+    if (line.includes("Morning Briefing") || line.includes("morning briefing")) return "Briefing";
+    if (line.includes("Read this handwritten note")) return "Boox OCR";
+    if (line.includes("analyze Gmail") || line.includes("analyze email") || line.includes("Gmail")) return "Gmail";
+    if (line.includes("research") || line.includes("Research")) return "Research";
+    if (/\[0\] system \(28 chars\)/.test(line)) return "Ad-hoc";
+  }
+  return undefined;
 }
 
 // Parse recent verdicts from DefenseClaw gateway log
-async function parseRecentVerdicts(logFile: string, limit = 30): Promise<Verdict[]> {
+async function parseRecentVerdicts(logFile: string, limit = 100): Promise<Verdict[]> {
   const fs = await import("fs");
   try {
     const raw = fs.readFileSync(logFile, "utf-8");
@@ -76,6 +95,7 @@ async function parseRecentVerdicts(logFile: string, limit = 30): Promise<Verdict
         }
       }
 
+      const source = direction === "PRE-CALL" ? inferSource(lines, i) : undefined;
       entries.push({
         time,
         direction: direction === "PRE-CALL" ? "prompt" : "completion",
@@ -85,7 +105,14 @@ async function parseRecentVerdicts(logFile: string, limit = 30): Promise<Verdict
         latency: latencyMatch ? latencyMatch[1] : undefined,
         messages: msgMatch ? parseInt(msgMatch[1]) : undefined,
         preview: preview || (action === "block" ? `BLOCKED: ${reason}` : undefined),
+        source,
       });
+    }
+    // Propagate source from PRE-CALL to the following POST-CALL (they come in pairs)
+    let lastSource: string | undefined;
+    for (const e of entries) {
+      if (e.direction === "prompt" && e.source) lastSource = e.source;
+      else if (e.direction === "completion" && !e.source && lastSource) e.source = lastSource;
     }
     return entries.slice(-limit);
   } catch { return []; }
