@@ -79,10 +79,7 @@ vi.mock('@onecli-sh/sdk', () => ({
 vi.mock('./container-runtime.js', () => ({
   CONTAINER_RUNTIME_BIN: 'docker',
   hostGatewayArgs: () => ['--add-host', 'host.docker.internal:host-gateway'],
-  readonlyMountArgs: (src: string, dst: string) => [
-    '-v',
-    `${src}:${dst}:ro`,
-  ],
+  readonlyMountArgs: (src: string, dst: string) => ['-v', `${src}:${dst}:ro`],
   stopContainer: (name: string) => `docker stop ${name}`,
 }));
 
@@ -176,7 +173,10 @@ describe('container-runner DefenseClaw env injection', () => {
   });
 
   it('injects ANTHROPIC_BASE_URL when DEFENSECLAW_ANTHROPIC_URL is set', async () => {
-    vi.stubEnv('DEFENSECLAW_ANTHROPIC_URL', 'http://127.0.0.1:9002/v1/messages');
+    vi.stubEnv(
+      'DEFENSECLAW_ANTHROPIC_URL',
+      'http://127.0.0.1:9002/v1/messages',
+    );
 
     const onOutput = vi.fn(async () => {});
     const resultPromise = runContainerAgent(
@@ -203,7 +203,9 @@ describe('container-runner DefenseClaw env injection', () => {
     const containerArgs: string[] = spawnMock.mock.calls[0][1];
     const envs = extractEnvFlags(containerArgs);
 
-    expect(envs['ANTHROPIC_BASE_URL']).toBe('http://127.0.0.1:9002/v1/messages');
+    expect(envs['ANTHROPIC_BASE_URL']).toBe(
+      'http://127.0.0.1:9002/v1/messages',
+    );
   });
 
   it('does NOT inject ANTHROPIC_BASE_URL when DEFENSECLAW_ANTHROPIC_URL is unset', async () => {
@@ -236,7 +238,10 @@ describe('container-runner DefenseClaw env injection', () => {
   });
 
   it('DefenseClaw injection is ordered before OneCLI gateway config', async () => {
-    vi.stubEnv('DEFENSECLAW_ANTHROPIC_URL', 'http://127.0.0.1:9002/v1/messages');
+    vi.stubEnv(
+      'DEFENSECLAW_ANTHROPIC_URL',
+      'http://127.0.0.1:9002/v1/messages',
+    );
 
     // Track the args array state when OneCLI.applyContainerConfig is called
     let argsAtOnecliCall: string[] = [];
@@ -342,7 +347,10 @@ describe('container-runner modelOverride', () => {
   });
 
   it('both DefenseClaw and modelOverride can be set simultaneously', async () => {
-    vi.stubEnv('DEFENSECLAW_ANTHROPIC_URL', 'http://127.0.0.1:9002/v1/messages');
+    vi.stubEnv(
+      'DEFENSECLAW_ANTHROPIC_URL',
+      'http://127.0.0.1:9002/v1/messages',
+    );
 
     const onOutput = vi.fn(async () => {});
     const resultPromise = runContainerAgent(
@@ -367,7 +375,9 @@ describe('container-runner modelOverride', () => {
     const containerArgs: string[] = spawnMock.mock.calls[0][1];
     const envs = extractEnvFlags(containerArgs);
 
-    expect(envs['ANTHROPIC_BASE_URL']).toBe('http://127.0.0.1:9002/v1/messages');
+    expect(envs['ANTHROPIC_BASE_URL']).toBe(
+      'http://127.0.0.1:9002/v1/messages',
+    );
     expect(envs['CLAUDE_MODEL']).toBe('claude-sonnet-4-20250514');
   });
 });

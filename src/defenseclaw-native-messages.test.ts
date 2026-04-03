@@ -74,13 +74,21 @@ function createDCMessagesHandler(opts?: {
 
     // Validate: must be Anthropic format, not OpenAI
     if ('choices' in body || 'n' in body) {
-      throw new Error('Received OpenAI format — native endpoint expects Anthropic Messages API');
+      throw new Error(
+        'Received OpenAI format — native endpoint expects Anthropic Messages API',
+      );
     }
 
     // Must have model, max_tokens, messages
     if (!body.model || !body.max_tokens || !body.messages) {
       return new Response(
-        JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'missing required fields' } }),
+        JSON.stringify({
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'missing required fields',
+          },
+        }),
         { status: 400 },
       );
     }
@@ -104,7 +112,9 @@ function createDCMessagesHandler(opts?: {
         id: 'msg_test_01',
         type: 'message',
         role: 'assistant',
-        content: [{ type: 'text', text: 'Hello from DefenseClaw native endpoint' }],
+        content: [
+          { type: 'text', text: 'Hello from DefenseClaw native endpoint' },
+        ],
         model: body.model,
         stop_reason: 'end_turn',
         usage: { input_tokens: 25, output_tokens: 12 },
@@ -167,9 +177,7 @@ describe('DefenseClaw native /v1/messages — request format', () => {
     const request: AnthropicMessagesRequest = {
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
-      messages: [
-        { role: 'user', content: 'What is the weather?' },
-      ],
+      messages: [{ role: 'user', content: 'What is the weather?' }],
     };
 
     const resp = await fetch('http://127.0.0.1:9002/v1/messages', {
@@ -194,12 +202,14 @@ describe('DefenseClaw native /v1/messages — request format', () => {
           id: 'msg_test_02',
           type: 'message',
           role: 'assistant',
-          content: [{
-            type: 'tool_use',
-            id: 'toolu_01',
-            name: 'get_weather',
-            input: { location: 'San Francisco' },
-          }],
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_01',
+              name: 'get_weather',
+              input: { location: 'San Francisco' },
+            },
+          ],
           model: 'claude-sonnet-4-20250514',
           stop_reason: 'tool_use',
           usage: { input_tokens: 50, output_tokens: 30 },
@@ -211,21 +221,21 @@ describe('DefenseClaw native /v1/messages — request format', () => {
     const request: AnthropicMessagesRequest = {
       model: 'claude-sonnet-4-20250514',
       max_tokens: 4096,
-      messages: [
-        { role: 'user', content: 'What is the weather in SF?' },
-      ],
-      tools: [{
-        name: 'get_weather',
-        description: 'Get the current weather',
-        input_schema: {
-          type: 'object',
-          properties: {
-            location: { type: 'string', description: 'City name' },
-            unit: { type: 'string', enum: ['celsius', 'fahrenheit'] },
+      messages: [{ role: 'user', content: 'What is the weather in SF?' }],
+      tools: [
+        {
+          name: 'get_weather',
+          description: 'Get the current weather',
+          input_schema: {
+            type: 'object',
+            properties: {
+              location: { type: 'string', description: 'City name' },
+              unit: { type: 'string', enum: ['celsius', 'fahrenheit'] },
+            },
+            required: ['location'],
           },
-          required: ['location'],
         },
-      }],
+      ],
     };
 
     await fetch('http://127.0.0.1:9002/v1/messages', {
@@ -238,7 +248,9 @@ describe('DefenseClaw native /v1/messages — request format', () => {
     expect(capturedBody).not.toBeNull();
     expect(capturedBody!.tools).toHaveLength(1);
     expect(capturedBody!.tools![0].input_schema.type).toBe('object');
-    expect(capturedBody!.tools![0].input_schema.properties).toHaveProperty('location');
+    expect(capturedBody!.tools![0].input_schema.properties).toHaveProperty(
+      'location',
+    );
     expect(capturedBody!.tools![0].input_schema.required).toEqual(['location']);
   });
 
@@ -268,20 +280,25 @@ describe('DefenseClaw native /v1/messages — request format', () => {
         { role: 'user', content: 'What is the weather in SF?' },
         {
           role: 'assistant',
-          content: [{
-            type: 'tool_use',
-            id: 'toolu_01',
-            name: 'get_weather',
-            input: { location: 'San Francisco' },
-          }],
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_01',
+              name: 'get_weather',
+              input: { location: 'San Francisco' },
+            },
+          ],
         },
         {
           role: 'user',
-          content: [{
-            type: 'tool_result',
-            tool_use_id: 'toolu_01',
-            content: '{"temperature": 65, "unit": "fahrenheit", "condition": "sunny"}',
-          }],
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_01',
+              content:
+                '{"temperature": 65, "unit": "fahrenheit", "condition": "sunny"}',
+            },
+          ],
         },
       ],
     };
@@ -306,9 +323,12 @@ describe('DefenseClaw native /v1/messages — request format', () => {
       capturedBody = JSON.parse(init?.body as string);
       return new Response(
         JSON.stringify({
-          id: 'msg_test_04', type: 'message', role: 'assistant',
+          id: 'msg_test_04',
+          type: 'message',
+          role: 'assistant',
           content: [{ type: 'text', text: 'ok' }],
-          model: 'claude-sonnet-4-20250514', stop_reason: 'end_turn',
+          model: 'claude-sonnet-4-20250514',
+          stop_reason: 'end_turn',
           usage: { input_tokens: 10, output_tokens: 5 },
         }),
         { status: 200 },
@@ -494,7 +514,9 @@ describe('DefenseClaw native /v1/messages — SSE streaming', () => {
     }
 
     // Extract all content_block_delta text
-    const deltaMatches = [...fullText.matchAll(/event: content_block_delta\ndata: (.+)\n/g)];
+    const deltaMatches = [
+      ...fullText.matchAll(/event: content_block_delta\ndata: (.+)\n/g),
+    ];
     const reconstructed = deltaMatches
       .map((m) => JSON.parse(m[1]))
       .filter((d) => d.delta.type === 'text_delta')

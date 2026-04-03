@@ -101,7 +101,11 @@ vi.mock('@whiskeysockets/baileys', () => {
 });
 
 import { WhatsAppChannel, WhatsAppChannelOpts } from './whatsapp.js';
-import { getLastGroupSync, updateChatName, setLastGroupSync } from '../db-adapter.js';
+import {
+  getLastGroupSync,
+  updateChatName,
+  setLastGroupSync,
+} from '../db-adapter.js';
 
 // --- Test helpers ---
 
