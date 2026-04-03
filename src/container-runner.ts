@@ -15,6 +15,7 @@ import {
   IDLE_TIMEOUT,
   ONECLI_URL,
   TIMEZONE,
+  TOOL_REGISTRY_PATH,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -229,6 +230,65 @@ async function buildContainerArgs(
   // and passes it to the Claude Agent SDK's model option
   if (modelOverride) {
     args.push('-e', `CLAUDE_MODEL=${modelOverride}`);
+  }
+
+  // Tool registry config — inject as env var if the config file exists.
+  // The agent-runner reads NANOCLAW_TOOL_REGISTRY to build its allowedTools array.
+  // When absent, the agent-runner falls back to hardcoded defaults (backwards compatible).
+  if (fs.existsSync(TOOL_REGISTRY_PATH)) {
+    try {
+      const registryJson = fs.readFileSync(TOOL_REGISTRY_PATH, 'utf-8');
+      // Validate it's parseable JSON before injecting
+      JSON.parse(registryJson);
+      args.push('-e', `NANOCLAW_TOOL_REGISTRY=${registryJson}`);
+    } catch (err) {
+      logger.warn(
+        { path: TOOL_REGISTRY_PATH, error: err },
+        'Failed to read tool registry config, skipping injection',
+      );
+    }
+  }
+
+  // DefenseClaw tool inspection — pre-execution hook that scans tool arguments for
+  // dangerous patterns (shell injection, path traversal, data exfil) before execution.
+  // This is defense-in-depth: the guardrail proxy already inspects prompts/completions.
+  // The management API port is 18790; the tool inspection endpoint is /api/v1/inspect/tool.
+  // Uses host.docker.internal because this runs inside a Docker container.
+  if (process.env.DEFENSECLAW_KEY) {
+    // Derive the management API endpoint from DEFENSECLAW_OLLAMA_URL or use explicit config
+    let dcManagementHost = 'host.docker.internal:18790';
+    if (process.env.DEFENSECLAW_API_URL) {
+      // Explicit management API URL takes priority
+      try {
+        const parsed = new URL(process.env.DEFENSECLAW_API_URL);
+        dcManagementHost = `host.docker.internal:${parsed.port || '18790'}`;
+      } catch {
+        // Fall back to default
+      }
+    } else if (process.env.DEFENSECLAW_OLLAMA_URL) {
+      // Derive from Ollama URL — the management port is typically the Ollama port
+      // (DefenseClaw multiplexes on the same port)
+      try {
+        const parsed = new URL(process.env.DEFENSECLAW_OLLAMA_URL);
+        dcManagementHost = `host.docker.internal:${parsed.port || '18790'}`;
+      } catch {
+        // Fall back to default
+      }
+    }
+
+    const inspectionConfig = JSON.stringify({
+      enabled: true,
+      endpoint: `http://${dcManagementHost}/api/v1/inspect/tool`,
+      apiKey: process.env.DEFENSECLAW_KEY,
+      failOpen: true,
+      timeoutMs: 50,
+      excludeTools: [],
+    });
+    args.push('-e', `NANOCLAW_TOOL_INSPECTION=${inspectionConfig}`);
+    logger.info(
+      { containerName, endpoint: `http://${dcManagementHost}/api/v1/inspect/tool` },
+      'Tool inspection config injected',
+    );
   }
 
   // DefenseClaw guardrail — route Anthropic traffic through security inspection.
@@ -452,15 +512,15 @@ export async function runContainerAgent(
         { group: group.name, containerName },
         'Container timeout, stopping gracefully',
       );
-      exec(stopContainer(containerName), { timeout: 15000 }, (err) => {
-        if (err) {
-          logger.warn(
-            { group: group.name, containerName, err },
-            'Graceful stop failed, force killing',
-          );
-          container.kill('SIGKILL');
-        }
-      });
+      try {
+        stopContainer(containerName);
+      } catch (err) {
+        logger.warn(
+          { group: group.name, containerName, err },
+          'Graceful stop failed, force killing',
+        );
+        container.kill('SIGKILL');
+      }
     };
 
     let timeout = setTimeout(killOnTimeout, timeoutMs);

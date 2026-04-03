@@ -28,6 +28,7 @@ vi.mock('./config.js', () => ({
   IDLE_TIMEOUT: 1800000,
   ONECLI_URL: 'http://localhost:10254',
   TIMEZONE: 'America/Los_Angeles',
+  TOOL_REGISTRY_PATH: '/tmp/nanoclaw-test-config/tool-registry.json',
 }));
 
 // Mock logger

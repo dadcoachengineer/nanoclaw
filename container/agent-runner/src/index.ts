@@ -18,6 +18,8 @@ import fs from 'fs';
 import path from 'path';
 import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
+import { loadRegistry, computeAllowedTools } from './tool-registry.js';
+import { loadInspectionConfig, createCanUseTool } from './tool-inspection.js';
 
 interface ContainerInput {
   prompt: string;
@@ -395,6 +397,20 @@ async function runQuery(
     log(`Model override: ${modelOverride}`);
   }
 
+  // Tool inspection: two-phase pre-execution hook (Part C of DefenseClaw integration)
+  // Phase 1: local registry check (instant) — Phase 2: DC inspection (~1ms)
+  const registry = loadRegistry(containerInput.isMain, containerInput.groupFolder);
+  const inspectionConfig = loadInspectionConfig();
+  const canUseTool = createCanUseTool(
+    inspectionConfig,
+    registry,
+    containerInput.isMain,
+    containerInput.groupFolder,
+  );
+  if (inspectionConfig) {
+    log(`Tool inspection enabled: endpoint=${inspectionConfig.endpoint} failOpen=${inspectionConfig.failOpen} timeoutMs=${inspectionConfig.timeoutMs}`);
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -406,17 +422,12 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read', 'Write', 'Edit', 'Glob', 'Grep',
-        'WebSearch', 'WebFetch',
-        'Task', 'TaskOutput', 'TaskStop',
-        'TeamCreate', 'TeamDelete', 'SendMessage',
-        'TodoWrite', 'ToolSearch', 'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*',
-        'mcp__ollama__*'
-      ],
+      allowedTools: computeAllowedTools(
+        registry,
+        containerInput.isMain,
+        containerInput.groupFolder,
+      ),
+      canUseTool,
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
