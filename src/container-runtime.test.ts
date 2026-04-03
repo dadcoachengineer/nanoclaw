@@ -39,10 +39,19 @@ describe('readonlyMountArgs', () => {
 });
 
 describe('stopContainer', () => {
-  it('returns stop command using CONTAINER_RUNTIME_BIN', () => {
-    expect(stopContainer('nanoclaw-test-123')).toBe(
-      `${CONTAINER_RUNTIME_BIN} stop -t 1 nanoclaw-test-123`,
-    );
+  it('accepts valid container names', () => {
+    // stopContainer now executes directly and returns void.
+    // With mocked execSync it won't actually run — just verify no throw.
+    expect(() => stopContainer('nanoclaw-test-123')).not.toThrow();
+    expect(() => stopContainer('my.container.name')).not.toThrow();
+    expect(() => stopContainer('container_with_underscores')).not.toThrow();
+  });
+
+  it('rejects container names with shell metacharacters', () => {
+    expect(() => stopContainer('name; rm -rf /')).toThrow('Invalid container name');
+    expect(() => stopContainer('$(evil)')).toThrow('Invalid container name');
+    expect(() => stopContainer('name`cmd`')).toThrow('Invalid container name');
+    expect(() => stopContainer('')).toThrow('Invalid container name');
   });
 });
 
