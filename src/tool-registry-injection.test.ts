@@ -17,13 +17,14 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 // Hoisted mocks — must be declared with vi.hoisted() so they're available
 // inside vi.mock() factories (which are hoisted to the top of the file)
-const { spawnMock, existsSyncMock, readFileSyncMock, TOOL_REGISTRY_PATH } = vi.hoisted(() => {
-  const spawnMock = vi.fn();
-  const existsSyncMock = vi.fn((): boolean => false);
-  const readFileSyncMock = vi.fn((): string => '');
-  const TOOL_REGISTRY_PATH = '/mock-home/.config/nanoclaw/tool-registry.json';
-  return { spawnMock, existsSyncMock, readFileSyncMock, TOOL_REGISTRY_PATH };
-});
+const { spawnMock, existsSyncMock, readFileSyncMock, TOOL_REGISTRY_PATH } =
+  vi.hoisted(() => {
+    const spawnMock = vi.fn();
+    const existsSyncMock = vi.fn((): boolean => false);
+    const readFileSyncMock = vi.fn((): string => '');
+    const TOOL_REGISTRY_PATH = '/mock-home/.config/nanoclaw/tool-registry.json';
+    return { spawnMock, existsSyncMock, readFileSyncMock, TOOL_REGISTRY_PATH };
+  });
 
 // Mock config — include TOOL_REGISTRY_PATH
 vi.mock('./config.js', () => ({
@@ -179,7 +180,10 @@ describe('container-runner tool registry injection', () => {
   it('injects NANOCLAW_TOOL_REGISTRY when config file exists', async () => {
     const registryConfig = {
       version: 1,
-      defaults: { builtins: ['Bash', 'Read'], mcpServers: ['mcp__nanoclaw__*'] },
+      defaults: {
+        builtins: ['Bash', 'Read'],
+        mcpServers: ['mcp__nanoclaw__*'],
+      },
       tools: [{ type: 'custom', name: 'MyTool', enabled: true }],
     };
     const registryJson = JSON.stringify(registryConfig);

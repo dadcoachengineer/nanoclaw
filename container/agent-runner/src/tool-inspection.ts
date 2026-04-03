@@ -6,7 +6,7 @@
  *   Phase 2 (DC inspection, ~1ms): Call DefenseClaw's /api/v1/inspect/tool to scan
  *     tool arguments for dangerous patterns (shell injection, path traversal, data exfil)
  *
- * Part C of the NanoClaw + DefenseClaw tool inspection integration.
+ * Integrates with DefenseClaw security gateway when configured.
  *
  * Design decisions:
  * - 50ms timeout: protects against DC being unreachable (TCP connect timeout, container restart),
@@ -25,11 +25,11 @@ import { isToolAllowed, ToolRegistryConfig } from './tool-registry.js';
 
 export interface InspectionConfig {
   enabled: boolean;
-  endpoint: string;        // e.g., "http://host.docker.internal:18790/api/v1/inspect/tool"
-  apiKey: string;          // DC master key
-  failOpen: boolean;       // if DC unreachable, allow tool execution (default: true)
-  timeoutMs: number;       // 50ms — protecting against unreachable DC, not slow inspection
-  excludeTools: string[];  // tools to skip inspection for
+  endpoint: string; // e.g., "http://host.docker.internal:18790/api/v1/inspect/tool"
+  apiKey: string; // DC master key
+  failOpen: boolean; // if DC unreachable, allow tool execution (default: true)
+  timeoutMs: number; // 50ms — protecting against unreachable DC, not slow inspection
+  excludeTools: string[]; // tools to skip inspection for
 }
 
 export interface InspectionResult {
@@ -65,11 +65,15 @@ export function loadInspectionConfig(): InspectionConfig | null {
     // Basic validation
     if (!parsed.enabled) return null;
     if (!parsed.endpoint || typeof parsed.endpoint !== 'string') {
-      console.error('[tool-inspection] Invalid endpoint in config, disabling inspection');
+      console.error(
+        '[tool-inspection] Invalid endpoint in config, disabling inspection',
+      );
       return null;
     }
     if (!parsed.apiKey || typeof parsed.apiKey !== 'string') {
-      console.error('[tool-inspection] Invalid apiKey in config, disabling inspection');
+      console.error(
+        '[tool-inspection] Invalid apiKey in config, disabling inspection',
+      );
       return null;
     }
 
@@ -80,7 +84,9 @@ export function loadInspectionConfig(): InspectionConfig | null {
       apiKey: parsed.apiKey,
       failOpen: parsed.failOpen ?? true,
       timeoutMs: parsed.timeoutMs ?? 50,
-      excludeTools: Array.isArray(parsed.excludeTools) ? parsed.excludeTools : [],
+      excludeTools: Array.isArray(parsed.excludeTools)
+        ? parsed.excludeTools
+        : [],
     };
   } catch (err) {
     console.error(
@@ -168,7 +174,8 @@ export async function inspectToolCall(
   } catch (err) {
     const elapsed = performance.now() - start;
     const isTimeout =
-      err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError');
+      err instanceof Error &&
+      (err.name === 'AbortError' || err.name === 'TimeoutError');
     const errorType = isTimeout ? 'timeout' : 'network error';
 
     console.error(
@@ -208,7 +215,10 @@ export function createCanUseTool(
   // No inspection configured — return undefined so SDK uses default behavior
   if (!inspectionConfig) return undefined;
 
-  return async (toolName: string, input: unknown): Promise<{ allowed: boolean; reason?: string }> => {
+  return async (
+    toolName: string,
+    input: unknown,
+  ): Promise<{ allowed: boolean; reason?: string }> => {
     // Phase 1: Local registry check (instant, no network)
     if (registry && isMain !== undefined && groupFolder !== undefined) {
       if (!isToolAllowed(registry, toolName, isMain, groupFolder)) {
@@ -220,15 +230,17 @@ export function createCanUseTool(
     }
 
     // Phase 2: DefenseClaw inspection (~1ms, network call)
-    const args = (typeof input === 'object' && input !== null)
-      ? input as Record<string, unknown>
-      : {};
+    const args =
+      typeof input === 'object' && input !== null
+        ? (input as Record<string, unknown>)
+        : {};
 
     const result = await inspectToolCall(inspectionConfig, toolName, args);
 
     if (!result.allowed) {
-      const reason = result.reason
-        || `DefenseClaw blocked tool "${toolName}": ${result.action} (severity: ${result.severity})`;
+      const reason =
+        result.reason ||
+        `DefenseClaw blocked tool "${toolName}": ${result.action} (severity: ${result.severity})`;
       console.error(
         `[tool-inspection] BLOCKED: tool=${toolName} action=${result.action} severity=${result.severity} reason=${reason} elapsed=${result.elapsedMs.toFixed(1)}ms`,
       );

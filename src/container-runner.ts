@@ -286,7 +286,10 @@ async function buildContainerArgs(
     });
     args.push('-e', `NANOCLAW_TOOL_INSPECTION=${inspectionConfig}`);
     logger.info(
-      { containerName, endpoint: `http://${dcManagementHost}/api/v1/inspect/tool` },
+      {
+        containerName,
+        endpoint: `http://${dcManagementHost}/api/v1/inspect/tool`,
+      },
       'Tool inspection config injected',
     );
   }
