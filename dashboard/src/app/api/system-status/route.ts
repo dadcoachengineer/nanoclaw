@@ -18,7 +18,8 @@ const DEFAULT_MODEL = "claude-sonnet-4-20250514";
 const MODEL_COSTS: Record<string, { inputPerM: number; outputPerM: number; label: string }> = {
   "claude-sonnet-4-20250514": { inputPerM: 3, outputPerM: 15, label: "Sonnet" },
   "claude-haiku-4-5-20251001": { inputPerM: 0.25, outputPerM: 1.25, label: "Haiku" },
-  "local:gemma3:27b": { inputPerM: 0, outputPerM: 0, label: "Local (Gemma 27B)" },
+  "local:gemma3:27b": { inputPerM: 0, outputPerM: 0, label: "Local (Gemma 3 27B)" },
+  "local:gemma4:26b": { inputPerM: 0, outputPerM: 0, label: "Local (Gemma 4 26B)" },
   "local:phi4:14b": { inputPerM: 0, outputPerM: 0, label: "Local (Phi 4 14B)" },
   "local:granite3.3:8b": { inputPerM: 0, outputPerM: 0, label: "Local (Granite 8B)" },
 };

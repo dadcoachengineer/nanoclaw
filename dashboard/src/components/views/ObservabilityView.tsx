@@ -438,12 +438,14 @@ const SOURCE_MODEL_MAP: Record<string, string> = {
 
 const MODEL_COLORS: Record<string, string> = {
   "gemma3:27b": "#58a6ff",
+  "gemma4:26b": "#d29922",
   "granite3.3:8b": "#3fb950",
   "anthropic": "#bc8cff",
 };
 
 const MODEL_LABELS: Record<string, string> = {
-  "gemma3:27b": "Gemma 27B",
+  "gemma3:27b": "Gemma 3 27B",
+  "gemma4:26b": "Gemma 4 26B",
   "granite3.3:8b": "Granite 8B",
   "anthropic": "Anthropic API",
 };

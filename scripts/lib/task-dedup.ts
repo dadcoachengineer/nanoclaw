@@ -112,11 +112,28 @@ export async function logPipelineRun(opts: {
        VALUES ($1, now(), $2, $3, $4, $5)`,
       [opts.taskId, opts.durationMs, opts.status, opts.result || null, opts.error || null]
     );
-    // Also update last_run on the scheduled task
+    // Update last_run and compute next_run from the cron schedule
+    const result = opts.status === "success" ? opts.result?.slice(0, 500) || "success" : opts.error?.slice(0, 500) || "error";
     await query(
       `UPDATE scheduled_tasks SET last_run = now(), last_result = $1 WHERE id = $2`,
-      [opts.status === "success" ? opts.result?.slice(0, 500) || "success" : opts.error?.slice(0, 500) || "error", opts.taskId]
+      [result, opts.taskId]
     );
+    // Compute next_run from schedule_value (cron expression)
+    try {
+      const rows = await query(
+        `SELECT schedule_type, schedule_value FROM scheduled_tasks WHERE id = $1`,
+        [opts.taskId]
+      ) as any[];
+      if (rows[0]?.schedule_type === "cron" && rows[0]?.schedule_value) {
+        const { CronExpressionParser } = await import("cron-parser");
+        const cron = CronExpressionParser.parse(rows[0].schedule_value, { tz: "America/Chicago" });
+        const nextRun = cron.next().toISOString();
+        await query(
+          `UPDATE scheduled_tasks SET next_run = $1::timestamptz WHERE id = $2`,
+          [nextRun, opts.taskId]
+        );
+      }
+    } catch { /* next_run update is best-effort */ }
   } catch { /* best-effort */ }
 }
 
