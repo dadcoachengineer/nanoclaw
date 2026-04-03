@@ -594,6 +594,17 @@ export default function SystemView() {
     return () => clearInterval(interval);
   }, []);
 
+  // Platform health test data
+  const [platformHealth, setPlatformHealth] = useState<any>(null);
+  const [platformHealthExpanded, setPlatformHealthExpanded] = useState(false);
+  useEffect(() => {
+    fetch("/api/platform-health").then((r) => r.json()).then(setPlatformHealth).catch(() => {});
+    const interval = setInterval(() => {
+      fetch("/api/platform-health").then((r) => r.json()).then(setPlatformHealth).catch(() => {});
+    }, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
   if (loading && !data) {
     return (
       <div className="max-w-[1400px] mx-auto px-8 py-6">
@@ -688,6 +699,139 @@ export default function SystemView() {
         <div className="mb-4 p-3 bg-[rgba(248,81,73,0.1)] border border-[var(--red)] rounded-lg text-sm text-[var(--red)]">
           {error}
         </div>
+      )}
+
+      {/* Platform Health Test Results */}
+      {platformHealth?.checks && (
+        <Card className="mb-6">
+          <CardHeader
+            title="Platform Health"
+            right={
+              <div className="flex items-center gap-3">
+                {platformHealth.cached && (
+                  <span className="text-[10px] text-[var(--text-dim)]">cached</span>
+                )}
+                <span className="text-[10px] text-[var(--text-dim)]">
+                  {platformHealth.timestamp
+                    ? new Date(platformHealth.timestamp).toLocaleTimeString([], {
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })
+                    : ""}
+                </span>
+                <span
+                  className="text-xs font-medium px-2 py-0.5 rounded-full"
+                  style={{
+                    background:
+                      platformHealth.status === "healthy"
+                        ? "rgba(63,185,80,0.15)"
+                        : platformHealth.status === "degraded"
+                          ? "rgba(210,153,34,0.15)"
+                          : "rgba(248,81,73,0.15)",
+                    color:
+                      platformHealth.status === "healthy"
+                        ? "var(--green)"
+                        : platformHealth.status === "degraded"
+                          ? "var(--yellow)"
+                          : "var(--red)",
+                  }}
+                >
+                  {platformHealth.status}
+                </span>
+              </div>
+            }
+          />
+          <div className="px-4 py-3">
+            {/* Summary row */}
+            <div className="flex items-center gap-6 mb-3">
+              <div className="flex items-center gap-1.5">
+                <div className="w-2 h-2 rounded-full" style={{ background: "var(--green)" }} />
+                <span className="text-xs text-[var(--text)]">{platformHealth.summary?.pass ?? 0} pass</span>
+              </div>
+              {(platformHealth.summary?.fail ?? 0) > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2 h-2 rounded-full" style={{ background: "var(--red)" }} />
+                  <span className="text-xs text-[var(--text)]">{platformHealth.summary.fail} fail</span>
+                </div>
+              )}
+              {(platformHealth.summary?.warn ?? 0) > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <div className="w-2 h-2 rounded-full" style={{ background: "var(--yellow)" }} />
+                  <span className="text-xs text-[var(--text)]">{platformHealth.summary.warn} warn</span>
+                </div>
+              )}
+              <div className="flex-1" />
+              <button
+                className="text-[10px] text-[var(--accent)] hover:underline"
+                onClick={() => setPlatformHealthExpanded((v) => !v)}
+              >
+                {platformHealthExpanded ? "collapse" : "expand details"}
+              </button>
+            </div>
+
+            {/* Check grid */}
+            <div className="grid grid-cols-4 sm:grid-cols-5 md:grid-cols-7 gap-2">
+              {(platformHealth.checks as Array<{ name: string; status: string; message: string; durationMs: number }>).map((check) => (
+                <div
+                  key={check.name}
+                  className="text-center px-1 py-1.5 rounded"
+                  style={{
+                    background:
+                      check.status === "pass"
+                        ? "rgba(63,185,80,0.06)"
+                        : check.status === "warn"
+                          ? "rgba(210,153,34,0.06)"
+                          : "rgba(248,81,73,0.08)",
+                  }}
+                >
+                  <div className="flex items-center justify-center gap-1 mb-0.5">
+                    <div
+                      className="w-1.5 h-1.5 rounded-full shrink-0"
+                      style={{
+                        background:
+                          check.status === "pass"
+                            ? "var(--green)"
+                            : check.status === "warn"
+                              ? "var(--yellow)"
+                              : "var(--red)",
+                      }}
+                    />
+                    <span className="text-[10px] font-medium text-[var(--text-bright)] truncate">
+                      {check.name.replace("DC ", "").replace(" :9001", "").replace(" :9002", "")}
+                    </span>
+                  </div>
+                  <div className="text-[9px] text-[var(--text-dim)]">{check.durationMs}ms</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Expanded details */}
+            {platformHealthExpanded && (
+              <div className="mt-3 border-t border-[var(--border)] pt-3 space-y-1.5">
+                {(platformHealth.checks as Array<{ name: string; status: string; message: string; durationMs: number }>).map((check) => (
+                  <div key={check.name} className="flex items-start gap-2 text-xs">
+                    <div
+                      className="w-1.5 h-1.5 rounded-full shrink-0 mt-1"
+                      style={{
+                        background:
+                          check.status === "pass"
+                            ? "var(--green)"
+                            : check.status === "warn"
+                              ? "var(--yellow)"
+                              : "var(--red)",
+                      }}
+                    />
+                    <span className="font-medium text-[var(--text-bright)] w-32 shrink-0">
+                      {check.name}
+                    </span>
+                    <span className="text-[var(--text)] flex-1">{check.message}</span>
+                    <span className="text-[var(--text-dim)] shrink-0">{check.durationMs}ms</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </Card>
       )}
 
       {/* Platform Digital Twin */}
