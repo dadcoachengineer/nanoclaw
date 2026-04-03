@@ -601,15 +601,103 @@ export default function ObservabilityView() {
   const [expandedHop, setExpandedHop] = useState<string | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined);
-  type DcVerdict = { time: string; direction: string; model: string; severity: string; tokens?: string; latency?: string; messages?: number; preview?: string; source?: string };
+  type DcVerdict = { time: string; direction: string; model: string; severity: string; verdictAction?: string; verdictMatch?: string; judgeFindings?: string[]; tokens?: string; latency?: string; messages?: number; contentChars?: number; preview?: string; fullContent?: string; source?: string };
   type DcInstance = { id: string; label: string; healthy: boolean; mode: string; scannerMode?: string; uptime: number; state: string; verdicts?: DcVerdict[] };
+  type EnforceRule = { id: string; target_type: string; target_name: string; reason: string; updated_at: string };
+  type EnforceInstance = { instance: string; label: string; blocked: EnforceRule[]; allowed: EnforceRule[]; error?: string };
   const [dcInstances, setDcInstances] = useState<DcInstance[]>([]);
   const [dcUpdating, setDcUpdating] = useState<string | null>(null);
+  const [dcModal, setDcModal] = useState<(DcVerdict & { instance?: string; instanceId?: string }) | null>(null);
+  const [enforceData, setEnforceData] = useState<EnforceInstance[]>([]);
+  const [enforceForm, setEnforceForm] = useState<{ instance: string; action: "allow" | "block"; target_type: string; target_name: string; reason: string } | null>(null);
+  const [enforceBusy, setEnforceBusy] = useState(false);
+  type PolicyPreset = { name: string; description: string; blocks: string; warns: string; firewallDefault: string; guardrailBlockThreshold: string; auditRetentionDays: number };
+  const [policyActive, setPolicyActive] = useState<string>("default");
+  const [policyPresets, setPolicyPresets] = useState<PolicyPreset[]>([]);
+  const [policySwitching, setPolicySwitching] = useState(false);
+  type AuditEvent = { id: string; timestamp: string; action: string; target: string; actor: string; details: string; severity: string; instance: string };
+  type AuditAction = { id: string; targetType: string; targetName: string; sourcePath: string; actions: Record<string, string>; reason: string; updatedAt: string; instance: string };
+  type AuditScan = { id: string; scanner: string; target: string; timestamp: string; durationMs: number; findingCount: number; maxSeverity: string; instance: string };
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+  const [auditActions, setAuditActions] = useState<AuditAction[]>([]);
+  const [auditScans, setAuditScans] = useState<AuditScan[]>([]);
+  type FirewallStatus = { configured: boolean; enforced: boolean; configPath: string; defaultAction: string; ruleCount: number; allowedDomains: string[]; allowedIPs: string[]; allowedPorts: number[]; denyRules: { name: string; destination?: string; action: string }[]; loggingEnabled: boolean; error?: string };
+  const [firewallStatus, setFirewallStatus] = useState<FirewallStatus | null>(null);
+
+  function loadEnforceRules() {
+    fetch("/api/defenseclaw/enforce").then((r) => r.json()).then((d) => {
+      if (d.instances) setEnforceData(d.instances);
+    }).catch(() => {});
+  }
+
+  async function addEnforceRule(instance: string, action: "allow" | "block", target_type: string, target_name: string, reason: string) {
+    setEnforceBusy(true);
+    try {
+      await fetch("/api/defenseclaw/enforce", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instance, action, target_type, target_name, reason }),
+      });
+      loadEnforceRules();
+    } catch { /* poll will catch up */ }
+    setEnforceBusy(false);
+  }
+
+  async function removeEnforceRule(instance: string, action: "allow" | "block", target_type: string, target_name: string) {
+    setEnforceBusy(true);
+    try {
+      await fetch("/api/defenseclaw/enforce", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instance, action, target_type, target_name }),
+      });
+      loadEnforceRules();
+    } catch { /* poll will catch up */ }
+    setEnforceBusy(false);
+  }
+
+  function loadAuditData() {
+    fetch("/api/defenseclaw/audit?limit=50").then((r) => r.json()).then((d) => {
+      if (d.events) setAuditEvents(d.events);
+      if (d.actions) setAuditActions(d.actions);
+      if (d.scans) setAuditScans(d.scans);
+    }).catch(() => {});
+  }
+
+  function loadFirewallStatus() {
+    fetch("/api/defenseclaw/firewall").then((r) => r.json()).then((d) => {
+      if (d && typeof d.configured === "boolean") setFirewallStatus(d);
+    }).catch(() => {});
+  }
 
   function loadDcInstances() {
     fetch("/api/defenseclaw").then((r) => r.json()).then((d) => {
       if (d.instances) setDcInstances(d.instances);
     }).catch(() => {});
+  }
+
+  function loadPolicyStatus() {
+    fetch("/api/defenseclaw/policy").then((r) => r.json()).then((d) => {
+      if (d.active) setPolicyActive(d.active);
+      if (d.presets) setPolicyPresets(d.presets);
+    }).catch(() => {});
+  }
+
+  async function switchPolicy(preset: string) {
+    setPolicySwitching(true);
+    try {
+      const resp = await fetch("/api/defenseclaw/policy", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preset }),
+      });
+      const data = await resp.json();
+      if (data.active) setPolicyActive(data.active);
+      else if (data.applied) setPolicyActive(data.applied);
+      // Refresh after switch
+      setTimeout(loadPolicyStatus, 1000);
+    } catch { /* poll will catch up */ }
+    setPolicySwitching(false);
   }
 
   function load(sample = false) {
@@ -623,8 +711,12 @@ export default function ObservabilityView() {
   useEffect(() => {
     load(true);
     loadDcInstances();
+    loadEnforceRules();
+    loadAuditData();
+    loadFirewallStatus();
+    loadPolicyStatus();
     if (autoRefresh) {
-      intervalRef.current = setInterval(() => { load(true); loadDcInstances(); }, 15000);
+      intervalRef.current = setInterval(() => { load(true); loadDcInstances(); loadEnforceRules(); loadAuditData(); loadFirewallStatus(); }, 15000);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [autoRefresh]);
@@ -725,6 +817,52 @@ export default function ObservabilityView() {
               {dcInstances.filter((i) => i.healthy).length}/{dcInstances.length} healthy
             </span>
           } />
+          {/* Policy preset bar */}
+          {policyPresets.length > 0 && (() => {
+            const activePreset = policyPresets.find((p) => p.name === policyActive);
+            const policyColor = policyActive === "strict" ? "#f85149" : policyActive === "permissive" ? "#d29922" : "#58a6ff";
+            const policyBg = policyActive === "strict" ? "rgba(248,81,73,0.08)" : policyActive === "permissive" ? "rgba(210,153,34,0.08)" : "rgba(88,166,255,0.08)";
+            return (
+              <div className="px-4 py-2.5 border-b border-[var(--border)] flex items-center gap-3">
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <span className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider shrink-0">Policy</span>
+                  <select
+                    value={policyActive}
+                    onChange={(e) => switchPolicy(e.target.value)}
+                    disabled={policySwitching}
+                    className="text-[11px] font-medium px-2 py-0.5 rounded border cursor-pointer disabled:opacity-40"
+                    style={{ borderColor: policyColor, color: policyColor, backgroundColor: policyBg }}
+                  >
+                    {policyPresets.map((p) => (
+                      <option key={p.name} value={p.name}>{p.name}</option>
+                    ))}
+                  </select>
+                  {activePreset && (
+                    <span className="text-[10px] text-[var(--text-dim)] truncate">{activePreset.description}</span>
+                  )}
+                </div>
+                {activePreset && (
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span className="text-[10px] text-[var(--text-dim)]">
+                      <span className="text-[var(--red)]">blocks</span> {activePreset.blocks}
+                    </span>
+                    <span className="text-[10px] text-[var(--text-dim)]">
+                      <span className="text-[var(--yellow)]">warns</span> {activePreset.warns}
+                    </span>
+                    <span className="text-[10px] text-[var(--text-dim)]">
+                      guardrail {activePreset.guardrailBlockThreshold}
+                    </span>
+                    <span className="text-[10px] text-[var(--text-dim)]">
+                      fw {activePreset.firewallDefault}
+                    </span>
+                    <span className="text-[10px] text-[var(--text-dim)]">
+                      audit {activePreset.auditRetentionDays}d
+                    </span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div className="px-4 py-3">
             {/* Two-column layout: each instance's status + verdicts aligned vertically */}
             <div className="grid grid-cols-2 gap-4">
@@ -795,7 +933,8 @@ export default function ObservabilityView() {
                         </div>
                         <div className="max-h-[280px] overflow-y-auto">
                           {[...verdicts].reverse().slice(0, 50).map((v, i) => (
-                            <div key={i} className="border-b border-[var(--border)] last:border-0">
+                            <div key={i} className="border-b border-[var(--border)] last:border-0 cursor-pointer hover:bg-[rgba(255,255,255,0.02)]"
+                              onClick={() => setDcModal({ ...v, instance: inst.label, instanceId: inst.id })}>
                               <div className="grid gap-x-1 text-[10px] font-mono py-0.5 items-center" style={{ gridTemplateColumns: gridCols }}>
                                 <span className="text-[var(--text-dim)]">{v.time}</span>
                                 <span className={v.direction === "prompt" ? "text-[var(--accent)]" : "text-[var(--green)]"}>
@@ -804,7 +943,7 @@ export default function ObservabilityView() {
                                 <span className="text-[var(--text)] truncate">{v.model}</span>
                                 <span className="text-[var(--text-dim)] truncate">{v.source || "—"}</span>
                                 <span className="text-[var(--text-dim)] truncate">{v.preview || "—"}</span>
-                                <span style={{ color: severityColor(v.severity) }} className="text-right">{severityLabel(v.severity)}</span>
+                                <span style={{ color: severityColor(v.severity) }} className="text-right">{severityLabel(v.severity)}{v.judgeFindings ? " *" : ""}</span>
                                 <span className="text-[var(--text-dim)] text-right">{v.tokens || "—"}</span>
                                 <span className="text-[var(--text-dim)] text-right">{v.latency || "—"}</span>
                               </div>
@@ -820,6 +959,411 @@ export default function ObservabilityView() {
           </div>
         </Card>
       )}
+
+      {/* Network Firewall (egress policy) */}
+      <Card>
+        <CardHeader title="Network Firewall" right={
+          firewallStatus?.configured ? (
+            <div className="flex items-center gap-2">
+              {firewallStatus.enforced ? (
+                <span className="text-[10px] px-2 py-0.5 rounded border border-[var(--green)] text-[var(--green)] bg-[rgba(63,185,80,0.08)]">enforced</span>
+              ) : (
+                <span className="text-[10px] px-2 py-0.5 rounded border border-[var(--yellow)] text-[var(--yellow)] bg-[rgba(210,153,34,0.08)]">configured (not enforced)</span>
+              )}
+              <span className="text-[10px] text-[var(--text-dim)]">{firewallStatus.ruleCount} rules</span>
+            </div>
+          ) : (
+            <span className="text-[10px] px-2 py-0.5 rounded border border-[var(--border)] text-[var(--text-dim)]">not configured</span>
+          )
+        } />
+        <div className="px-4 py-3">
+          {!firewallStatus?.configured ? (
+            <div className="text-xs text-[var(--text-dim)] py-2">
+              No firewall config found at <span className="font-mono text-[var(--text)]">~/.defenseclaw/firewall.yaml</span>.
+              <br />Use <span className="font-mono text-[var(--accent)]">defenseclaw firewall init --observe</span> to auto-generate one.
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {/* Status summary */}
+              <div className="grid grid-cols-4 gap-3 text-[10px]">
+                <div>
+                  <div className="text-[var(--text-dim)] uppercase tracking-wider">Default Action</div>
+                  <div className={`text-sm font-mono font-medium ${firewallStatus.defaultAction === "deny" ? "text-[var(--green)]" : "text-[var(--yellow)]"}`}>
+                    {firewallStatus.defaultAction === "deny" ? "deny-by-default" : "allow-all"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[var(--text-dim)] uppercase tracking-wider">Allowed Domains</div>
+                  <div className="text-sm font-mono text-[var(--text-bright)]">{firewallStatus.allowedDomains.length}</div>
+                </div>
+                <div>
+                  <div className="text-[var(--text-dim)] uppercase tracking-wider">Allowed Ports</div>
+                  <div className="text-sm font-mono text-[var(--text-bright)]">{firewallStatus.allowedPorts.join(", ") || "any"}</div>
+                </div>
+                <div>
+                  <div className="text-[var(--text-dim)] uppercase tracking-wider">Logging</div>
+                  <div className={`text-sm font-mono ${firewallStatus.loggingEnabled ? "text-[var(--green)]" : "text-[var(--text-dim)]"}`}>
+                    {firewallStatus.loggingEnabled ? "enabled" : "disabled"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Deny rules */}
+              {firewallStatus.denyRules.length > 0 && (
+                <div>
+                  <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider pb-1">Explicit Deny Rules</div>
+                  <div className="space-y-0.5">
+                    {firewallStatus.denyRules.map((r) => (
+                      <div key={r.name} className="flex items-center gap-2 text-[10px] font-mono">
+                        <span className="text-[var(--red)]">DENY</span>
+                        <span className="text-[var(--text)]">{r.destination || "all"}</span>
+                        <span className="text-[var(--text-dim)]">({r.name})</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Allowed domains */}
+              <div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider pb-1">Allowed Domains</div>
+                <div className="grid grid-cols-3 gap-x-4 gap-y-0.5">
+                  {firewallStatus.allowedDomains.map((d) => (
+                    <div key={d} className="flex items-center gap-1.5 text-[10px] font-mono">
+                      <div className="w-1.5 h-1.5 rounded-full bg-[var(--green)] shrink-0" />
+                      <span className="text-[var(--text)] truncate">{d}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Allowed IPs */}
+              {firewallStatus.allowedIPs.length > 0 && (
+                <div>
+                  <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider pb-1">Allowed IPs</div>
+                  <div className="flex flex-wrap gap-2">
+                    {firewallStatus.allowedIPs.map((ip) => (
+                      <span key={ip} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[rgba(139,148,158,0.1)] text-[var(--text)]">{ip}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Enforcement note */}
+              {!firewallStatus.enforced && (
+                <div className="mt-2 pt-2 border-t border-[var(--border)] text-[10px] text-[var(--text-dim)]">
+                  Enforcement requires: <span className="font-mono text-[var(--text)]">defenseclaw firewall generate</span> then <span className="font-mono text-[var(--text)]">sudo pfctl -a com.defenseclaw -f ~/.defenseclaw/firewall.pf.conf && sudo pfctl -e</span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* DefenseClaw Verdict Detail Modal */}
+      {dcModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setDcModal(null)}>
+          <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg shadow-2xl max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+              <div className="flex items-center gap-3">
+                <span className={`text-xs font-medium px-2 py-0.5 rounded ${
+                  dcModal.direction === "prompt" ? "bg-[rgba(88,166,255,0.12)] text-[var(--accent)]" : "bg-[rgba(63,185,80,0.12)] text-[var(--green)]"
+                }`}>{dcModal.direction}</span>
+                <span className="text-sm font-medium text-[var(--text-bright)]">{dcModal.model}</span>
+              </div>
+              <button onClick={() => setDcModal(null)} className="text-[var(--text-dim)] hover:text-[var(--text)] text-lg px-2">&times;</button>
+            </div>
+            <div className="px-5 py-4 overflow-y-auto max-h-[60vh] space-y-3">
+              <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-xs">
+                <div><span className="text-[var(--text-dim)]">Time</span><div className="font-mono text-[var(--text)]">{dcModal.time}</div></div>
+                <div><span className="text-[var(--text-dim)]">Instance</span><div className="font-mono text-[var(--text)]">{dcModal.instance || "—"}</div></div>
+                <div><span className="text-[var(--text-dim)]">Source Pipeline</span><div className="font-mono text-[var(--text)]">{dcModal.source || "—"}</div></div>
+                {dcModal.tokens && <div><span className="text-[var(--text-dim)]">Tokens (in/out)</span><div className="font-mono text-[var(--text)]">{dcModal.tokens}</div></div>}
+                {dcModal.messages && <div><span className="text-[var(--text-dim)]">Messages</span><div className="font-mono text-[var(--text)]">{dcModal.messages}</div></div>}
+                {dcModal.contentChars && <div><span className="text-[var(--text-dim)]">Content Size</span><div className="font-mono text-[var(--text)]">{dcModal.contentChars.toLocaleString()} chars</div></div>}
+                <div><span className="text-[var(--text-dim)]">Scan Latency</span><div className="font-mono text-[var(--text)]">{dcModal.latency || "—"}</div></div>
+              </div>
+
+              {/* Verdict detail */}
+              <div className="mt-1 pt-2 border-t border-[var(--border)]">
+                <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">Verdict</div>
+                <div className="flex items-center gap-3">
+                  <span className={`text-sm font-bold ${
+                    dcModal.severity === "NONE" ? "text-[#3fb950]" :
+                    dcModal.severity === "LOW" ? "text-[var(--yellow)]" :
+                    dcModal.severity === "MEDIUM" ? "text-[#d29922]" :
+                    "text-[#f85149]"
+                  }`}>{dcModal.severity === "NONE" ? "PASS" : dcModal.severity}</span>
+                  {dcModal.verdictAction && (
+                    <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-[rgba(139,148,158,0.1)] text-[var(--text-dim)]">action={dcModal.verdictAction}</span>
+                  )}
+                </div>
+                {dcModal.verdictMatch && (
+                  <div className="mt-1 text-xs font-mono text-[var(--yellow)]">
+                    {dcModal.verdictMatch}
+                  </div>
+                )}
+                {dcModal.severity !== "NONE" && dcModal.instanceId && (
+                  <button
+                    disabled={enforceBusy}
+                    onClick={async () => {
+                      const matchPattern = dcModal.verdictMatch?.replace(/^matched:\s*/, "") || dcModal.model;
+                      await addEnforceRule(
+                        dcModal.instanceId!,
+                        "allow",
+                        "scanner-rule",
+                        matchPattern,
+                        `Suppressed from verdict modal: ${dcModal.severity} on ${dcModal.model}`,
+                      );
+                      setDcModal(null);
+                    }}
+                    className="mt-2 text-[10px] px-3 py-1 rounded border border-[var(--green)] text-[var(--green)] bg-[rgba(63,185,80,0.06)] hover:bg-[rgba(63,185,80,0.12)] disabled:opacity-40"
+                  >
+                    {enforceBusy ? "Suppressing..." : "Suppress (add to allow list)"}
+                  </button>
+                )}
+                {dcModal.judgeFindings && dcModal.judgeFindings.length > 0 && (
+                  <div className="mt-2 space-y-1.5">
+                    <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">LLM Judge Analysis</div>
+                    {dcModal.judgeFindings.map((f, i) => (
+                      <div key={i} className="text-xs text-[var(--text)] bg-[rgba(210,153,34,0.06)] border border-[rgba(210,153,34,0.2)] rounded p-2 leading-relaxed">
+                        {f}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Content */}
+              {(dcModal.fullContent || dcModal.preview) && (
+                <div className="mt-1 pt-2 border-t border-[var(--border)]">
+                  <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">Content</div>
+                  <pre className="text-xs font-mono text-[var(--text)] bg-[var(--bg)] rounded p-3 whitespace-pre-wrap break-words max-h-[300px] overflow-y-auto border border-[var(--border)]">{dcModal.fullContent || dcModal.preview}</pre>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Row 3c: Audit Trail */}
+      {(auditEvents.length > 0 || auditActions.length > 0 || auditScans.length > 0) && (
+        <Card>
+          <CardHeader title="Audit Trail" right={
+            <span className="text-[10px] text-[var(--text-dim)]">
+              {auditEvents.length} events, {auditActions.length} actions, {auditScans.length} scans
+            </span>
+          } />
+          <div className="px-4 py-3 space-y-4">
+            {/* Audit Events Table */}
+            {auditEvents.length > 0 && (
+              <div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">Events</div>
+                <div className="border border-[var(--border)] rounded overflow-hidden">
+                  <div className="grid gap-x-2 text-[9px] text-[var(--text-dim)] uppercase tracking-wider px-3 py-1 border-b border-[var(--border)] font-mono bg-[var(--surface)]" style={{ gridTemplateColumns: "130px 100px 140px 64px 1fr" }}>
+                    <span>Timestamp</span>
+                    <span>Action</span>
+                    <span>Target</span>
+                    <span>Severity</span>
+                    <span>Details</span>
+                  </div>
+                  <div className="max-h-[200px] overflow-y-auto">
+                    {auditEvents.map((ev) => {
+                      const sevColor =
+                        ev.severity === "CRITICAL" ? "#f85149" :
+                        ev.severity === "HIGH" ? "#f85149" :
+                        ev.severity === "ERROR" ? "#f85149" :
+                        ev.severity === "MEDIUM" ? "#d29922" :
+                        ev.severity === "LOW" ? "var(--yellow)" :
+                        "#3fb950";
+                      return (
+                        <div key={ev.id} className="grid gap-x-2 text-[10px] font-mono px-3 py-1 border-b border-[var(--border)] last:border-0 items-center" style={{ gridTemplateColumns: "130px 100px 140px 64px 1fr" }}>
+                          <span className="text-[var(--text-dim)]">{ev.timestamp}</span>
+                          <span className="text-[var(--text)]">{ev.action}</span>
+                          <span className="text-[var(--text)] truncate" title={ev.target}>{ev.target || "\u2014"}</span>
+                          <span style={{ color: sevColor }} className="font-medium">{ev.severity}</span>
+                          <span className="text-[var(--text-dim)] truncate" title={ev.details}>{ev.details || "\u2014"}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Enforcement Actions Table */}
+            {auditActions.length > 0 && (
+              <div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">Enforcement Actions</div>
+                <div className="border border-[var(--border)] rounded overflow-hidden">
+                  <div className="grid gap-x-2 text-[9px] text-[var(--text-dim)] uppercase tracking-wider px-3 py-1 border-b border-[var(--border)] font-mono bg-[var(--surface)]" style={{ gridTemplateColumns: "80px 120px 80px 1fr 100px" }}>
+                    <span>Type</span>
+                    <span>Target</span>
+                    <span>State</span>
+                    <span>Reason</span>
+                    <span>Updated</span>
+                  </div>
+                  <div className="max-h-[150px] overflow-y-auto">
+                    {auditActions.map((act) => {
+                      const stateParts: string[] = [];
+                      if (act.actions.install === "block") stateParts.push("blocked");
+                      if (act.actions.install === "allow") stateParts.push("allowed");
+                      if (act.actions.file === "quarantine") stateParts.push("quarantined");
+                      if (act.actions.runtime === "disable") stateParts.push("disabled");
+                      const stateStr = stateParts.length > 0 ? stateParts.join(", ") : "\u2014";
+                      const stateColor = stateParts.includes("blocked") || stateParts.includes("quarantined") ? "#f85149" :
+                        stateParts.includes("allowed") ? "#3fb950" : "var(--text-dim)";
+                      return (
+                        <div key={act.id} className="grid gap-x-2 text-[10px] font-mono px-3 py-1 border-b border-[var(--border)] last:border-0 items-center" style={{ gridTemplateColumns: "80px 120px 80px 1fr 100px" }}>
+                          <span className="text-[var(--text-dim)]">{act.targetType}</span>
+                          <span className="text-[var(--text)] truncate" title={act.targetName}>{act.targetName}</span>
+                          <span style={{ color: stateColor }} className="font-medium">{stateStr}</span>
+                          <span className="text-[var(--text-dim)] truncate" title={act.reason}>{act.reason || "\u2014"}</span>
+                          <span className="text-[var(--text-dim)]">{act.updatedAt}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Scan Results Table */}
+            {auditScans.length > 0 && (
+              <div>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">Scan Results</div>
+                <div className="border border-[var(--border)] rounded overflow-hidden">
+                  <div className="grid gap-x-2 text-[9px] text-[var(--text-dim)] uppercase tracking-wider px-3 py-1 border-b border-[var(--border)] font-mono bg-[var(--surface)]" style={{ gridTemplateColumns: "130px 80px 1fr 60px 72px" }}>
+                    <span>Timestamp</span>
+                    <span>Scanner</span>
+                    <span>Target</span>
+                    <span>Findings</span>
+                    <span>Severity</span>
+                  </div>
+                  <div className="max-h-[150px] overflow-y-auto">
+                    {auditScans.map((scan) => {
+                      const sevColor =
+                        scan.maxSeverity === "CRITICAL" || scan.maxSeverity === "HIGH" ? "#f85149" :
+                        scan.maxSeverity === "MEDIUM" ? "#d29922" :
+                        scan.maxSeverity === "LOW" ? "var(--yellow)" : "#3fb950";
+                      return (
+                        <div key={scan.id} className="grid gap-x-2 text-[10px] font-mono px-3 py-1 border-b border-[var(--border)] last:border-0 items-center" style={{ gridTemplateColumns: "130px 80px 1fr 60px 72px" }}>
+                          <span className="text-[var(--text-dim)]">{scan.timestamp}</span>
+                          <span className="text-[var(--text)]">{scan.scanner}</span>
+                          <span className="text-[var(--text)] truncate" title={scan.target}>{scan.target}</span>
+                          <span className="text-[var(--text)]">{scan.findingCount}</span>
+                          <span style={{ color: sevColor }} className="font-medium">{scan.maxSeverity}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </Card>
+      )}
+
+      {/* Row 3d: DefenseClaw Enforce Rules */}
+      <Card>
+        <CardHeader title="DefenseClaw Rules" right={
+          <button
+            onClick={() => setEnforceForm(enforceForm ? null : {
+              instance: "defenseclaw-ollama",
+              action: "allow",
+              target_type: "scanner-rule",
+              target_name: "",
+              reason: "",
+            })}
+            className="text-[10px] px-2 py-0.5 rounded border border-[var(--accent)] text-[var(--accent)] hover:bg-[rgba(88,166,255,0.08)]"
+          >
+            {enforceForm ? "Cancel" : "+ Add Rule"}
+          </button>
+        } />
+        <div className="px-4 py-3 space-y-3">
+          {/* Add rule form */}
+          {enforceForm && (
+            <div className="p-3 rounded border border-[var(--border)] bg-[var(--bg)] space-y-2">
+              <div className="grid grid-cols-5 gap-2">
+                <select value={enforceForm.instance} onChange={(e) => setEnforceForm({ ...enforceForm, instance: e.target.value })}
+                  className="text-[10px] px-2 py-1 rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)]">
+                  <option value="defenseclaw-ollama">DC Ollama</option>
+                  <option value="defenseclaw-anthropic">DC Anthropic</option>
+                </select>
+                <select value={enforceForm.action} onChange={(e) => setEnforceForm({ ...enforceForm, action: e.target.value as "allow" | "block" })}
+                  className="text-[10px] px-2 py-1 rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)]">
+                  <option value="allow">Allow</option>
+                  <option value="block">Block</option>
+                </select>
+                <input value={enforceForm.target_type} onChange={(e) => setEnforceForm({ ...enforceForm, target_type: e.target.value })}
+                  placeholder="Type (e.g. scanner-rule)"
+                  className="text-[10px] px-2 py-1 rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] placeholder:text-[var(--text-dim)]" />
+                <input value={enforceForm.target_name} onChange={(e) => setEnforceForm({ ...enforceForm, target_name: e.target.value })}
+                  placeholder="Pattern (e.g. bearer)"
+                  className="text-[10px] px-2 py-1 rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] placeholder:text-[var(--text-dim)]" />
+                <input value={enforceForm.reason} onChange={(e) => setEnforceForm({ ...enforceForm, reason: e.target.value })}
+                  placeholder="Reason"
+                  className="text-[10px] px-2 py-1 rounded border border-[var(--border)] bg-[var(--surface)] text-[var(--text)] placeholder:text-[var(--text-dim)]" />
+              </div>
+              <button
+                disabled={enforceBusy || !enforceForm.target_name}
+                onClick={async () => {
+                  await addEnforceRule(enforceForm.instance, enforceForm.action, enforceForm.target_type, enforceForm.target_name, enforceForm.reason);
+                  setEnforceForm(null);
+                }}
+                className="text-[10px] px-3 py-1 rounded bg-[var(--accent)] text-white hover:opacity-90 disabled:opacity-40"
+              >
+                {enforceBusy ? "Adding..." : "Add Rule"}
+              </button>
+            </div>
+          )}
+
+          {/* Rules per instance */}
+          {enforceData.length === 0 && !enforceForm && (
+            <div className="text-[10px] text-[var(--text-dim)] py-2">No enforce rules loaded. DC audit store may not be initialized.</div>
+          )}
+          {enforceData.map((inst) => {
+            const allRules = [
+              ...inst.allowed.map((r) => ({ ...r, action: "allow" as const })),
+              ...inst.blocked.map((r) => ({ ...r, action: "block" as const })),
+            ];
+            if (allRules.length === 0 && !inst.error) return null;
+            return (
+              <div key={inst.instance}>
+                <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">
+                  {inst.label}
+                  {inst.error && <span className="ml-2 text-[var(--red)]">({inst.error.slice(0, 60)})</span>}
+                </div>
+                {allRules.length > 0 && (
+                  <div className="border border-[var(--border)] rounded overflow-hidden">
+                    <div className="grid grid-cols-[60px_80px_1fr_1fr_30px] gap-x-2 px-2 py-1 text-[9px] text-[var(--text-dim)] uppercase tracking-wider border-b border-[var(--border)] font-mono bg-[var(--bg)]">
+                      <span>Action</span><span>Type</span><span>Pattern</span><span>Reason</span><span></span>
+                    </div>
+                    {allRules.map((rule) => (
+                      <div key={`${rule.action}-${rule.target_type}-${rule.target_name}`}
+                        className="grid grid-cols-[60px_80px_1fr_1fr_30px] gap-x-2 px-2 py-1 text-[10px] font-mono border-b border-[var(--border)] last:border-0 items-center">
+                        <span className={rule.action === "allow" ? "text-[var(--green)]" : "text-[var(--red)]"}>
+                          {rule.action}
+                        </span>
+                        <span className="text-[var(--text-dim)] truncate">{rule.target_type}</span>
+                        <span className="text-[var(--text)] truncate">{rule.target_name}</span>
+                        <span className="text-[var(--text-dim)] truncate">{rule.reason || "---"}</span>
+                        <button
+                          disabled={enforceBusy}
+                          onClick={() => removeEnforceRule(inst.instance, rule.action, rule.target_type, rule.target_name)}
+                          className="text-[var(--red)] hover:text-[var(--text)] text-center disabled:opacity-40"
+                          title="Remove rule"
+                        >&times;</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
 
       {/* Row 4: Triage + Notion Sync + AI Models */}
       <div className="grid grid-cols-3 gap-4">

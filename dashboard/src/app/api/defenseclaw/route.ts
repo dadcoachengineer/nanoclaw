@@ -14,15 +14,28 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+// Convert HH:MM:SS from UTC to America/Chicago (Central Time), 24h format
+function utcToCentral(hhmmss: string): string {
+  const [h, m, s] = hhmmss.split(":").map(Number);
+  const now = new Date();
+  const utc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), h, m, s));
+  return utc.toLocaleTimeString("en-GB", { timeZone: "America/Chicago", hour12: false });
+}
+
 interface Verdict {
   time: string;
   direction: string;
   model: string;
   severity: string;
+  verdictAction?: string;
+  verdictMatch?: string;
+  judgeFindings?: string[];
   tokens?: string;
   latency?: string;
   messages?: number;
+  contentChars?: number;
   preview?: string;
+  fullContent?: string;
   source?: string;
 }
 
@@ -58,7 +71,8 @@ async function parseRecentVerdicts(logFile: string, limit = 100): Promise<Verdic
     const verdictRe = /verdict:\s+(\S+)(?:\s+action=(\S+))?\s*(.*)/;
     const msgCountRe = /messages=(\d+)/;
     const responseRe = /response\s+\((\d+)\s+chars?\):\s*(.*)/;
-    const userContentRe = /\[\d+\]\s+user\s+\(\d+\s+chars?\):\s*(.*)/;
+    // Content lines: [0] user (12087 chars): <content...>
+    const contentHeaderRe = /\[(\d+)\]\s+(user|system|assistant)\s+\((\d+)\s+chars?\):\s*(.*)/;
 
     for (let i = 0; i < lines.length; i++) {
       const m = callRe.exec(lines[i]);
@@ -69,42 +83,93 @@ async function parseRecentVerdicts(logFile: string, limit = 100): Promise<Verdic
       const latencyMatch = /(\d+m?s)$/.exec(rest.trim());
       const msgMatch = msgCountRe.exec(rest);
 
-      // Scan next lines for verdict, content preview
+      // Scan next lines for verdict, content, and context
       let severity = "NONE";
-      let action: string | undefined;
-      let reason: string | undefined;
+      let verdictAction: string | undefined;
+      let verdictMatch: string | undefined;
+      const judgeFindings: string[] = [];
       let preview: string | undefined;
+      let contentChars = 0;
+      const contentLines: string[] = [];
 
-      for (let j = i + 1; j < Math.min(i + 8, lines.length); j++) {
+      for (let j = i + 1; j < Math.min(i + 15, lines.length); j++) {
         const line = lines[j].trim();
+
+        // Verdict line: verdict: MEDIUM  action=alert  matched: bearer
         const vm = verdictRe.exec(line);
         if (vm) {
           severity = vm[1];
-          action = vm[2];
-          reason = vm[3] || undefined;
+          verdictAction = vm[2];
+          const detail = vm[3]?.trim() || "";
+          // Parse judge findings: "matched: bearer; judge-injection: Context Manipulation: ..."
+          const parts = detail.split(/;\s*/);
+          for (const part of parts) {
+            if (part.startsWith("judge-")) {
+              judgeFindings.push(part.replace(/^judge-\w+:\s*/, ""));
+            } else if (part.startsWith("matched:")) {
+              verdictMatch = part;
+            } else if (part && !verdictMatch) {
+              verdictMatch = part;
+            }
+          }
           break;
         }
-        // Capture user content from PRE-CALL or response from POST-CALL
-        if (direction === "PRE-CALL" && !preview) {
-          const um = userContentRe.exec(line);
-          if (um) preview = um[1].substring(0, 80);
+
+        // Content header: [0] user (12087 chars): <system-reminder>
+        const ch = contentHeaderRe.exec(line);
+        if (ch) {
+          const [, idx, role, chars, text] = ch;
+          contentChars += parseInt(chars);
+          const prefix = `[${role}] `;
+          contentLines.push(prefix + text);
+          if (!preview || preview.startsWith("<")) {
+            preview = text.startsWith("<") ? `[${role}] ${text.substring(0, 80)}` : text.substring(0, 80);
+          }
+          // Capture continuation lines (indented content after the header)
+          for (let k = j + 1; k < Math.min(j + 6, lines.length); k++) {
+            const cont = lines[k];
+            // Continuation lines are indented (start with spaces) and not a new section
+            if (cont.startsWith("  ") && !cont.trim().startsWith("[") && !cont.trim().startsWith("verdict")) {
+              contentLines.push(cont.trim());
+            } else {
+              break;
+            }
+          }
+          continue;
         }
-        if (direction === "POST-CALL" && !preview) {
+
+        // Response line: response (261 chars): {"task": ...}
+        if (direction === "POST-CALL") {
           const rm = responseRe.exec(line);
-          if (rm) preview = rm[2].substring(0, 80);
+          if (rm) {
+            contentChars = parseInt(rm[1]);
+            contentLines.push(rm[2]);
+            if (!preview) preview = rm[2].substring(0, 80);
+            // Capture continuation
+            for (let k = j + 1; k < Math.min(j + 4, lines.length); k++) {
+              if (lines[k].startsWith("  ") && !lines[k].trim().startsWith("verdict")) {
+                contentLines.push(lines[k].trim());
+              } else break;
+            }
+          }
         }
       }
 
       const source = direction === "PRE-CALL" ? inferSource(lines, i) : undefined;
       entries.push({
-        time,
+        time: utcToCentral(time),
         direction: direction === "PRE-CALL" ? "prompt" : "completion",
         model,
         severity,
+        verdictAction,
+        verdictMatch,
+        judgeFindings: judgeFindings.length > 0 ? judgeFindings : undefined,
         tokens: tokenMatch ? `${tokenMatch[1]}/${tokenMatch[2]}` : undefined,
         latency: latencyMatch ? latencyMatch[1] : undefined,
         messages: msgMatch ? parseInt(msgMatch[1]) : undefined,
-        preview: preview || (action === "block" ? `BLOCKED: ${reason}` : undefined),
+        contentChars: contentChars || undefined,
+        preview: preview || (verdictAction === "block" ? `BLOCKED: ${verdictMatch}` : undefined),
+        fullContent: contentLines.length > 0 ? contentLines.join("\n") : undefined,
         source,
       });
     }
