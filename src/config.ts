@@ -37,6 +37,13 @@ export const SENDER_ALLOWLIST_PATH = path.join(
   'nanoclaw',
   'sender-allowlist.json',
 );
+// Tool registry: configurable tool allowlist, stored alongside other security config
+export const TOOL_REGISTRY_PATH = path.join(
+  HOME_DIR,
+  '.config',
+  'nanoclaw',
+  'tool-registry.json',
+);
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');

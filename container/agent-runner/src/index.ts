@@ -24,6 +24,8 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
+import { loadRegistry, computeAllowedTools } from './tool-registry.js';
+
 interface ContainerInput {
   prompt: string;
   sessionId?: string;
@@ -449,27 +451,11 @@ async function runQuery(
             append: globalClaudeMd,
           }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read',
-        'Write',
-        'Edit',
-        'Glob',
-        'Grep',
-        'WebSearch',
-        'WebFetch',
-        'Task',
-        'TaskOutput',
-        'TaskStop',
-        'TeamCreate',
-        'TeamDelete',
-        'SendMessage',
-        'TodoWrite',
-        'ToolSearch',
-        'Skill',
-        'NotebookEdit',
-        'mcp__nanoclaw__*',
-      ],
+      allowedTools: computeAllowedTools(
+        loadRegistry(containerInput.isMain, containerInput.groupFolder),
+        containerInput.isMain,
+        containerInput.groupFolder,
+      ),
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,

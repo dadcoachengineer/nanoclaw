@@ -15,6 +15,7 @@ import {
   IDLE_TIMEOUT,
   ONECLI_URL,
   TIMEZONE,
+  TOOL_REGISTRY_PATH,
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -241,6 +242,22 @@ async function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Tool registry config — inject as env var if the config file exists.
+  // The agent-runner reads NANOCLAW_TOOL_REGISTRY to build its allowedTools array.
+  // When absent, the agent-runner falls back to hardcoded defaults (backwards compatible).
+  if (fs.existsSync(TOOL_REGISTRY_PATH)) {
+    try {
+      const registryJson = fs.readFileSync(TOOL_REGISTRY_PATH, 'utf-8');
+      JSON.parse(registryJson); // validate JSON before injecting
+      args.push('-e', `NANOCLAW_TOOL_REGISTRY=${registryJson}`);
+    } catch (err) {
+      logger.warn(
+        { path: TOOL_REGISTRY_PATH, error: err },
+        'Failed to read tool registry config, skipping injection',
+      );
+    }
+  }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.
