@@ -626,6 +626,43 @@ export default function ObservabilityView() {
   type FirewallStatus = { configured: boolean; enforced: boolean; configPath: string; defaultAction: string; ruleCount: number; allowedDomains: string[]; allowedIPs: string[]; allowedPorts: number[]; denyRules: { name: string; destination?: string; action: string }[]; loggingEnabled: boolean; error?: string };
   const [firewallStatus, setFirewallStatus] = useState<FirewallStatus | null>(null);
 
+  // Tool inspection state
+  type ToolInspectEvent = { id: string; timestamp: string; action: string; tool: string; severity: string; details: string; instance: string };
+  type ToolInspectSummary = { total: number; blocks: number; alerts: number; allows: number };
+  const [toolInspectEvents, setToolInspectEvents] = useState<ToolInspectEvent[]>([]);
+  const [toolInspectSummary, setToolInspectSummary] = useState<ToolInspectSummary>({ total: 0, blocks: 0, alerts: 0, allows: 0 });
+  type ToolInspectModal = ToolInspectEvent | null;
+  const [toolInspectModal, setToolInspectModal] = useState<ToolInspectModal>(null);
+
+  // Scanner telemetry state
+  type ScanFinding = { id: string; severity: string; title: string; description: string; location: string; remediation: string; scanner: string };
+  type ScanResultData = { scanner: string; target: string; timestamp: string; findings: ScanFinding[]; duration: number };
+  type SkillInfo = { name: string; path: string; status?: string; lastScan?: ScanResultData | null };
+  type MCPServer = { name: string; command?: string; args?: string[]; url?: string; transport?: string };
+  type ScannerInstance = { id: string; label: string; skills: SkillInfo[]; mcpServers: MCPServer[]; toolCatalog: { count: number; error?: string }; error?: string };
+  type ScannersData = { instances: ScannerInstance[]; containerSkills: { name: string; path: string }[]; notes: string[] };
+  const [scannersData, setScannersData] = useState<ScannersData | null>(null);
+  const [scanBusy, setScanBusy] = useState<string | null>(null);
+
+  function loadScannersData() {
+    fetch("/api/defenseclaw/scanners").then((r) => r.json()).then((d: ScannersData) => {
+      if (d.instances) setScannersData(d);
+    }).catch(() => {});
+  }
+
+  async function triggerScan(instanceId: string, type: "skill" | "mcp", target: string, name?: string) {
+    setScanBusy(`${instanceId}:${target}`);
+    try {
+      await fetch("/api/defenseclaw/scanners", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ instance: instanceId, type, target, name }),
+      });
+      loadScannersData();
+    } catch { /* poll will catch up */ }
+    setScanBusy(null);
+  }
+
   function loadEnforceRules() {
     fetch("/api/defenseclaw/enforce").then((r) => r.json()).then((d) => {
       if (d.instances) setEnforceData(d.instances);
@@ -663,6 +700,13 @@ export default function ObservabilityView() {
       if (d.events) setAuditEvents(d.events);
       if (d.actions) setAuditActions(d.actions);
       if (d.scans) setAuditScans(d.scans);
+    }).catch(() => {});
+  }
+
+  function loadToolInspections() {
+    fetch("/api/defenseclaw/tool-inspect?limit=50").then((r) => r.json()).then((d) => {
+      if (d.events) setToolInspectEvents(d.events);
+      if (d.summary) setToolInspectSummary(d.summary);
     }).catch(() => {});
   }
 
@@ -717,8 +761,10 @@ export default function ObservabilityView() {
     loadAuditData();
     loadFirewallStatus();
     loadPolicyStatus();
+    loadScannersData();
+    loadToolInspections();
     if (autoRefresh) {
-      intervalRef.current = setInterval(() => { load(true); loadDcInstances(); loadEnforceRules(); loadAuditData(); loadFirewallStatus(); }, 15000);
+      intervalRef.current = setInterval(() => { load(true); loadDcInstances(); loadEnforceRules(); loadAuditData(); loadFirewallStatus(); loadScannersData(); loadToolInspections(); }, 15000);
     }
     return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [autoRefresh]);
@@ -1149,7 +1195,135 @@ export default function ObservabilityView() {
         </div>
       )}
 
-      {/* Row 3c: Audit Trail */}
+      {/* Row 3c: Tool Inspections */}
+      {toolInspectEvents.length > 0 && (
+        <Card>
+          <CardHeader title="Tool Inspections" right={
+            <div className="flex items-center gap-3 text-[10px]">
+              <span className="text-[var(--text-dim)]">{toolInspectSummary.total} total</span>
+              {toolInspectSummary.blocks > 0 && (
+                <span className="text-[#f85149]">{toolInspectSummary.blocks} blocked</span>
+              )}
+              {toolInspectSummary.alerts > 0 && (
+                <span className="text-[var(--yellow)]">{toolInspectSummary.alerts} alerts</span>
+              )}
+              <span className="text-[#3fb950]">{toolInspectSummary.allows} passed</span>
+            </div>
+          } />
+          <div className="px-4 py-3">
+            <div className="border border-[var(--border)] rounded overflow-hidden">
+              <div className="grid gap-x-2 text-[9px] text-[var(--text-dim)] uppercase tracking-wider px-3 py-1 border-b border-[var(--border)] font-mono bg-[var(--surface)]" style={{ gridTemplateColumns: "130px 72px 110px 72px 1fr" }}>
+                <span>Timestamp</span>
+                <span>Action</span>
+                <span>Tool</span>
+                <span>Severity</span>
+                <span>Details</span>
+              </div>
+              <div className="max-h-[280px] overflow-y-auto">
+                {toolInspectEvents.map((ev) => {
+                  const actionColor =
+                    ev.action === "inspect-tool-block" ? "#f85149" :
+                    ev.action === "inspect-tool-alert" ? "#d29922" :
+                    "#3fb950";
+                  const actionLabel =
+                    ev.action === "inspect-tool-block" ? "BLOCK" :
+                    ev.action === "inspect-tool-alert" ? "ALERT" :
+                    "ALLOW";
+                  const sevColor =
+                    ev.severity === "CRITICAL" || ev.severity === "HIGH" ? "#f85149" :
+                    ev.severity === "MEDIUM" ? "#d29922" :
+                    ev.severity === "LOW" ? "var(--yellow)" :
+                    "#3fb950";
+                  // Extract reason from details string
+                  const reasonMatch = /reason=(.+?)(?:\s+elapsed=|\s*$)/.exec(ev.details);
+                  const reason = reasonMatch?.[1] || "";
+                  const elapsedMatch = /elapsed=(\S+)/.exec(ev.details);
+                  const elapsed = elapsedMatch?.[1] || "";
+                  return (
+                    <div key={ev.id} className="grid gap-x-2 text-[10px] font-mono px-3 py-1 border-b border-[var(--border)] last:border-0 items-center cursor-pointer hover:bg-[rgba(255,255,255,0.02)]"
+                      style={{ gridTemplateColumns: "130px 72px 110px 72px 1fr" }}
+                      onClick={() => setToolInspectModal(ev)}>
+                      <span className="text-[var(--text-dim)]">{ev.timestamp}</span>
+                      <span style={{ color: actionColor }} className="font-medium">{actionLabel}</span>
+                      <span className="text-[var(--text)] truncate" title={ev.tool}>{ev.tool}</span>
+                      <span style={{ color: sevColor }} className="font-medium">{ev.severity}</span>
+                      <span className="text-[var(--text-dim)] truncate" title={reason}>
+                        {reason}{elapsed ? ` (${elapsed})` : ""}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Tool Inspection Detail Modal */}
+      {toolInspectModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm" onClick={() => setToolInspectModal(null)}>
+          <div className="bg-[var(--card)] border border-[var(--border)] rounded-lg shadow-2xl max-w-xl w-full mx-4 max-h-[70vh] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+              <div className="flex items-center gap-3">
+                <span className={`text-xs font-medium px-2 py-0.5 rounded ${
+                  toolInspectModal.action === "inspect-tool-block" ? "bg-[rgba(248,81,73,0.12)] text-[#f85149]" :
+                  toolInspectModal.action === "inspect-tool-alert" ? "bg-[rgba(210,153,34,0.12)] text-[#d29922]" :
+                  "bg-[rgba(63,185,80,0.12)] text-[#3fb950]"
+                }`}>{toolInspectModal.action === "inspect-tool-block" ? "BLOCKED" : toolInspectModal.action === "inspect-tool-alert" ? "ALERT" : "ALLOWED"}</span>
+                <span className="text-sm font-medium text-[var(--text-bright)] font-mono">{toolInspectModal.tool}</span>
+              </div>
+              <button onClick={() => setToolInspectModal(null)} className="text-[var(--text-dim)] hover:text-[var(--text)] text-lg px-2">&times;</button>
+            </div>
+            <div className="px-5 py-4 overflow-y-auto max-h-[55vh] space-y-3">
+              {(() => {
+                const severityMatch = /severity=(\S+)/.exec(toolInspectModal.details);
+                const confidenceMatch = /confidence=(\S+)/.exec(toolInspectModal.details);
+                const reasonMatch = /reason=(.+?)(?:\s+elapsed=|\s*$)/.exec(toolInspectModal.details);
+                const elapsedMatch = /elapsed=(\S+)/.exec(toolInspectModal.details);
+                const modeMatch = /mode=(\S+)/.exec(toolInspectModal.details);
+                return (
+                  <>
+                    <div className="grid grid-cols-3 gap-x-6 gap-y-2 text-xs">
+                      <div><span className="text-[var(--text-dim)]">Timestamp</span><div className="font-mono text-[var(--text)]">{toolInspectModal.timestamp}</div></div>
+                      <div><span className="text-[var(--text-dim)]">Instance</span><div className="font-mono text-[var(--text)]">{toolInspectModal.instance}</div></div>
+                      <div><span className="text-[var(--text-dim)]">Mode</span><div className={`font-mono ${modeMatch?.[1] === "action" ? "text-[var(--green)]" : "text-[var(--yellow)]"}`}>{modeMatch?.[1] || "observe"}</div></div>
+                    </div>
+                    <div className="mt-1 pt-2 border-t border-[var(--border)]">
+                      <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">Verdict</div>
+                      <div className="flex items-center gap-3">
+                        <span className={`text-sm font-bold ${
+                          (severityMatch?.[1] || "NONE") === "NONE" ? "text-[#3fb950]" :
+                          (severityMatch?.[1] || "") === "LOW" ? "text-[var(--yellow)]" :
+                          (severityMatch?.[1] || "") === "MEDIUM" ? "text-[#d29922]" :
+                          "text-[#f85149]"
+                        }`}>{(severityMatch?.[1] || "NONE") === "NONE" ? "PASS" : severityMatch?.[1]}</span>
+                        {confidenceMatch && (
+                          <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-[rgba(139,148,158,0.1)] text-[var(--text-dim)]">confidence={confidenceMatch[1]}</span>
+                        )}
+                        {elapsedMatch && (
+                          <span className="text-xs font-mono px-1.5 py-0.5 rounded bg-[rgba(139,148,158,0.1)] text-[var(--text-dim)]">{elapsedMatch[1]}</span>
+                        )}
+                      </div>
+                      {reasonMatch?.[1] && (
+                        <div className="mt-1 text-xs font-mono text-[var(--yellow)]">
+                          {reasonMatch[1]}
+                        </div>
+                      )}
+                    </div>
+                    <div className="mt-1 pt-2 border-t border-[var(--border)]">
+                      <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">Raw Details</div>
+                      <pre className="text-xs font-mono text-[var(--text)] bg-[var(--bg)] rounded p-3 whitespace-pre-wrap break-words max-h-[200px] overflow-y-auto border border-[var(--border)]">{toolInspectModal.details}</pre>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Row 3d: Audit Trail */}
       {(auditEvents.length > 0 || auditActions.length > 0 || auditScans.length > 0) && (
         <Card>
           <CardHeader title="Audit Trail" right={
@@ -1364,6 +1538,147 @@ export default function ObservabilityView() {
               </div>
             );
           })}
+        </div>
+      </Card>
+
+      {/* Row 3e: Skill & MCP Security */}
+      <Card>
+        <CardHeader title="Skill & MCP Security" right={
+          <span className="text-[10px] text-[var(--text-dim)]">
+            {scannersData ? `${scannersData.instances.reduce((s, i) => s + i.skills.length, 0)} skills, ${scannersData.instances.reduce((s, i) => s + i.mcpServers.length, 0)} MCPs` : "loading..."}
+          </span>
+        } />
+        <div className="px-4 py-3 space-y-4">
+          {!scannersData ? (
+            <div className="text-xs text-[var(--text-dim)] italic">Loading scanner data...</div>
+          ) : (
+            <>
+              {/* Per-instance sections */}
+              {scannersData.instances.map((inst) => (
+                <div key={inst.id} className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${inst.error ? "bg-[var(--yellow)]" : "bg-[var(--green)]"}`} />
+                    <span className="text-xs font-semibold text-[var(--text-bright)]">{inst.label}</span>
+                    {inst.error && <span className="text-[10px] text-[var(--yellow)] font-mono">{inst.error}</span>}
+                  </div>
+
+                  {/* Skills table */}
+                  {inst.skills.length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">Discovered Skills</div>
+                      <div className="border border-[var(--border)] rounded overflow-hidden">
+                        <div className="grid gap-x-2 text-[9px] text-[var(--text-dim)] uppercase tracking-wider px-3 py-1 border-b border-[var(--border)] font-mono bg-[var(--surface)]" style={{ gridTemplateColumns: "120px 1fr 80px 80px 80px" }}>
+                          <span>Name</span>
+                          <span>Path</span>
+                          <span>Status</span>
+                          <span>Severity</span>
+                          <span>Action</span>
+                        </div>
+                        <div className="max-h-[200px] overflow-y-auto">
+                          {inst.skills.map((skill) => {
+                            const scanMax = skill.lastScan?.findings?.length
+                              ? (() => { const rank: Record<string, number> = { CRITICAL: 5, HIGH: 4, MEDIUM: 3, LOW: 2, INFO: 1 }; let m = "INFO"; for (const f of skill.lastScan!.findings) { if ((rank[f.severity] || 0) > (rank[m] || 0)) m = f.severity; } return m; })()
+                              : skill.lastScan ? "CLEAN" : null;
+                            const sevColor = scanMax === "CRITICAL" || scanMax === "HIGH" ? "#f85149" : scanMax === "MEDIUM" ? "#d29922" : scanMax === "LOW" ? "#d2a822" : scanMax === "CLEAN" ? "#3fb950" : "var(--text-dim)";
+                            return (
+                              <div key={skill.name} className="grid gap-x-2 text-[10px] font-mono px-3 py-1 border-b border-[var(--border)] last:border-0 items-center" style={{ gridTemplateColumns: "120px 1fr 80px 80px 80px" }}>
+                                <span className="text-[var(--text-bright)] truncate">{skill.name}</span>
+                                <span className="text-[var(--text-dim)] truncate" title={skill.path}>{skill.path}</span>
+                                <span className="text-[var(--text)]">{skill.status || "discovered"}</span>
+                                <span style={{ color: sevColor }} className="font-medium">{scanMax || "---"}</span>
+                                <button
+                                  disabled={scanBusy === `${inst.id}:${skill.path}`}
+                                  onClick={() => triggerScan(inst.id, "skill", skill.path, skill.name)}
+                                  className="text-[var(--accent)] hover:underline text-left disabled:opacity-40"
+                                >{scanBusy === `${inst.id}:${skill.path}` ? "scanning..." : "scan"}</button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* MCP Servers table */}
+                  {inst.mcpServers.length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">MCP Servers</div>
+                      <div className="border border-[var(--border)] rounded overflow-hidden">
+                        <div className="grid gap-x-2 text-[9px] text-[var(--text-dim)] uppercase tracking-wider px-3 py-1 border-b border-[var(--border)] font-mono bg-[var(--surface)]" style={{ gridTemplateColumns: "120px 100px 1fr 80px" }}>
+                          <span>Name</span>
+                          <span>Transport</span>
+                          <span>Command / URL</span>
+                          <span>Action</span>
+                        </div>
+                        <div className="max-h-[200px] overflow-y-auto">
+                          {inst.mcpServers.map((mcp) => (
+                            <div key={mcp.name} className="grid gap-x-2 text-[10px] font-mono px-3 py-1 border-b border-[var(--border)] last:border-0 items-center" style={{ gridTemplateColumns: "120px 100px 1fr 80px" }}>
+                              <span className="text-[var(--text-bright)] truncate">{mcp.name}</span>
+                              <span className="text-[var(--text-dim)]">{mcp.transport || "stdio"}</span>
+                              <span className="text-[var(--text-dim)] truncate" title={mcp.url || `${mcp.command} ${(mcp.args || []).join(" ")}`}>
+                                {mcp.url || `${mcp.command || ""} ${(mcp.args || []).join(" ")}`.trim() || "---"}
+                              </span>
+                              <button
+                                disabled={scanBusy === `${inst.id}:${mcp.name}`}
+                                onClick={() => triggerScan(inst.id, "mcp", mcp.url || mcp.name, mcp.name)}
+                                className="text-[var(--accent)] hover:underline text-left disabled:opacity-40"
+                              >{scanBusy === `${inst.id}:${mcp.name}` ? "scanning..." : "scan"}</button>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tool catalog count */}
+                  <div className="flex items-center gap-4 text-[10px]">
+                    <span className="text-[var(--text-dim)]">Tool Catalog:</span>
+                    {inst.toolCatalog.error
+                      ? <span className="text-[var(--yellow)] font-mono">{inst.toolCatalog.error}</span>
+                      : <span className="text-[var(--text)] font-mono">{inst.toolCatalog.count} tools</span>
+                    }
+                  </div>
+                </div>
+              ))}
+
+              {/* Container skills (scannable on demand) */}
+              {scannersData.containerSkills.length > 0 && (
+                <div>
+                  <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider mb-1">Container Skills (Runtime)</div>
+                  <div className="border border-[var(--border)] rounded overflow-hidden">
+                    <div className="grid gap-x-2 text-[9px] text-[var(--text-dim)] uppercase tracking-wider px-3 py-1 border-b border-[var(--border)] font-mono bg-[var(--surface)]" style={{ gridTemplateColumns: "120px 1fr 80px" }}>
+                      <span>Name</span>
+                      <span>Path</span>
+                      <span>Action</span>
+                    </div>
+                    {scannersData.containerSkills.map((cs) => (
+                      <div key={cs.name} className="grid gap-x-2 text-[10px] font-mono px-3 py-1 border-b border-[var(--border)] last:border-0 items-center" style={{ gridTemplateColumns: "120px 1fr 80px" }}>
+                        <span className="text-[var(--text-bright)]">{cs.name}</span>
+                        <span className="text-[var(--text-dim)] truncate" title={cs.path}>{cs.path}</span>
+                        <button
+                          disabled={scanBusy === `defenseclaw-ollama:${cs.path}`}
+                          onClick={() => triggerScan("defenseclaw-ollama", "skill", cs.path, cs.name)}
+                          className="text-[var(--accent)] hover:underline text-left disabled:opacity-40"
+                        >{scanBusy === `defenseclaw-ollama:${cs.path}` ? "scanning..." : "scan"}</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Configuration notes */}
+              {scannersData.notes.length > 0 && (
+                <div className="space-y-1">
+                  <div className="text-[10px] text-[var(--text-dim)] uppercase tracking-wider">Configuration Notes</div>
+                  {scannersData.notes.map((note, i) => (
+                    <div key={i} className="text-[10px] text-[var(--yellow)] font-mono leading-relaxed">
+                      {note}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
       </Card>
 
