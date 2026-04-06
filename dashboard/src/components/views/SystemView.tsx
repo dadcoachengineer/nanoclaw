@@ -1387,7 +1387,7 @@ export default function SystemView() {
               </div>
             )}
 
-            {dedupData && (
+            {dedupData?.summary && (
               <>
                 {/* Summary bar */}
                 <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between bg-[var(--bg)]">

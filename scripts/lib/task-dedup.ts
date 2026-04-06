@@ -193,7 +193,7 @@ async function getRecentTasks(): Promise<CachedTask[]> {
   const rows = await query(
     `SELECT id, title, priority, project, notes, source, created_at
      FROM tasks WHERE status != 'Done'
-     ORDER BY created_at DESC LIMIT 200`
+     ORDER BY created_at DESC LIMIT 2000`
   );
   cachedTasks = rows.map((r: any) => ({
     id: r.id, title: r.title || "", priority: r.priority || "",

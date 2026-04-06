@@ -37,7 +37,7 @@ export async function GET() {
     // Load dismissed pairs from a simple PG table or keep in-memory for now
     const dismissed = new Set<string>();
 
-    const pairs: { a: any; b: any; score: number }[] = [];
+    const pairs: { taskA: any; taskB: any; score: number; action: string }[] = [];
     for (let i = 0; i < tasks.length; i++) {
       for (let j = i + 1; j < tasks.length; j++) {
         const key = dismissKey(tasks[i].id, tasks[j].id);
@@ -45,17 +45,31 @@ export async function GET() {
         let score = titleSimilarity(tasks[i].title, tasks[j].title);
         if (tasks[i].project === tasks[j].project && tasks[i].project) score += 0.1;
         if (score >= 0.4) {
+          // Classify: >=0.8 = skip (near-exact dupe), >=0.6 = merge candidate, else review
+          const action = score >= 0.8 ? "skip" : score >= 0.6 ? "merge" : "review";
+          const makeTask = (t: any) => ({
+            id: t.id, title: t.title, source: t.source || "",
+            priority: t.priority || "", project: t.project || "",
+            url: "", // PG tasks don't have Notion URLs
+          });
           pairs.push({
-            a: { id: tasks[i].id, title: tasks[i].title, source: tasks[i].source, priority: tasks[i].priority, project: tasks[i].project },
-            b: { id: tasks[j].id, title: tasks[j].title, source: tasks[j].source, priority: tasks[j].priority, project: tasks[j].project },
+            taskA: makeTask(tasks[i]),
+            taskB: makeTask(tasks[j]),
             score: Math.round(score * 100) / 100,
+            action,
           });
         }
       }
     }
     pairs.sort((a, b) => b.score - a.score);
 
-    return NextResponse.json({ pairs: pairs.slice(0, 50), total: pairs.length, scanned: tasks.length });
+    const summary = {
+      skip: pairs.filter((p) => p.action === "skip").length,
+      merge: pairs.filter((p) => p.action === "merge").length,
+      review: pairs.filter((p) => p.action === "review").length,
+    };
+
+    return NextResponse.json({ pairs: pairs.slice(0, 50), totalTasks: tasks.length, summary });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
@@ -71,24 +85,43 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json();
-    const { action, pairA, pairB } = body;
+    const { action, keepId, removeId, note } = body;
 
-    if (action === "merge" && pairA && pairB) {
-      // Keep pairA (higher priority), mark pairB as Done
-      const note = `[Dedup] Merged with: "${pairB.title}" on ${new Date().toLocaleDateString()}`;
+    if (action === "merge" && keepId && removeId) {
+      const mergeNote = note || `[Dedup] Merged on ${new Date().toLocaleDateString()}`;
+      // Append merge note to the kept task
       await sql(
-        `UPDATE tasks SET notes = COALESCE(notes, '') || E'\n' || $2, notion_sync_status = 'pending', updated_at = now() WHERE id = $1::uuid`,
-        [pairA.id, note]
+        `UPDATE tasks SET notes = COALESCE(notes, '') || E'\n' || $1, notion_sync_status = 'pending', updated_at = now() WHERE id = $2`,
+        [mergeNote, keepId]
       );
+      // Mark the duplicate as Done
       await sql(
-        `UPDATE tasks SET status = 'Done', notion_sync_status = 'pending', updated_at = now() WHERE id = $1::uuid`,
-        [pairB.id]
+        `UPDATE tasks SET status = 'Done', notion_sync_status = 'pending', updated_at = now() WHERE id = $1`,
+        [removeId]
       );
-      return NextResponse.json({ ok: true, merged: pairB.id });
+      return NextResponse.json({ ok: true, merged: removeId, kept: keepId });
     }
 
-    if (action === "dismiss" && pairA && pairB) {
-      // Just acknowledge — we don't persist dismissals for now
+    if (action === "merge-all-skips" && body.pairs?.length > 0) {
+      let merged = 0;
+      for (const pair of body.pairs) {
+        const mergeNote = pair.note || `[Dedup] Bulk merged on ${new Date().toLocaleDateString()}`;
+        try {
+          await sql(
+            `UPDATE tasks SET notes = COALESCE(notes, '') || E'\n' || $1, notion_sync_status = 'pending', updated_at = now() WHERE id = $2`,
+            [mergeNote, pair.keepId]
+          );
+          await sql(
+            `UPDATE tasks SET status = 'Done', notion_sync_status = 'pending', updated_at = now() WHERE id = $1`,
+            [pair.removeId]
+          );
+          merged++;
+        } catch { /* skip individual failures */ }
+      }
+      return NextResponse.json({ ok: true, merged });
+    }
+
+    if (action === "dismiss") {
       return NextResponse.json({ ok: true });
     }
 
