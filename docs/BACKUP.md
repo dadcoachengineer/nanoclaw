@@ -8,11 +8,11 @@ NanoClaw runs across two machines with a mix of databases, credential stores, co
 
 **RPO/RTO targets** (appropriate for a personal project):
 
-| Metric | Target | Rationale |
-|--------|--------|-----------|
-| RPO (Recovery Point Objective) | 24 hours | Daily backups at 02:00; losing one day of data is acceptable |
-| RTO (Recovery Time Objective) | 2 hours | Rebuild from backup + git clone + npm install + restore |
-| Backup retention | 14 daily, 4 weekly, 3 monthly | ~3 months of history |
+| Metric                         | Target                        | Rationale                                                    |
+| ------------------------------ | ----------------------------- | ------------------------------------------------------------ |
+| RPO (Recovery Point Objective) | 24 hours                      | Daily backups at 02:00; losing one day of data is acceptable |
+| RTO (Recovery Time Objective)  | 2 hours                       | Rebuild from backup + git clone + npm install + restore      |
+| Backup retention               | 14 daily, 4 weekly, 3 monthly | ~3 months of history                                         |
 
 ---
 
@@ -20,66 +20,66 @@ NanoClaw runs across two machines with a mix of databases, credential stores, co
 
 ### Mac Mini (dashboard.shearer.live) -- Primary Server
 
-| Component | Location | Size | Criticality | In Git? |
-|-----------|----------|------|-------------|---------|
-| **PostgreSQL (nanoclaw)** | localhost:5432 | ~59 MB | CRITICAL | No |
-| **SQLite messages.db** | `store/messages.db` | ~528 KB | HIGH | No (gitignored) |
-| **SQLite vectors.db** | `store/vectors.db` | ~52 KB | LOW (rebuildable) | No |
-| **WhatsApp auth state** | `store/auth/` (165 files) | ~700 KB | CRITICAL | No |
-| **WhatsApp connection state** | `store/auth.json` | ~330 B | HIGH | No |
-| **Group memory** | `groups/*/CLAUDE.md` | ~1.4 MB | CRITICAL | Partially (global/) |
-| **Group working files** | `groups/whatsapp_main/*` | ~1 MB | MEDIUM | No |
-| **Pipeline state files** | `store/*.json` | ~400 KB | MEDIUM | No |
-| **User profile** | `store/profile.md` | ~12 KB | HIGH | No |
-| **Session data** | `data/sessions/` | ~52 MB | LOW (rebuildable) | No |
-| **IPC state** | `data/ipc/` | ~40 KB | LOW (ephemeral) | No |
-| **.env** | `.env` | ~200 B | HIGH | No (gitignored) |
-| **Nginx config** | `/opt/homebrew/etc/nginx/servers/nanoclaw.conf` | ~2 KB | HIGH | No |
-| **TLS certs (Let's Encrypt)** | `~/.certbot/` | ~72 KB | HIGH (auto-renewable) | No |
-| **NanoClaw certs (OneCLI CA)** | `certs/` | ~10 KB | HIGH | No (gitignored) |
-| **Certbot DNS hooks** | `scripts/certbot/` | ~2 KB | MEDIUM | Yes |
-| **DefenseClaw config** | `~/.defenseclaw/config.yaml` | ~500 B | HIGH | No |
-| **DefenseClaw firewall** | `~/.defenseclaw/firewall.yaml` | ~2 KB | HIGH | No |
-| **DefenseClaw device key** | `~/.defenseclaw/device.key` | ~1 KB | CRITICAL | No |
-| **DefenseClaw audit DB** | `~/.defenseclaw/audit.db` | ~3 MB | LOW | No |
-| **DefenseClaw policies** | `~/defenseclaw/policies/` | ~55 MB | MEDIUM | Yes (separate repo) |
-| **LaunchAgent plists** | `~/Library/LaunchAgents/com.nanoclaw*.plist` | ~30 KB | HIGH | No |
-| **Service plists** | `homebrew.mxcl.{nginx,postgresql@17}.plist` | ~5 KB | MEDIUM | No |
-| **OneCLI pgdata volume** | Docker `onecli_pgdata` | varies | CRITICAL | No |
-| **OneCLI app-data volume** | Docker `onecli_app-data` | varies | HIGH | No |
-| **Mount allowlist** | `~/.config/nanoclaw/mount-allowlist.json` | ~100 B | MEDIUM | No |
-| **Dashboard config** | `dashboard/next.config.ts` | ~1 KB | MEDIUM | Yes |
+| Component                      | Location                                        | Size    | Criticality           | In Git?                                 |
+| ------------------------------ | ----------------------------------------------- | ------- | --------------------- | --------------------------------------- |
+| **PostgreSQL (nanoclaw)**      | localhost:5432                                  | ~59 MB  | CRITICAL              | No                                      |
+| **SQLite messages.db**         | `store/messages.db`                             | ~528 KB | HIGH                  | No (gitignored)                         |
+| **SQLite vectors.db**          | `store/vectors.db`                              | ~52 KB  | LOW (rebuildable)     | No                                      |
+| **WhatsApp auth state**        | `store/auth/` (165 files)                       | ~700 KB | CRITICAL              | No                                      |
+| **WhatsApp connection state**  | `store/auth.json`                               | ~330 B  | HIGH                  | No                                      |
+| **Group memory**               | `groups/*/CLAUDE.md`                            | ~1.4 MB | CRITICAL              | Partially (global/)                     |
+| **Group working files**        | `groups/whatsapp_main/*`                        | ~1 MB   | MEDIUM                | No                                      |
+| **Pipeline state files**       | `store/*.json`                                  | ~400 KB | MEDIUM                | No                                      |
+| **User profile**               | `store/profile.md`                              | ~12 KB  | HIGH                  | No                                      |
+| **Session data**               | `data/sessions/`                                | ~52 MB  | LOW (rebuildable)     | No                                      |
+| **IPC state**                  | `data/ipc/`                                     | ~40 KB  | LOW (ephemeral)       | No                                      |
+| **.env**                       | `.env`                                          | ~200 B  | HIGH                  | No (gitignored)                         |
+| **Nginx config**               | `/opt/homebrew/etc/nginx/servers/nanoclaw.conf` | ~2 KB   | HIGH                  | No                                      |
+| **TLS certs (Let's Encrypt)**  | `~/.certbot/`                                   | ~72 KB  | HIGH (auto-renewable) | No                                      |
+| **NanoClaw certs (OneCLI CA)** | `certs/`                                        | ~10 KB  | HIGH                  | No (gitignored)                         |
+| **Certbot DNS hooks**          | `scripts/certbot/`                              | ~2 KB   | MEDIUM                | Yes                                     |
+| **DefenseClaw config**         | `~/.defenseclaw/config.yaml`                    | ~500 B  | HIGH                  | No                                      |
+| **DefenseClaw firewall**       | `~/.defenseclaw/firewall.yaml`                  | ~2 KB   | HIGH                  | No                                      |
+| **DefenseClaw device key**     | `~/.defenseclaw/device.key`                     | ~1 KB   | CRITICAL              | No                                      |
+| **DefenseClaw audit DB**       | `~/.defenseclaw/audit.db`                       | ~3 MB   | LOW                   | No                                      |
+| **DefenseClaw policies**       | `~/defenseclaw/policies/`                       | ~55 MB  | MEDIUM                | Yes (separate repo)                     |
+| **LaunchAgent plists**         | `~/Library/LaunchAgents/com.nanoclaw*.plist`    | ~30 KB  | HIGH                  | No; backup refuses any OneCLI token key |
+| **Service plists**             | `homebrew.mxcl.{nginx,postgresql@17}.plist`     | ~5 KB   | MEDIUM                | No                                      |
+| **OneCLI pgdata volume**       | Docker `onecli_pgdata`                          | varies  | CRITICAL              | No                                      |
+| **OneCLI app-data volume**     | Docker `onecli_app-data`                        | varies  | HIGH                  | No                                      |
+| **Mount allowlist**            | `~/.config/nanoclaw/mount-allowlist.json`       | ~100 B  | MEDIUM                | No                                      |
+| **Dashboard config**           | `dashboard/next.config.ts`                      | ~1 KB   | MEDIUM                | Yes                                     |
 
 ### Mac Studio (studio.shearer.live) -- Inference Server
 
-| Component | Location | Size | Criticality | Backup Strategy |
-|-----------|----------|------|-------------|----------------|
-| **Ollama models (standard)** | Ollama model store | ~40 GB | LOW | Re-pullable: `gemma3:27b`, `phi4:14b`, `granite3.3:8b` |
-| **FinGPT (custom model)** | Ollama model store | ~? | HIGH | NOT re-pullable from public registry; needs explicit backup |
+| Component                    | Location           | Size   | Criticality | Backup Strategy                                             |
+| ---------------------------- | ------------------ | ------ | ----------- | ----------------------------------------------------------- |
+| **Ollama models (standard)** | Ollama model store | ~40 GB | LOW         | Re-pullable: `gemma3:27b`, `phi4:14b`, `granite3.3:8b`      |
+| **FinGPT (custom model)**    | Ollama model store | ~?     | HIGH        | NOT re-pullable from public registry; needs explicit backup |
 
 ### External Services (Not Backed Up Locally)
 
-| Service | What's There | Recovery Strategy |
-|---------|-------------|-------------------|
-| **GitHub** (dadcoachengineer/nanoclaw) | All source code, branches, skill PRs | Clone from remote |
-| **Notion** | Task database (sync target) | Notion has its own backup; NanoClaw can re-sync |
-| **Cloudflare** | DNS records for shearer.live | Recreate manually or via API |
-| **Google OAuth** | Consent grant | Re-authorize at localhost:10254/apps |
-| **Webex OAuth** | Token in OneCLI | Re-authorize via OneCLI if token expires |
+| Service                                | What's There                         | Recovery Strategy                               |
+| -------------------------------------- | ------------------------------------ | ----------------------------------------------- |
+| **GitHub** (dadcoachengineer/nanoclaw) | All source code, branches, skill PRs | Clone from remote                               |
+| **Notion**                             | Task database (sync target)          | Notion has its own backup; NanoClaw can re-sync |
+| **Cloudflare**                         | DNS records for shearer.live         | Recreate manually or via API                    |
+| **Google OAuth**                       | Consent grant                        | Re-authorize at localhost:10254/apps            |
+| **Webex OAuth**                        | Token in OneCLI                      | Re-authorize via OneCLI if token expires        |
 
 ### OneCLI Managed Secrets
 
 These are stored in OneCLI's Docker PostgreSQL volume. The secrets themselves are NOT on disk anywhere else.
 
-| Secret Name | Host Pattern | Type |
-|-------------|-------------|------|
-| cloudflare | api.cloudflare.com | Generic (Bearer) |
-| Webex | webexapis.com | Generic (Bearer) |
-| Nextcloud | drive.shearer.live | Generic (Basic) |
-| Plaud | api.plaud.ai | Generic (Bearer) |
-| Notion | api.notion.com | Generic (Bearer) |
-| nanoclaw | api.anthropic.com | Anthropic API Key |
-| Demo Secret (httpbin) | httpbin.org | Generic (test) |
+| Secret Name           | Host Pattern       | Type              |
+| --------------------- | ------------------ | ----------------- |
+| cloudflare            | api.cloudflare.com | Generic (Bearer)  |
+| Webex                 | webexapis.com      | Generic (Bearer)  |
+| Nextcloud             | drive.shearer.live | Generic (Basic)   |
+| Plaud                 | api.plaud.ai       | Generic (Bearer)  |
+| Notion                | api.notion.com     | Generic (Bearer)  |
+| nanoclaw              | api.anthropic.com  | Anthropic API Key |
+| Demo Secret (httpbin) | httpbin.org        | Generic (test)    |
 
 ---
 
@@ -96,6 +96,7 @@ pg_dump -d nanoclaw --no-owner --no-acl | gzip > nanoclaw.sql.gz
 **What's in it:** 1787 tasks, 254 people, 3182 vector chunks, 50 meetings, 12 scheduled tasks, observability data, chat history, triage decisions, all schema migrations.
 
 **Restore:**
+
 ```bash
 dropdb nanoclaw && createdb nanoclaw
 gunzip -c nanoclaw.sql.gz | psql -d nanoclaw
@@ -105,12 +106,12 @@ gunzip -c nanoclaw.sql.gz | psql -d nanoclaw
 
 **Method:** Direct file copy while NanoClaw is running (SQLite handles this safely via WAL mode).
 
-| Database | Frequency | Notes |
-|----------|-----------|-------|
-| `messages.db` | Daily | WhatsApp message bus; ~500 KB |
-| `vectors.db` | Daily | Rebuildable via `rebuild-indexes.sh` but cheap to back up |
-| `nanoclaw.db` | Daily | Legacy; currently empty |
-| `audit.db` | Daily | DefenseClaw audit trail |
+| Database      | Frequency | Notes                                                     |
+| ------------- | --------- | --------------------------------------------------------- |
+| `messages.db` | Daily     | WhatsApp message bus; ~500 KB                             |
+| `vectors.db`  | Daily     | Rebuildable via `rebuild-indexes.sh` but cheap to back up |
+| `nanoclaw.db` | Daily     | Legacy; currently empty                                   |
+| `audit.db`    | Daily     | DefenseClaw audit trail                                   |
 
 ### WhatsApp Auth State
 
@@ -125,19 +126,21 @@ gunzip -c nanoclaw.sql.gz | psql -d nanoclaw
 **Location:** Docker volume `onecli_pgdata` (PostgreSQL 17) and `onecli_app-data`.
 
 **Method:** Export Docker volumes as tar.gz archives:
+
 ```bash
 docker run --rm -v onecli_pgdata:/data -v /backup:/backup alpine \
   tar czf /backup/onecli-pgdata.tar.gz -C /data .
 ```
 
 **Restore:**
+
 ```bash
 docker volume rm onecli_pgdata && docker volume create onecli_pgdata
 docker run --rm -v onecli_pgdata:/data -v /backup:/backup alpine \
   sh -c "cd /data && tar xzf /backup/onecli-pgdata.tar.gz"
 ```
 
-**Note:** OneCLI also stores an agent token in the `com.nanoclaw.plist` environment variables. This token (`ONECLI_AGENT_TOKEN`) must match the OneCLI database for authentication to work.
+**Note:** OneCLI runtime credentials are not backup material. LaunchAgents contain only nonsecret dedicated identifiers; the v2 runtime runner mints credentials in process memory. Backup, verification, and restore all fail closed if an archived plist contains the retired token key.
 
 ### TLS Certificates
 
@@ -150,6 +153,7 @@ docker run --rm -v onecli_pgdata:/data -v /backup:/backup alpine \
 ### DefenseClaw
 
 **Files to back up:**
+
 - `~/.defenseclaw/config.yaml` -- gateway + guardrail configuration
 - `~/.defenseclaw/firewall.yaml` -- egress firewall rules
 - `~/.defenseclaw/device.key` -- device identity key (CRITICAL, not regenerable without re-enrollment)
@@ -160,36 +164,38 @@ docker run --rm -v onecli_pgdata:/data -v /backup:/backup alpine \
 
 16 plists manage the entire service mesh:
 
-| Plist | Service |
-|-------|---------|
-| `com.nanoclaw.plist` | Core NanoClaw process |
-| `com.nanoclaw.dashboard.plist` | Next.js dashboard |
-| `com.nanoclaw.boox-local.plist` | Boox notebook processor |
-| `com.nanoclaw.calendar-local.plist` | Google Calendar sync |
-| `com.nanoclaw.certbot-renew.plist` | TLS cert renewal |
+| Plist                                      | Service                       |
+| ------------------------------------------ | ----------------------------- |
+| `com.nanoclaw.plist`                       | Core NanoClaw process         |
+| `com.nanoclaw.dashboard.plist`             | Next.js dashboard             |
+| `com.nanoclaw.boox-local.plist`            | Boox notebook processor       |
+| `com.nanoclaw.calendar-local.plist`        | Google Calendar sync          |
+| `com.nanoclaw.certbot-renew.plist`         | TLS cert renewal              |
 | `com.nanoclaw.defenseclaw-anthropic.plist` | DefenseClaw Anthropic gateway |
-| `com.nanoclaw.gmail-local.plist` | Gmail processor |
-| `com.nanoclaw.messages-local.plist` | Webex messages processor |
-| `com.nanoclaw.person-index.plist` | Person index builder |
-| `com.nanoclaw.plaud-local.plist` | Plaud NotePin processor |
-| `com.nanoclaw.transcripts-local.plist` | Meeting transcript processor |
-| `com.nanoclaw.vector-rebuild.plist` | Vector index rebuilder |
-| `com.nanoclaw.webex-refresh.plist` | Webex token refresh |
-| `com.nanoclaw.webex-summaries.plist` | Webex summaries processor |
-| `com.nanoclaw.backup.plist` | Daily backup (this system) |
-| `homebrew.mxcl.nginx.plist` | Nginx reverse proxy |
-| `homebrew.mxcl.postgresql@17.plist` | PostgreSQL 17 |
+| `com.nanoclaw.gmail-local.plist`           | Gmail processor               |
+| `com.nanoclaw.messages-local.plist`        | Webex messages processor      |
+| `com.nanoclaw.person-index.plist`          | Person index builder          |
+| `com.nanoclaw.plaud-local.plist`           | Plaud NotePin processor       |
+| `com.nanoclaw.transcripts-local.plist`     | Meeting transcript processor  |
+| `com.nanoclaw.vector-rebuild.plist`        | Vector index rebuilder        |
+| `com.nanoclaw.webex-refresh.plist`         | Webex token refresh           |
+| `com.nanoclaw.webex-summaries.plist`       | Webex summaries processor     |
+| `com.nanoclaw.backup.plist`                | Daily backup (this system)    |
+| `homebrew.mxcl.nginx.plist`                | Nginx reverse proxy           |
+| `homebrew.mxcl.postgresql@17.plist`        | PostgreSQL 17                 |
 
 ### Ollama Models (Mac Studio)
 
 Standard models are re-pullable:
+
 ```bash
-ollama pull gemma3:27b
 ollama pull phi4:14b
-ollama pull granite3.3:8b
+ollama pull gemma4:31b
+ollama pull nomic-embed-text
 ```
 
 **FinGPT is custom** and cannot be re-downloaded from a public registry. It must be exported and backed up separately:
+
 ```bash
 # On Mac Studio:
 ollama cp FinGPT FinGPT-backup
@@ -201,6 +207,7 @@ ollama cp FinGPT FinGPT-backup
 ## 3. What's in Git vs What's Local-Only
 
 ### In Git (recoverable via `git clone`)
+
 - All TypeScript source code (`src/`, `dashboard/`, `container/`, `scripts/`)
 - Package manifests (`package.json`, `package-lock.json`)
 - Container Dockerfile and build scripts
@@ -211,6 +218,7 @@ ollama cp FinGPT FinGPT-backup
 - Skill definitions (`.claude/skills/`)
 
 ### Local-Only (MUST be backed up)
+
 - PostgreSQL database (all runtime data)
 - SQLite databases (`store/`)
 - WhatsApp auth state (`store/auth/`)
@@ -233,15 +241,16 @@ ollama cp FinGPT FinGPT-backup
 
 ### Scripts
 
-| Script | Purpose |
-|--------|---------|
-| `scripts/backup/backup.sh` | Full daily backup of all components |
-| `scripts/backup/verify.sh` | Validate a backup has all expected components |
-| `scripts/backup/restore.sh` | Selective or full restore from a backup |
+| Script                      | Purpose                                       |
+| --------------------------- | --------------------------------------------- |
+| `scripts/backup/backup.sh`  | Full daily backup of all components           |
+| `scripts/backup/verify.sh`  | Validate a backup has all expected components |
+| `scripts/backup/restore.sh` | Selective or full restore from a backup       |
 
 ### Schedule
 
 Automated via `com.nanoclaw.backup.plist`:
+
 - **Runs daily at 02:00** (before certbot renewal at 03:30)
 - Logs to `logs/backup.log`
 - Retention: 14 daily + 4 weekly (Sundays) + 3 monthly (1st of month)
@@ -251,6 +260,7 @@ Automated via `com.nanoclaw.backup.plist`:
 **Primary:** `/Users/nanoclaw/backups/nanoclaw/YYYY-MM-DD/`
 
 Each daily backup contains:
+
 ```
 2026-04-02/
   manifest.json              # backup metadata and error count
@@ -278,7 +288,7 @@ Each daily backup contains:
   certbot/                    # full ~/.certbot tree
   certs/                      # OneCLI CA, NanoClaw TLS certs
   certbot-hooks/              # DNS auth/cleanup scripts
-  launchagents/               # all plist files
+  launchagents/               # credential-free plist files only
   onecli/
     onecli-pgdata.tar.gz      # OneCLI PostgreSQL data
     onecli-appdata.tar.gz     # OneCLI app data
@@ -292,6 +302,7 @@ Each daily backup contains:
 **Current:** Local disk only (`/Users/nanoclaw/backups/`).
 
 **Recommended additions** (not yet implemented, requires user confirmation):
+
 1. **Nextcloud (drive.shearer.live)** -- rsync daily backup to Nextcloud WebDAV. Already have credentials in OneCLI. Estimated ~70 MB/day compressed.
 2. **Mac Studio** -- rsync to `studio.shearer.live` via SSH. Uses the same LAN, provides geographic separation within the home network.
 3. **GitHub** -- NOT suitable for database dumps or secrets. Only source code belongs here.
@@ -305,6 +316,7 @@ Each daily backup contains:
 1. Identify the corrupted component
 2. Run `scripts/backup/verify.sh` on the latest backup
 3. Restore the specific component:
+
    ```bash
    # Example: restore just PostgreSQL
    scripts/backup/restore.sh 2026-04-02 --pg
@@ -312,6 +324,7 @@ Each daily backup contains:
    # Example: restore just WhatsApp auth
    scripts/backup/restore.sh 2026-04-02 --whatsapp
    ```
+
 4. Restart NanoClaw: `launchctl kickstart -k gui/$(id -u)/com.nanoclaw`
 
 **Estimated time:** 5-10 minutes
@@ -319,6 +332,7 @@ Each daily backup contains:
 ### Scenario B: Full Mac Mini rebuild (hardware failure or OS reinstall)
 
 **Prerequisites:**
+
 - Fresh macOS install on Mac Mini
 - Homebrew installed
 - Access to the latest backup (external drive, Nextcloud, or Mac Studio)
@@ -327,18 +341,21 @@ Each daily backup contains:
 **Step-by-step:**
 
 1. **Install system dependencies:**
+
    ```bash
    brew install node@22 postgresql@17 nginx certbot docker
    brew services start postgresql@17
    ```
 
 2. **Create the nanoclaw user and directories:**
+
    ```bash
    # If not using the same user account, create it
    mkdir -p ~/nanoclaw ~/backups ~/.defenseclaw ~/.certbot ~/.config/nanoclaw
    ```
 
 3. **Clone the repository:**
+
    ```bash
    cd ~
    git clone git@github.com:dadcoachengineer/nanoclaw.git
@@ -348,42 +365,47 @@ Each daily backup contains:
    ```
 
 4. **Restore from backup:**
+
    ```bash
    # Copy the backup to the machine first, then:
    scripts/backup/restore.sh YYYY-MM-DD --all
    ```
+
    This restores: PostgreSQL, SQLite DBs, WhatsApp auth, groups, configs, DefenseClaw, certs, plists, OneCLI volumes.
 
 5. **Start OneCLI (Docker):**
+
    ```bash
    # OneCLI volumes are restored. Start the containers:
    docker compose up -d  # from the OneCLI project directory
    ```
 
 6. **Restore environment variables:**
-   The `.env` is restored by `--config`. The plist files contain `ONECLI_AGENT_TOKEN` and `DATABASE_URL`. Verify they match the restored OneCLI database.
+   The `.env` is restored by `--config`. Plist restore refuses archives containing the retired OneCLI token key. After restore, follow the v2 `docs/onecli-agent-credentials.md` runbook to create and scope dedicated identities; never load a credential-bearing archived plist.
 
 7. **Build the agent container:**
+
    ```bash
    ./container/build.sh
    ```
 
 8. **Restore TLS certs and nginx:**
    The `--certbot` and `--config` flags restore `~/.certbot/` and `nanoclaw.conf`. Then:
+
    ```bash
    brew services restart nginx
    ```
 
-9. **Load all LaunchAgent plists:**
+9. **Load reviewed LaunchAgent plists:**
+   Run the v2 `scripts/repoint-mission-control.sh` installer, which validates dedicated identifiers and the runtime wrapper before loading NanoClaw jobs. Do not bulk-load an archive. Load only the non-NanoClaw service plists directly:
+
    ```bash
-   for plist in ~/Library/LaunchAgents/com.nanoclaw*.plist; do
-     launchctl load "$plist"
-   done
    launchctl load ~/Library/LaunchAgents/homebrew.mxcl.nginx.plist
    launchctl load ~/Library/LaunchAgents/homebrew.mxcl.postgresql@17.plist
    ```
 
 10. **Verify:**
+
     ```bash
     # Check NanoClaw is running
     curl -s https://dashboard.shearer.live | head -5
@@ -407,6 +429,7 @@ If OneCLI's Docker volumes are lost but the backup exists:
 4. Verify: `onecli secrets list`
 
 If backup is also lost, each secret must be manually re-created:
+
 - Anthropic API key: from Anthropic console
 - Notion: from Notion integrations page
 - Webex: re-authorize OAuth flow
@@ -435,15 +458,15 @@ The Mac Studio only runs Ollama. Recovery:
 
 ## 6. What Is NOT Backed Up (Intentionally)
 
-| Item | Reason |
-|------|--------|
-| `node_modules/` | Rebuilt by `npm install` |
-| `dist/` | Rebuilt by `npm run build` |
-| `logs/` | Ephemeral; not needed for recovery |
-| Docker images | Rebuilt by `./container/build.sh` or pulled from registry |
-| Notion data | Notion is the source of truth; NanoClaw syncs TO it |
-| Ollama standard models | Re-pullable from registry |
-| `store/qr-auth.html` | One-time QR code page; not needed |
+| Item                   | Reason                                                    |
+| ---------------------- | --------------------------------------------------------- |
+| `node_modules/`        | Rebuilt by `npm install`                                  |
+| `dist/`                | Rebuilt by `npm run build`                                |
+| `logs/`                | Ephemeral; not needed for recovery                        |
+| Docker images          | Rebuilt by `./container/build.sh` or pulled from registry |
+| Notion data            | Notion is the source of truth; NanoClaw syncs TO it       |
+| Ollama standard models | Re-pullable from registry                                 |
+| `store/qr-auth.html`   | One-time QR code page; not needed                         |
 
 ---
 
@@ -452,6 +475,7 @@ The Mac Studio only runs Ollama. Recovery:
 **Current:** Check `logs/backup.log` for errors.
 
 **Recommended additions:**
+
 - Add a scheduled task in NanoClaw to verify the backup each morning and send a WhatsApp message if verification fails
 - Monitor backup directory size growth
 
@@ -459,9 +483,9 @@ The Mac Studio only runs Ollama. Recovery:
 
 ## 8. Testing Schedule
 
-| Frequency | Test |
-|-----------|------|
-| Daily (automated) | `backup.sh` runs and `manifest.json` shows 0 errors |
-| Weekly (manual) | Run `verify.sh` and spot-check a random component |
-| Monthly | Test restore of PostgreSQL to a temporary database |
-| Quarterly | Full DR test: restore everything to a temp directory, verify all configs parse |
+| Frequency         | Test                                                                           |
+| ----------------- | ------------------------------------------------------------------------------ |
+| Daily (automated) | `backup.sh` runs and `manifest.json` shows 0 errors                            |
+| Weekly (manual)   | Run `verify.sh` and spot-check a random component                              |
+| Monthly           | Test restore of PostgreSQL to a temporary database                             |
+| Quarterly         | Full DR test: restore everything to a temp directory, verify all configs parse |

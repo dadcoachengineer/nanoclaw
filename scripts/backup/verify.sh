@@ -112,6 +112,13 @@ check_dir "${BACKUP_DIR}/certs" "NanoClaw certs" 1
 
 # LaunchAgent plists
 check_dir "${BACKUP_DIR}/launchagents" "LaunchAgent plists" 10
+for plist in "${BACKUP_DIR}"/launchagents/*.plist; do
+  [[ -f "$plist" ]] || continue
+  if /usr/bin/plutil -extract EnvironmentVariables.ONECLI_AGENT_TOKEN raw "$plist" >/dev/null 2>&1; then
+    echo "FAIL  LaunchAgent plists — forbidden OneCLI token key in $(basename "$plist")"
+    ERRORS=$((ERRORS + 1))
+  fi
+done
 
 # OneCLI
 check_file "${BACKUP_DIR}/onecli/onecli-pgdata.tar.gz" "OneCLI pgdata volume" 10000

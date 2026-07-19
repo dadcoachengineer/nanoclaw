@@ -189,6 +189,18 @@ restore_certbot() {
 restore_plists() {
   echo "--- Restoring LaunchAgent plists ---"
   if [[ -d "${BACKUP_DIR}/launchagents" ]]; then
+    local unsafe=0
+    for plist in "${BACKUP_DIR}"/launchagents/*.plist; do
+      [[ -f "$plist" ]] || continue
+      if /usr/bin/plutil -extract EnvironmentVariables.ONECLI_AGENT_TOKEN raw "$plist" >/dev/null 2>&1; then
+        echo "ERROR: $(basename "$plist") contains a forbidden OneCLI token key"
+        unsafe=$((unsafe + 1))
+      fi
+    done
+    if [[ "$unsafe" -ne 0 ]]; then
+      echo "Refusing plist restore. Migrate the archive to nonsecret agent identifiers first."
+      return 1
+    fi
     for plist in "${BACKUP_DIR}"/launchagents/*.plist; do
       if [[ -f "$plist" ]]; then
         cp -p "$plist" "${HOME_DIR}/Library/LaunchAgents/$(basename "$plist")"

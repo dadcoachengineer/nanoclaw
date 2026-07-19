@@ -205,6 +205,10 @@ for plist in "${HOME_DIR}"/Library/LaunchAgents/com.nanoclaw*.plist \
              "${HOME_DIR}"/Library/LaunchAgents/homebrew.mxcl.nginx.plist \
              "${HOME_DIR}"/Library/LaunchAgents/homebrew.mxcl.postgresql@17.plist; do
   if [[ -f "$plist" ]]; then
+    if /usr/bin/plutil -extract EnvironmentVariables.ONECLI_AGENT_TOKEN raw "$plist" >/dev/null 2>&1; then
+      fail "Plist: $(basename "$plist"): forbidden OneCLI token key; run the v2 credential cutover before backup"
+      continue
+    fi
     backup_file "$plist" "${PLIST_DIR}/$(basename "$plist")" "Plist: $(basename "$plist")"
   fi
 done
