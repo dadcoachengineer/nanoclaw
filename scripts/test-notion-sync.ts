@@ -10,9 +10,10 @@
  */
 import pg from "pg";
 import path from "path";
+import { requireOneCliAgentToken } from "./lib/onecli-agent-token.js";
 
 const PG_URL = process.env.DATABASE_URL || "postgresql://nanoclaw@localhost:5432/nanoclaw";
-const ONECLI_TOKEN = process.env.ONECLI_AGENT_TOKEN || "aoc_181429a83379e2122e9e0b6cde6eefd6b897809b92c08cc4bc788816e26e399a";
+const ONECLI_TOKEN = requireOneCliAgentToken();
 const NOTION_DB = "5b4e1d2d7259496ea237ef0525c3ce78";
 
 let pool: pg.Pool;

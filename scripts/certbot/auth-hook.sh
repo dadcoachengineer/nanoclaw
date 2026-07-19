@@ -9,22 +9,32 @@
 set -euo pipefail
 
 ZONE_ID="213cfcd76b0d180c78f981fa9f83e7d9"  # shearer.live
-ONECLI_TOKEN="${ONECLI_AGENT_TOKEN:-aoc_181429a83379e2122e9e0b6cde6eefd6b897809b92c08cc4bc788816e26e399a}"
-PROXY="http://x:${ONECLI_TOKEN}@localhost:10255"
+ONECLI_TOKEN="${ONECLI_AGENT_TOKEN:?ONECLI_AGENT_TOKEN is required; see docs/ONECLI_AGENT_CREDENTIALS.md}"
 CA_CERT="/Users/nanoclaw/nanoclaw/certs/onecli-ca.pem"
 RECORD_NAME="_acme-challenge.${CERTBOT_DOMAIN}"
 
+onecli_curl() {
+  # Keep the bearer credential out of argv. curl reads proxy authentication
+  # from its stdin config and the config is never written to disk.
+  {
+    printf '%s\n' 'proxy = "http://localhost:10255"'
+    printf 'proxy-user = "x:%s"\n' "$ONECLI_TOKEN"
+  } | curl --config - "$@"
+}
+
 # Create the TXT record
-RESPONSE=$(curl -s --cacert "$CA_CERT" -x "$PROXY" \
+if ! RESPONSE=$(onecli_curl -sS --fail-with-body --cacert "$CA_CERT" \
   -X POST "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records" \
   -H "Content-Type: application/json" \
-  --data "{\"type\":\"TXT\",\"name\":\"${RECORD_NAME}\",\"content\":\"${CERTBOT_VALIDATION}\",\"ttl\":120}")
+  --data "{\"type\":\"TXT\",\"name\":\"${RECORD_NAME}\",\"content\":\"${CERTBOT_VALIDATION}\",\"ttl\":120}"); then
+  echo "ERROR: OneCLI-proxied Cloudflare request failed" >&2
+  exit 1
+fi
 
 RECORD_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('result',{}).get('id',''))" 2>/dev/null)
 
 if [ -z "$RECORD_ID" ]; then
-  echo "ERROR: Failed to create DNS record" >&2
-  echo "$RESPONSE" >&2
+  echo "ERROR: Failed to create DNS record (provider response omitted)" >&2
   exit 1
 fi
 
